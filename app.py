@@ -73,7 +73,7 @@ def create_llm(provider: str, model: str | None = None, api_key: str | None = No
 
 # Modern prompt template using ChatPromptTemplate
 prompt_template = ChatPromptTemplate.from_messages([
-    ("system", "You are a helpful and friendly AI assistant. You are polite, respectful, and aim to provide concise responses of less than 20 words."),
+    ("system", "You are a helpful and friendly AI assistant. Always answer in the same language as the user's message. Keep replies polite, concise, and under 20 words."),
     MessagesPlaceholder(variable_name="history"),
     ("human", "{input}")
 ])
