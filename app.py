@@ -16,7 +16,7 @@ from langchain_ollama import OllamaLLM
 from tts import TextToSpeechService
 
 console = Console()
-stt = whisper.load_model("base.en")
+stt = whisper.load_model("base")  # Load multilingual Whisper model for speech-to-text
 
 # Parse command line arguments
 parser = argparse.ArgumentParser(description="Local Voice Assistant with ChatterBox TTS")
@@ -140,7 +140,7 @@ def transcribe(audio_np: np.ndarray) -> str:
     Returns:
         str: The transcribed text.
     """
-    result = stt.transcribe(audio_np, fp16=False)  # Set fp16=True if using a GPU
+    result = stt.transcribe(audio_np, fp16=False, language=selected_language)  # Set fp16=True if using a GPU
     text = result["text"].strip()
     return text
 
@@ -206,6 +206,7 @@ def analyze_emotion(text: str) -> float:
 if __name__ == "__main__":
     console.print("[cyan]🤖 Local Voice Assistant with ChatterBox TTS")
     console.print("[cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    selected_language = input("Which language should I use for transcription? (e.g. de, en, fr): ").strip().lower() or "en"
 
     if args.voice:
         console.print(f"[green]Using voice cloning from: {args.voice}")
