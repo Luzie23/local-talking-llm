@@ -7,6 +7,7 @@ import argparse
 import os
 from queue import Queue
 from rich.console import Console
+from flask import Flask, request, jsonify
 # Updated imports for modern LangChain
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
@@ -29,10 +30,27 @@ parser.add_argument("--provider", type=str, default="ollama", choices=["ollama",
 parser.add_argument("--api-key", type=str, default=None, help="API key for cloud LLM providers (or set MINIMAX_API_KEY env var)")
 parser.add_argument("--temperature", type=float, default=0.7, help="LLM temperature (default: 0.7)")
 parser.add_argument("--save-voice", action="store_true", help="Save generated voice samples")
+parser.add_argument("--web", action="store_true", help="Run the app as a Flask web server instead of terminal mode")
 args = parser.parse_args()
 
 # Initialize TTS with ChatterBox
 tts = TextToSpeechService()
+app = Flask(__name__)
+
+@app.route("/api/chat", methods=["POST"])
+def chat_endpoint():
+    """
+    API endpoint for browser-based chat.
+    Expects JSON: {"text": "...", "language": "de"}.
+    Returns JSON: {"response": "..."}.
+    """
+    data = request.get_json(silent=True) or {}
+    text = (data.get("text") or "").strip()
+    if not text:
+        return jsonify({"error": "Kein Text eingegeben."}), 400
+
+    response = get_llm_response(text)
+    return jsonify({"response": response})
 
 
 def create_llm(provider: str, model: str | None = None, api_key: str | None = None, temperature: float = 0.7):
@@ -204,89 +222,97 @@ def analyze_emotion(text: str) -> float:
 
 
 if __name__ == "__main__":
-    console.print("[cyan]🤖 Local Voice Assistant with ChatterBox TTS")
-    console.print("[cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    selected_language = input("Which language should I use for transcription? (e.g. de, en, fr): ").strip().lower() or "en"
-
-    if args.voice:
-        console.print(f"[green]Using voice cloning from: {args.voice}")
+    # If the program is started with --web, run it as a Flask web server.
+    if args.web:
+        console.print("[cyan]🤖 Starting Flask web server for Local Voice Assistant")
+        console.print("[cyan]Open http://127.0.0.1:5000 in your browser to connect.")
+        # Flask starts the server here. The web UI must be opened separately.
+        app.run(host="127.0.0.1", port=5000)
     else:
-        console.print("[yellow]Using default voice (no cloning)")
+        # Standard-Modus: Terminal-basierte Aufnahme und Wiedergabe.
+        console.print("[cyan]🤖 Local Voice Assistant with ChatterBox TTS")
+        console.print("[cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        selected_language = input("Which language should I use for transcription? (e.g. de, en, fr): ").strip().lower() or "en"
 
-    console.print(f"[blue]Emotion exaggeration: {args.exaggeration}")
-    console.print(f"[blue]CFG weight: {args.cfg_weight}")
-    console.print(f"[blue]LLM model: {args.model or ('gemma3' if args.provider == 'ollama' else 'MiniMax-M2.7')}")
-    console.print(f"[blue]LLM provider: {args.provider}")
-    console.print("[cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    console.print("[cyan]Press Ctrl+C to exit.\n")
+        if args.voice:
+            console.print(f"[green]Using voice cloning from: {args.voice}")
+        else:
+            console.print("[yellow]Using default voice (no cloning)")
 
-    # Create voices directory if saving voices
-    if args.save_voice:
-        os.makedirs("voices", exist_ok=True)
+        console.print(f"[blue]Emotion exaggeration: {args.exaggeration}")
+        console.print(f"[blue]CFG weight: {args.cfg_weight}")
+        console.print(f"[blue]LLM model: {args.model or ('gemma3' if args.provider == 'ollama' else 'MiniMax-M2.7')}")
+        console.print(f"[blue]LLM provider: {args.provider}")
+        console.print("[cyan]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        console.print("[cyan]Press Ctrl+C to exit.\n")
 
-    response_count = 0
+        # Create voices directory if saving voices
+        if args.save_voice:
+            os.makedirs("voices", exist_ok=True)
 
-    try:
-        while True:
-            console.input(
-                "🎤 Press Enter to start recording, then press Enter again to stop."
-            )
+        response_count = 0
 
-            data_queue = Queue()  # type: ignore[var-annotated]
-            stop_event = threading.Event()
-            recording_thread = threading.Thread(
-                target=record_audio,
-                args=(stop_event, data_queue),
-            )
-            recording_thread.start()
-
-            input()
-            stop_event.set()
-            recording_thread.join()
-
-            audio_data = b"".join(list(data_queue.queue))
-            audio_np = (
-                np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
-            )
-
-            if audio_np.size > 0:
-                with console.status("Transcribing...", spinner="dots"):
-                    text = transcribe(audio_np)
-                console.print(f"[yellow]You: {text}")
-
-                with console.status("Generating response...", spinner="dots"):
-                    response = get_llm_response(text)
-
-                    # Analyze emotion and adjust exaggeration dynamically
-                    dynamic_exaggeration = analyze_emotion(response)
-
-                    # Use lower cfg_weight for more expressive responses
-                    dynamic_cfg = args.cfg_weight * 0.8 if dynamic_exaggeration > 0.6 else args.cfg_weight
-
-                    sample_rate, audio_array = tts.long_form_synthesize(
-                        response,
-                        audio_prompt_path=args.voice,
-                        exaggeration=dynamic_exaggeration,
-                        cfg_weight=dynamic_cfg
-                    )
-
-                console.print(f"[cyan]Assistant: {response}")
-                console.print(f"[dim](Emotion: {dynamic_exaggeration:.2f}, CFG: {dynamic_cfg:.2f})[/dim]")
-
-                # Save voice sample if requested
-                if args.save_voice:
-                    response_count += 1
-                    filename = f"voices/response_{response_count:03d}.wav"
-                    tts.save_voice_sample(response, filename, args.voice)
-                    console.print(f"[dim]Voice saved to: {filename}[/dim]")
-
-                play_audio(sample_rate, audio_array)
-            else:
-                console.print(
-                    "[red]No audio recorded. Please ensure your microphone is working."
+        try:
+            while True:
+                console.input(
+                    "🎤 Press Enter to start recording, then press Enter again to stop."
                 )
 
-    except KeyboardInterrupt:
-        console.print("\n[red]Exiting...")
+                data_queue = Queue()  # type: ignore[var-annotated]
+                stop_event = threading.Event()
+                recording_thread = threading.Thread(
+                    target=record_audio,
+                    args=(stop_event, data_queue),
+                )
+                recording_thread.start()
 
-    console.print("[blue]Session ended. Thank you for using ChatterBox Voice Assistant!")
+                input()
+                stop_event.set()
+                recording_thread.join()
+
+                audio_data = b"".join(list(data_queue.queue))
+                audio_np = (
+                    np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+                )
+
+                if audio_np.size > 0:
+                    with console.status("Transcribing...", spinner="dots"):
+                        text = transcribe(audio_np)
+                    console.print(f"[yellow]You: {text}")
+
+                    with console.status("Generating response...", spinner="dots"):
+                        response = get_llm_response(text)
+
+                        # Analyze emotion and adjust exaggeration dynamically
+                        dynamic_exaggeration = analyze_emotion(response)
+
+                        # Use lower cfg_weight for more expressive responses
+                        dynamic_cfg = args.cfg_weight * 0.8 if dynamic_exaggeration > 0.6 else args.cfg_weight
+
+                        sample_rate, audio_array = tts.long_form_synthesize(
+                            response,
+                            audio_prompt_path=args.voice,
+                            exaggeration=dynamic_exaggeration,
+                            cfg_weight=dynamic_cfg
+                        )
+
+                    console.print(f"[cyan]Assistant: {response}")
+                    console.print(f"[dim](Emotion: {dynamic_exaggeration:.2f}, CFG: {dynamic_cfg:.2f})[/dim]")
+
+                    # Save voice sample if requested
+                    if args.save_voice:
+                        response_count += 1
+                        filename = f"voices/response_{response_count:03d}.wav"
+                        tts.save_voice_sample(response, filename, args.voice)
+                        console.print(f"[dim]Voice saved to: {filename}[/dim]")
+
+                    play_audio(sample_rate, audio_array)
+                else:
+                    console.print(
+                        "[red]No audio recorded. Please ensure your microphone is working."
+                    )
+
+        except KeyboardInterrupt:
+            console.print("\n[red]Exiting...")
+
+        console.print("[blue]Session ended. Thank you for using ChatterBox Voice Assistant!")
