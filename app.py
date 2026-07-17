@@ -35,7 +35,14 @@ args = parser.parse_args()
 
 # Initialize TTS with ChatterBox
 tts = TextToSpeechService()
-app = Flask(__name__)
+app = Flask(__name__, static_folder="web_interface", static_url_path="")
+
+@app.route("/")
+def index():
+    """
+    Serve the web interface HTML page.
+    """
+    return app.send_static_file("index.html")
 
 @app.route("/api/chat", methods=["POST"])
 def chat_endpoint():

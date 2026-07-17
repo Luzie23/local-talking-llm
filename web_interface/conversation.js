@@ -25,8 +25,8 @@ window.CONVERSATION = {
 
   /* Quellen für Bild/Video (nur relevant bei "picture" bzw. "video").       */
   /* Leer lassen -> es wird ein Platzhalter angezeigt.                        */
-  pictureSrc: "",   // z. B. "assets/klinikerin.jpg"
-  videoSrc:   "",   // z. B. "assets/klinikerin.mp4"
+  pictureSrc: "",
+  videoSrc:   "",
 
   /* --- FAKTOR 2: MODALITÄT ----------------------------------------------- */
   /* "text"   -> Chat-Blasen + Texteingabe                                   */
@@ -45,3 +45,67 @@ window.CONVERSATION = {
   /* --- Zeigt die Klinikerin gerade "tippt …" an? (Denk-Punkte) ----------- */
   clinicianTyping: true
 };
+
+async function sendChatMessage(text) {
+  const trimmed = (text || "").trim();
+  if (!trimmed) {
+    return;
+  }
+
+  window.CONVERSATION.messages.push({ role: "user", text: trimmed });
+  window.CONVERSATION.clinicianTyping = true;
+  render();
+
+  try {
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: trimmed }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      window.CONVERSATION.messages.push({
+        role: "clinician",
+        text: errorBody.error || `Server error ${response.status}`,
+      });
+    } else {
+      const result = await response.json();
+      window.CONVERSATION.messages.push({
+        role: "clinician",
+        text: result.response || "No response from server.",
+      });
+    }
+  } catch (error) {
+    window.CONVERSATION.messages.push({
+      role: "clinician",
+      text: `Network error: ${error.message}`,
+    });
+  } finally {
+    window.CONVERSATION.clinicianTyping = false;
+    render();
+  }
+}
+
+function setupTextInput() {
+  const input = document.querySelector(".field");
+  const send = document.querySelector(".send");
+  if (!input || !send) {
+    return;
+  }
+
+  send.addEventListener("click", function () {
+    sendChatMessage(input.value);
+    input.value = "";
+    input.focus();
+  });
+
+  input.addEventListener("keydown", function (event) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      sendChatMessage(input.value);
+      input.value = "";
+    }
+  });
+}
+
