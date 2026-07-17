@@ -16,8 +16,8 @@
 window.CONVERSATION = {
 
   /* --- Kopfzeile der Klinikerin/des Kliniker-Agenten ---------------------- */
-  clinicianName: "Dr. Maren Vos",
-  clinicianRole: "Klinisches Interview · Aufnahme",
+  clinicianName: "Mental Health Bot",
+  clinicianRole: "Prediagnostic Interview",
 
   /* --- FAKTOR 1: EMBODIMENT ---------------------------------------------- */
   /* Erlaubt: "logo" | "picture" | "video" | "avatar"                        */
@@ -43,7 +43,7 @@ window.CONVERSATION = {
   ],
 
   /* --- Zeigt die Klinikerin gerade "tippt …" an? (Denk-Punkte) ----------- */
-  clinicianTyping: true
+  clinicianTyping: false
 };
 
 async function sendChatMessage(text) {

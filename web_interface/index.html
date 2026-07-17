@@ -124,7 +124,10 @@
     ]
   };
 
-  const cfg = Object.assign({}, FALLBACK, window.CONVERSATION || {});
+  const cfg = window.CONVERSATION || FALLBACK;
+  if (!window.CONVERSATION) {
+    window.CONVERSATION = cfg;
+  }
 
   /* --- Baut den Inhalt des Embodiment-Kastens je Bedingung -------------- */
   function embodimentHTML() {
@@ -218,6 +221,9 @@
     const b = e.target.closest("[data-mod]"); if (!b) return;
     cfg.modality = b.dataset.mod; render();
   });
+
+  window.render = render;
+  window.setupTextInput = setupTextInput;
 
   setupTextInput();
   render();
