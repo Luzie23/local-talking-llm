@@ -1,5 +1,6 @@
 import time
 import threading
+import re
 import numpy as np
 import whisper
 import sounddevice as sd
@@ -189,9 +190,26 @@ def get_llm_response(text: str) -> str:
         config={"session_id": session_id}
     )
 
-    # The response is now a string from the LLM, no need to remove "Assistant:" prefix
-    # since we're using a proper chat model setup
-    return response.strip()
+    # Normalize common assistant prefixes that some models return.
+    # This prevents repeated labels like "AI: AI:" from appearing in the chat.
+    return normalize_model_response(response)
+
+
+def normalize_model_response(text: str) -> str:
+    """
+    Remove common assistant labels from model output.
+
+    Some chat models may return answers prefixed with labels like
+    "AI:" or "Assistant:". We strip those prefixes to avoid repeated
+    labels when the response is stored in history.
+    """
+    normalized = (text or "").strip()
+    while True:
+        new_text = re.sub(r'^(?:AI:|Assistant:)\s*', '', normalized, flags=re.IGNORECASE)
+        if new_text == normalized:
+            break
+        normalized = new_text.strip()
+    return normalized.strip()
 
 
 def play_audio(sample_rate, audio_array):
