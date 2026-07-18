@@ -2,7 +2,6 @@ import nltk
 import torch
 import warnings
 import numpy as np
-import torchaudio as ta
 from chatterbox.tts import ChatterboxTTS
 
 warnings.filterwarnings(

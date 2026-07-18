@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Klinisches Interview</title>
+
+<!-- Schriften: Newsreader (serif, warm) für die Fragen, Instrument Sans für die UI -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+
+<!-- Design -->
+<link rel="stylesheet" href="style.css">
+
+<!-- INHALTE: kommt aus der separaten Datei. Dein System ersetzt sie später. -->
+<script src="conversation.js"></script>
+</head>
+<body>
+
+<!-- =========================================================================
+     GRUNDGERÜST DES FENSTERS
+     Beide Modalitäts-Panels (Text & Sprache) sind vorhanden; das Skript
+     unten zeigt je nach Einstellung nur EINES an.
+     ========================================================================= -->
+<div class="deskwin">
+
+  <!-- Titelleiste -->
+  <div class="titlebar">
+    <div class="lights"><div class="tl tlr"></div><div class="tl tly"></div><div class="tl tlg"></div></div>
+    <div class="wintitle" id="winTitle">Klinisches Interview</div>
+  </div>
+
+  <div class="deskbody">
+
+    <!-- LINKS: Embodiment-Bühne (feste Größe). Inhalt füllt das Skript ein. -->
+    <div class="stage">
+      <div class="slot" id="slot"></div>
+      <div class="slotmeta">
+        <div class="slotname" id="clinicianName">—</div>
+        <div class="slotrole" id="clinicianRole">—</div>
+      </div>
+    </div>
+
+    <!-- RECHTS: Konversation. Der Chat wird in BEIDEN Modalitäten gezeigt.
+         Unten je nach Modalität die passende Leiste. -->
+    <div class="convo">
+      <div class="chat" id="chat"><!-- Sprechblasen werden eingefügt --></div>
+
+      <!-- Leiste A: TEXT-Modalität -->
+      <div class="inputbar" id="inputbar">
+        <input class="field" type="text" placeholder="Ihre Antwort eingeben …">
+        <button class="send" aria-label="Senden">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4Z"/></svg>
+        </button>
+      </div>
+
+      <!-- Leiste B: SPRACH-Modalität — Mikro per KLICK umschalten (kein Halten) -->
+      <div class="micbar" id="micbar" style="display:none">
+        <button class="mictoggle" id="micBtn">
+          <span class="miccircle">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg>
+          </span>
+          <span id="micLabel">Zum Sprechen klicken</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- FORSCHER-OVERLAY: mit  Cmd/Strg + Shift + R  ein-/ausblenden -->
+  <div class="ovpanel hidden" id="overlay">
+    <div class="ovhd"><span class="ovtitle">Forscher</span><span class="ovkbd">⌘/Strg ⇧ R</span></div>
+
+    <!-- FAKTOR 1: Embodiment -->
+    <div class="ovgroup">
+      <div class="ovglabel">Embodiment</div>
+      <div class="seg" id="embSeg">
+        <button class="segbtn" data-emb="logo">Logo</button>
+        <button class="segbtn" data-emb="picture">Bild</button>
+        <button class="segbtn" data-emb="video">Video</button>
+        <button class="segbtn" data-emb="avatar">Avatar</button>
+      </div>
+    </div>
+
+    <!-- FAKTOR 2: Modalität -->
+    <div class="ovgroup">
+      <div class="ovglabel">Modalität</div>
+      <div class="tog" id="modTog">
+        <button class="togbtn" data-mod="text">Text</button>
+        <button class="togbtn" data-mod="speech">Sprache</button>
+      </div>
+    </div>
+
+    <!-- Transkript-Log (nur für Forschende) -->
+    <div class="ovgroup">
+      <div class="ovglabel">Transkript-Log</div>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+</div>
+
+<!-- =========================================================================
+     RENDER-LOGIK
+     Liest window.CONVERSATION (aus conversation.js). Fehlt die Datei, wird der
+     eingebaute Beispieltext genutzt, damit das Layout testbar bleibt.
+     >>> Als Forscher musst du hier normalerweise NICHTS ändern – Inhalte und
+         Bedingungen steuerst du über conversation.js bzw. das Overlay. <<<
+     ========================================================================= -->
+<script>
+(function () {
+  "use strict";
+
+  /* --- Not-Beispieltext, falls conversation.js fehlt -------------------- */
+  const FALLBACK = {
+    clinicianName: "Dr. Maren Vos",
+    clinicianRole: "Klinisches Interview · Aufnahme",
+    embodiment: "picture", pictureSrc: "", videoSrc: "",
+    modality: "text",
+    clinicianTyping: true,
+    clinicianSpeaking: false, userRecording: false, liveTranscript: "", spokenChars: null,
+    messages: [
+      { role: "clinician", text: "Danke, dass Sie sich heute Zeit nehmen. Wie würden Sie Ihre Stimmung in den letzten zwei Wochen beschreiben?" },
+      { role: "user",      text: "Ehrlich gesagt ziemlich flach." },
+      { role: "clinician", text: "Das klingt belastend. Ist das die meiste Zeit des Tages da?" }
+    ]
+  };
+
+  const cfg = window.CONVERSATION || FALLBACK;
+  if (!window.CONVERSATION) {
+    window.CONVERSATION = cfg;
+  }
+
+  /* --- Baut den Inhalt des Embodiment-Kastens je Bedingung -------------- */
+  function embodimentHTML() {
+    switch (cfg.embodiment) {
+      case "logo":
+        return '<div class="logofill"><div class="logoglyph"></div></div>';
+      case "avatar":
+        return '<div class="avatarfill"><div class="avhead"></div><div class="avbody"></div></div>';
+      case "picture":
+        return cfg.pictureSrc
+          ? '<img class="fill embimg" src="' + cfg.pictureSrc + '" alt="Klinikerin">'
+          : '<div class="ph"><span class="phlabel">Portrait</span></div>';
+      case "video":
+        var v = cfg.videoSrc
+          ? '<video class="fill embimg" src="' + cfg.videoSrc + '" autoplay muted loop playsinline></video>'
+          : '<div class="ph"><span class="phlabel">Video</span></div>';
+        return v +
+          '<div class="livebadge"><span class="livedot"></span>LIVE</div>' +
+          '<div class="wave">' +
+            '<span class="wbar" style="height:8px"></span><span class="wbar" style="height:18px;animation-delay:.1s"></span>' +
+            '<span class="wbar" style="height:12px;animation-delay:.2s"></span><span class="wbar" style="height:22px;animation-delay:.15s"></span>' +
+            '<span class="wbar" style="height:9px;animation-delay:.05s"></span></div>';
+      default:
+        return '<div class="ph"><span class="phlabel">?</span></div>';
+    }
+  }
+
+  /* --- Zeichnet die gesamte Oberfläche neu ------------------------------ */
+  function render() {
+    // Kopf
+    document.getElementById("clinicianName").textContent = cfg.clinicianName;
+    document.getElementById("clinicianRole").textContent = cfg.clinicianRole;
+    document.getElementById("winTitle").textContent =
+      "Klinisches Interview · " + (cfg.modality === "speech" ? "Sprache" : "Text");
+
+    // Embodiment
+    document.getElementById("slot").innerHTML = embodimentHTML();
+
+    // Modalität: passende Bodenleiste zeigen (Chat ist in BEIDEN sichtbar)
+    const isSpeech = cfg.modality === "speech";
+    document.getElementById("inputbar").style.display = isSpeech ? "none" : "flex";
+    document.getElementById("micbar").style.display   = isSpeech ? "flex" : "none";
+
+    // Chat-Blasen (in BEIDEN Modalitäten). In der Sprach-Modalität wird die
+    // Sprachausgabe des LLM ebenso als Text gezeigt wie die transkribierte
+    // (auch live mitgeschriebene) Eingabe der teilnehmenden Person.
+    const chat = document.getElementById("chat");
+    chat.innerHTML = "";
+    cfg.messages.forEach(function (m, i) {
+      const isLast = i === cfg.messages.length - 1;
+      if (isSpeech && m.role === "clinician" && isLast && cfg.clinicianSpeaking) {
+        // LLM spricht gerade -> Blase mit "spricht gerade"-Balken statt Punkt,
+        // Text SYNCHRON zum Ton (nur bereits gesprochene Zeichen).
+        chat.insertAdjacentHTML("beforeend",
+          '<div class="bqspk"><span class="speakbars"><i></i><i></i><i></i><i></i></span>' +
+          '<span class="bq" style="font-size:16px"></span></div>');
+        var shown = (cfg.spokenChars == null) ? m.text : m.text.slice(0, cfg.spokenChars);
+        var el = chat.querySelector(".bqspk:last-child .bq");
+        el.textContent = shown;
+        if (cfg.spokenChars != null && cfg.spokenChars < m.text.length) {
+          el.insertAdjacentHTML("beforeend", '<span class="caret"></span>');
+        }
+      } else {
+        const b = document.createElement("div");
+        b.className = m.role === "user" ? "ba" : "bq";
+        b.textContent = m.text;
+        chat.appendChild(b);
+      }
+    });
+
+    if (isSpeech) {
+      // Live mitgeschriebene Eingabe während der Aufnahme
+      if (cfg.userRecording && cfg.liveTranscript) {
+        const lb = document.createElement("div");
+        lb.className = "livebubble";
+        lb.textContent = cfg.liveTranscript;
+        lb.insertAdjacentHTML("beforeend", '<span class="caret"></span>');
+        chat.appendChild(lb);
+      }
+      // Mikro-Button-Zustand
+      const btn = document.getElementById("micBtn");
+      if (btn) {
+        btn.classList.toggle("rec", !!cfg.userRecording);
+        const disabled = cfg.processingResponse;
+        btn.disabled = disabled;
+        btn.classList.toggle("disabled", disabled);
+        btn.style.pointerEvents = disabled ? "none" : "auto";
+        document.getElementById("micLabel").textContent =
+          cfg.processingResponse ? "Bitte warten…" : (cfg.userRecording ? "Aufnahme … zum Stoppen klicken" : "Zum Sprechen klicken");
+      }
+      if ((cfg.clinicianTyping || cfg.processingResponse) && !cfg.userRecording) {
+        chat.insertAdjacentHTML("beforeend",
+          '<div class="typing"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>');
+      }
+    } else if (cfg.clinicianTyping) {
+      // Text-Modalität: "tippt …"-Punkte
+      chat.insertAdjacentHTML("beforeend",
+        '<div class="typing"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>');
+    }
+    chat.scrollTop = chat.scrollHeight;
+
+    // Transkript-Log (immer – auch in der Sprach-Bedingung, nur für Forschende)
+    const log = document.getElementById("log");
+    log.innerHTML = cfg.messages.map(function (m) {
+      const who = m.role === "user" ? "P01" : "LLM";
+      return '<div class="logrow"><b>' + who + '</b> ' + m.text + '</div>';
+    }).join("");
+
+    // aktive Buttons im Overlay markieren
+    document.querySelectorAll("#embSeg .segbtn").forEach(function (btn) {
+      btn.classList.toggle("on", btn.dataset.emb === cfg.embodiment);
+    });
+    document.querySelectorAll("#modTog .togbtn").forEach(function (btn) {
+      btn.classList.toggle("on", btn.dataset.mod === cfg.modality);
+    });
+  }
+
+  /* --- Overlay-Bedienung (Forscher) ------------------------------------- */
+  // Tastenkürzel zum Ein-/Ausblenden
+  document.addEventListener("keydown", function (e) {
+    if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "R" || e.key === "r")) {
+      e.preventDefault();
+      document.getElementById("overlay").classList.toggle("hidden");
+    }
+  });
+  // Embodiment / Modalität live umschalten (zum Testen der Bedingungen)
+  document.getElementById("embSeg").addEventListener("click", function (e) {
+    const b = e.target.closest("[data-emb]"); if (!b) return;
+    cfg.embodiment = b.dataset.emb; render();
+  });
+  document.getElementById("modTog").addEventListener("click", function (e) {
+    const b = e.target.closest("[data-mod]"); if (!b) return;
+    cfg.modality = b.dataset.mod; render();
+  });
+  // Mikro per Klick umschalten (Sprach-Modalität, PC-tauglich).
+  // >>> HIER hängst du deine Aufnahme an: bei Start MediaRecorder starten und den
+  //     STT-Text laufend in cfg.liveTranscript schreiben + render(); bei Stopp die
+  //     fertige Eingabe an dein Flask-Backend senden (analog sendChatMessage). <<<
+  var micBtn = document.getElementById("micBtn");
+  if (micBtn) micBtn.addEventListener("click", function () {
+    if (cfg.processingResponse) {
+      return;
+    }
+    cfg.userRecording = !cfg.userRecording;
+    if (typeof window.onMicToggle === "function") window.onMicToggle(cfg.userRecording);
+    render();
+  });
+
+  window.render = render;
+  window.setupTextInput = setupTextInput;
+
+  setupTextInput();
+  render();
+})();
+</script>
+</body>
+</html>

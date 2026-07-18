@@ -1,9 +1,13 @@
 import time
 import threading
 import re
+import io
+import base64
+import wave
 import numpy as np
 import whisper
 import sounddevice as sd
+from scipy.signal import resample_poly
 import argparse
 import os
 from queue import Queue
@@ -32,11 +36,13 @@ parser.add_argument("--api-key", type=str, default=None, help="API key for cloud
 parser.add_argument("--temperature", type=float, default=0.7, help="LLM temperature (default: 0.7)")
 parser.add_argument("--save-voice", action="store_true", help="Save generated voice samples")
 parser.add_argument("--web", action="store_true", help="Run the app as a Flask web server instead of terminal mode")
+parser.add_argument("--language", type=str, default="de", help="Language code for speech transcription (default: de)")
 args = parser.parse_args()
+selected_language = args.language
 
 # Initialize TTS with ChatterBox
 tts = TextToSpeechService()
-app = Flask(__name__, static_folder="web_interface", static_url_path="")
+app = Flask(__name__, static_folder="web_interface_new", static_url_path="")
 
 @app.route("/")
 def index():
@@ -54,11 +60,64 @@ def chat_endpoint():
     """
     data = request.get_json(silent=True) or {}
     text = (data.get("text") or "").strip()
+    language = data.get("language") or args.language
     if not text:
         return jsonify({"error": "Kein Text eingegeben."}), 400
 
     response = get_llm_response(text)
     return jsonify({"response": response})
+
+
+@app.route("/api/chat/audio", methods=["POST"])
+def chat_audio_endpoint():
+    """
+    API endpoint for browser-based speech chat.
+    Expects multipart/form-data with an "audio" file and optional "language" field.
+    Returns JSON: {"transcript": "...", "response": "...", "audio": "...base64..."}.
+    """
+    audio_file = request.files.get("audio")
+    if not audio_file:
+        return jsonify({"error": "No audio file uploaded."}), 400
+
+    language = request.form.get("language") or args.language
+    try:
+        audio_bytes = audio_file.read()
+        with wave.open(io.BytesIO(audio_bytes), 'rb') as wf:
+            sr = wf.getframerate()
+            channels = wf.getnchannels()
+            frames = wf.readframes(wf.getnframes())
+            audio_np = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+            if channels > 1:
+                audio_np = audio_np.reshape(-1, channels).mean(axis=1)
+        if sr != 16000:
+            audio_np = resample_poly(audio_np, 16000, sr)
+    except Exception as e:
+        return jsonify({"error": f"Unable to decode audio: {e}"}), 400
+
+    transcript = transcribe(audio_np, language=language)
+    response = get_llm_response(transcript)
+    sample_rate, audio_array = tts.long_form_synthesize(
+        response,
+        audio_prompt_path=args.voice,
+        exaggeration=analyze_emotion(response),
+        cfg_weight=args.cfg_weight,
+    )
+
+    wav_buffer = io.BytesIO()
+    with wave.open(wav_buffer, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        clipped = np.clip(audio_array, -1.0, 1.0)
+        int16_audio = (clipped * 32767).astype(np.int16)
+        wf.writeframes(int16_audio.tobytes())
+    audio_base64 = base64.b64encode(wav_buffer.getvalue()).decode("ascii")
+
+    return jsonify({
+        "transcript": transcript,
+        "response": response,
+        "audio": audio_base64,
+    })
 
 
 def create_llm(provider: str, model: str | None = None, api_key: str | None = None, temperature: float = 0.7):
@@ -156,17 +215,18 @@ def record_audio(stop_event, data_queue):
             time.sleep(0.1)
 
 
-def transcribe(audio_np: np.ndarray) -> str:
+def transcribe(audio_np: np.ndarray, language: str = "de") -> str:
     """
     Transcribes the given audio data using the Whisper speech recognition model.
 
     Args:
         audio_np (numpy.ndarray): The audio data to be transcribed.
+        language (str): The language code for transcription.
 
     Returns:
         str: The transcribed text.
     """
-    result = stt.transcribe(audio_np, fp16=False, language=selected_language)  # Set fp16=True if using a GPU
+    result = stt.transcribe(audio_np, fp16=False, language=language)  # Set fp16=True if using a GPU
     text = result["text"].strip()
     return text
 
