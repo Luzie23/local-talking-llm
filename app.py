@@ -257,11 +257,11 @@ def get_llm_response(text: str) -> str:
 
 def normalize_model_response(text: str) -> str:
     """
-    Remove common assistant labels from model output.
+    Remove common assistant labels and leading punctuation from model output.
 
     Some chat models may return answers prefixed with labels like
-    "AI:" or "Assistant:". We strip those prefixes to avoid repeated
-    labels when the response is stored in history.
+    "AI:" or "Assistant:". We strip those prefixes and also remove
+    any leading commas or whitespace that may appear before the actual text.
     """
     normalized = (text or "").strip()
     while True:
@@ -269,6 +269,9 @@ def normalize_model_response(text: str) -> str:
         if new_text == normalized:
             break
         normalized = new_text.strip()
+
+    # Remove a leading comma/space from model responses like ", Hallo..."
+    normalized = re.sub(r'^[,\s\u2028\u2029]+', '', normalized)
     return normalized.strip()
 
 
