@@ -176,6 +176,25 @@
     // Sprachausgabe des LLM ebenso als Text gezeigt wie die transkribierte
     // (auch live mitgeschriebene) Eingabe der teilnehmenden Person.
     const chat = document.getElementById("chat");
+
+    // Schnellpfad während der Sprachausgabe: NICHT das Chat-DOM neu aufbauen,
+    // sonst starten die "spricht gerade"-Balken bei jedem render()-Tick (alle
+    // 50 ms) ihre CSS-Animation neu und wirken dadurch eingefroren. Wir
+    // aktualisieren nur den bereits gesprochenen Text der bestehenden Blase.
+    const lastMsg = cfg.messages[cfg.messages.length - 1];
+    const spk = chat.querySelector(".bqspk:last-child");
+    if (isSpeech && cfg.clinicianSpeaking && spk && lastMsg && lastMsg.role === "clinician"
+        && spk.dataset.msg === lastMsg.text) {
+      const el = spk.querySelector(".bq");
+      const shown = (cfg.spokenChars == null) ? lastMsg.text : lastMsg.text.slice(0, cfg.spokenChars);
+      el.textContent = shown;
+      if (cfg.spokenChars != null && cfg.spokenChars < lastMsg.text.length) {
+        el.insertAdjacentHTML("beforeend", '<span class="caret"></span>');
+      }
+      chat.scrollTop = chat.scrollHeight;
+      return;
+    }
+    
     chat.innerHTML = "";
     cfg.messages.forEach(function (m, i) {
       const isLast = i === cfg.messages.length - 1;
@@ -183,8 +202,10 @@
         // LLM spricht gerade -> Blase mit "spricht gerade"-Balken statt Punkt,
         // Text SYNCHRON zum Ton (nur bereits gesprochene Zeichen).
         chat.insertAdjacentHTML("beforeend",
-          '<div class="bqspk"><span class="speakbars"><i></i><i></i><i></i><i></i></span>' +
+          '<div class="bqspk">' +
+          '<span class="speakbars"><i></i><i></i><i></i><i></i></span>' +
           '<span class="bq" style="font-size:16px"></span></div>');
+        chat.querySelector(".bqspk:last-child").dataset.msg = m.text;
         var shown = (cfg.spokenChars == null) ? m.text : m.text.slice(0, cfg.spokenChars);
         var el = chat.querySelector(".bqspk:last-child .bq");
         el.textContent = shown;
