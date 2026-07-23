@@ -316,8 +316,7 @@ function playResponseAudio(base64Audio, responseText) {
     }
     window.CONVERSATION.clinicianSpeaking = false;
     window.CONVERSATION.liveTranscript = "";
-    // Avoid a second visual update at the end of playback.
-    // The currently visible text remains as last rendered during speaking.
+    render();
     URL.revokeObjectURL(url);
   });
 
