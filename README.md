@@ -130,40 +130,40 @@ No Ollama installation is needed when using MiniMax — the LLM runs in the clou
 
 #### Basic Usage
 ```bash
-python app.py
+python backend/app.py
 ```
 
 #### With Voice Cloning
 Record a 10-30 second audio sample of the voice you want to clone, then:
 ```bash
-python app.py --voice path/to/voice_sample.wav
+python backend/app.py --voice path/to/voice_sample.wav
 ```
 
 #### With Custom Settings
 ```bash
 # Adjust emotion and pacing
-python app.py --exaggeration 0.7 --cfg-weight 0.3
+python backend/app.py --exaggeration 0.7 --cfg-weight 0.3
 
 # Use a different LLM model
-python app.py --model codellama
+python backend/app.py --model codellama
 
 # Save generated voice samples
-python app.py --save-voice
+python backend/app.py --save-voice
 ```
 
 #### With MiniMax Cloud LLM
 ```bash
 # Use MiniMax as the LLM provider (requires MINIMAX_API_KEY env var)
-python app.py --provider minimax
+python backend/app.py --provider minimax
 
 # Use a specific MiniMax model with custom temperature
-python app.py --provider minimax --model MiniMax-M2.7 --temperature 0.8
+python backend/app.py --provider minimax --model MiniMax-M2.7 --temperature 0.8
 
 # Pass API key directly
-python app.py --provider minimax --api-key your-api-key-here
+python backend/app.py --provider minimax --api-key your-api-key-here
 
 # Combine with voice cloning and emotion control
-python app.py --provider minimax --voice path/to/voice.wav --exaggeration 0.7
+python backend/app.py --provider minimax --voice path/to/voice.wav --exaggeration 0.7
 ```
 
 ### Configuration Options

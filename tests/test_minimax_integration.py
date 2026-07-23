@@ -8,8 +8,8 @@ import os
 import sys
 import unittest
 
-# Add parent directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# Add the backend/ folder to the path so we can import llm_provider directly.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 MINIMAX_API_KEY = os.environ.get("MINIMAX_API_KEY")
 SKIP_REASON = "MINIMAX_API_KEY not set — skipping MiniMax integration tests"
@@ -20,27 +20,9 @@ class TestMiniMaxIntegration(unittest.TestCase):
     """Integration tests that call the real MiniMax API."""
 
     def _import_create_llm(self):
-        from unittest.mock import patch, MagicMock
-
-        mock_nltk = MagicMock()
-        mock_nltk.__spec__ = MagicMock()  # transformers checks __spec__ to detect nltk
-
-        mock_modules = {
-            "whisper": MagicMock(),
-            "sounddevice": MagicMock(),
-            "numpy": MagicMock(),
-            "torch": MagicMock(),
-            "torchaudio": MagicMock(),
-            "nltk": mock_nltk,
-            "chatterbox": MagicMock(),
-            "chatterbox.tts": MagicMock(),
-            "tts": MagicMock(),
-        }
-        with patch.dict("sys.modules", mock_modules):
-            with patch("sys.argv", ["app.py"]):
-                if "app" in sys.modules:
-                    del sys.modules["app"]
-                from app import create_llm
+        if "llm_provider" in sys.modules:
+            del sys.modules["llm_provider"]
+        from llm_provider import create_llm
         return create_llm
 
     def test_minimax_basic_response(self):

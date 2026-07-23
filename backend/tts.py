@@ -1,3 +1,17 @@
+"""
+TEXT-TO-SPEECH (TTS) ENGINE
+============================
+This file turns written text into spoken audio (a voice reading the text out loud).
+It is only used for the "voice" condition of the study. In the "text" condition,
+this file is never called, so no voice model needs to be loaded.
+
+It wraps a third-party voice model called "ChatterBox". You should not need to
+change anything in this file for normal study configuration changes (wording,
+question order, etc.) — those live in the study_content/ folder instead.
+
+Used by: backend/speech.py (which connects recording, transcription, and speaking
+together for the voice condition).
+"""
 import nltk
 import torch
 import warnings

@@ -1,0 +1,11 @@
+# STUDY SETTINGS
+# ===============
+# General knobs for running the study. Edit the values on the right of each
+# ":" — leave the setting names (on the left) as they are.
+#
+# More settings will be added here in later steps (e.g. Prolific redirect
+# URLs, welcome/exit screen text) as those parts of the plan are built.
+
+# The language the interview is conducted in.
+# Supported for now: "de" (German) or "en" (English).
+language: de
