@@ -147,6 +147,12 @@ def process_answer(answer_text: str) -> str:
     )
     print(f"[interview] feedback={feedback!r} followup={followup!r}")
 
+    if followup:
+        interview.start_followup(followup)
+        return f"{feedback} {followup}".strip()
+
+    next_question = interview.advance()
+    return _combine_with_next(feedback, next_question)
 
 @app.route("/api/interview/start", methods=["GET"])
 def interview_start_endpoint():
@@ -182,6 +188,7 @@ def chat_endpoint():
         return jsonify({"error": "Kein Text eingegeben."}), 400
 
     response = process_answer(answer_text)
+    print(f"[interview] final response sent to browser: {response!r}")
     return jsonify({"response": response})
 
 
@@ -214,6 +221,7 @@ def chat_audio_endpoint():
     )
     audio_base64 = speech.encode_wav_base64(sample_rate, audio_array)
 
+    print(f"[interview] final response sent to browser: {response!r}")
     return jsonify({
         "transcript": transcript,
         "response": response,
