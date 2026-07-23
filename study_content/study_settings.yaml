@@ -9,3 +9,7 @@
 # The language the interview is conducted in.
 # Supported for now: "de" (German) or "en" (English).
 language: de
+
+# Which interview guide file (from study_content/interviews/) is currently
+# active. Just the file name, not the full path.
+interview_guide: depression_scid_example.yaml

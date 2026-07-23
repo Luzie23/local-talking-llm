@@ -1,10 +1,15 @@
 # interviews/
 
-This folder will hold the interview guides — one YAML file per guide (for
+This folder holds the interview guides — one YAML file per guide (for
 example a depression screening guide, or a general mental-health guide).
-Each file will list the fixed questions in order, exactly as the assistant
-should present them to the participant.
+Each file lists the fixed questions in order, exactly as the assistant
+presents them to the participant, plus the framing message shown at the
+start and the closing message shown at the end.
 
-This folder is currently empty. It will be filled in the next planned step
-("interview guide from files") — see the project plan for details. Nothing
-here yet is wired up to the running assistant.
+`depression_scid_example.yaml` is a working example — copy it and edit the
+copy to create your own guide. See the comments at the top of that file for
+what each field means.
+
+Which guide is currently active is set in `study_content/study_settings.yaml`
+under `interview_guide`.
+

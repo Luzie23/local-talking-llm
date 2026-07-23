@@ -10,11 +10,13 @@ deals with text in, text out. This is on purpose: the same code here works
 whether the participant is typing or talking, since by the time text reaches
 this file, speech has already been converted to text (see backend/stt.py).
 
-IMPORTANT FOR THE STUDY: Right now this file lets the model chat freely.
-Later steps (see the project plan, Step 2 "Interview guide from files" and
-Step 3 "Constrain the LLM") will change this so the model only asks the
-fixed, pre-written questions from study_content/interviews/ instead of
-inventing its own — this file is where that behavior will be wired in.
+IMPORTANT FOR THE STUDY: This file no longer lets the model chat freely.
+As of Step 2 of the project plan ("Interview guide from files"), the model
+only ever generates a short acknowledgement of the participant's answer —
+the actual questions always come verbatim from
+study_content/interviews/*.yaml (see backend/interview_guide.py). Step 3
+("Constrain the LLM") will replace the current placeholder instructions
+below with the real, carefully worded behavior rules.
 
 Used by: backend/app.py (the Flask web routes) and the terminal mode.
 """
@@ -72,12 +74,20 @@ def create_llm(provider: str, model: str | None = None, api_key: str | None = No
 
 # The instructions given to the model before every conversation.
 # NOTE: this is a placeholder for now. Step 3 of the project plan ("Constrain
-# the LLM") will replace this with the real interview behavior rules (only
-# ask the pre-written question, give a short neutral reply, no diagnoses).
+# the LLM") will replace this with the real interview behavior rules, chosen
+# per interview guide via its "behavior_profile" field. For now, one fixed,
+# simple rule set is used for every guide.
 prompt_template = ChatPromptTemplate.from_messages([
-    ("system", "You are a helpful and friendly AI assistant. Always answer in the same language as the user's message. Keep replies polite, concise, and under 20 words."),
+    ("system", (
+        "You are conducting a structured research interview. The participant "
+        "was just asked a fixed, pre-written question and has now answered it. "
+        "Give a short (max. about 15 words), neutral, empathetic acknowledgement "
+        "of their answer. Do not ask a question of your own. Do not give a "
+        "diagnosis or any clinical assessment. Always reply in the same "
+        "language the participant used."
+    )),
     MessagesPlaceholder(variable_name="history"),
-    ("human", "{input}")
+    ("human", "I was asked: \"{question}\"\nI answered: \"{answer}\""),
 ])
 
 # Keeps track of each participant's conversation history in memory, so the
@@ -103,7 +113,7 @@ def build_chain(llm):
     return RunnableWithMessageHistory(
         chain,
         get_session_history,
-        input_messages_key="input",
+        input_messages_key="answer",
         history_messages_key="history",
     )
 
@@ -128,23 +138,30 @@ def normalize_model_response(text: str) -> str:
     return normalized.strip()
 
 
-def get_llm_response(chain_with_history, text: str) -> str:
+def get_feedback_response(chain_with_history, question_text: str, answer_text: str) -> str:
     """
-    Send the participant's message to the model and get back a cleaned-up reply.
+    Ask the model for a short, neutral acknowledgement of the participant's
+    answer to a fixed question. This does NOT generate the next question —
+    that always comes verbatim from the interview guide (see
+    backend/interview_guide.py); this function only produces the brief
+    reaction in between two fixed questions.
 
     Args:
         chain_with_history: The pipeline created by build_chain().
-        text: What the participant said or typed.
+        question_text: The fixed question the participant was just asked.
+        answer_text: What the participant said or typed in response.
 
     Returns:
-        The model's reply, cleaned up and ready to display or speak aloud.
+        The model's short feedback, cleaned up and ready to display or
+        speak aloud, with the next fixed question appended afterwards by
+        the caller (see backend/app.py).
     """
     # A single fixed session id is used because, per the project's core
     # principles, only one participant runs through the study at a time.
     session_id = "voice_assistant_session"
 
     response = chain_with_history.invoke(
-        {"input": text},
+        {"question": question_text, "answer": answer_text},
         config={"session_id": session_id}
     )
     return normalize_model_response(response)

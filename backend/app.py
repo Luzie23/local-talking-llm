@@ -30,7 +30,15 @@ from flask import Flask, jsonify, request
 import llm_provider
 import speech
 import stt
+import study_settings
+from interview_guide import InterviewGuide
 from tts import TextToSpeechService
+
+# --- Load study settings (see study_content/study_settings.yaml) ---------
+# Loaded before the command-line options below, so that e.g. --language has
+# a sensible default coming from the researcher-editable settings file
+# instead of being hardcoded here.
+_settings = study_settings.load_study_settings()
 
 # --- Command-line options -------------------------------------------------
 parser = argparse.ArgumentParser(description="Local Voice Assistant with ChatterBox TTS")
@@ -44,7 +52,8 @@ parser.add_argument("--api-key", type=str, default=None, help="API key for cloud
 parser.add_argument("--temperature", type=float, default=0.7, help="LLM temperature (default: 0.7)")
 parser.add_argument("--save-voice", action="store_true", help="Save generated voice samples")
 parser.add_argument("--web", action="store_true", help="Run the app as a Flask web server instead of terminal mode")
-parser.add_argument("--language", type=str, default="de", help="Language code for speech transcription (default: de)")
+parser.add_argument("--language", type=str, default=_settings.get("language", "de"),
+                    help="Language code for speech transcription (default: from study_settings.yaml, else 'de')")
 args = parser.parse_args()
 
 # --- Set up the language model and the voice engine -----------------------
@@ -56,6 +65,13 @@ llm = llm_provider.create_llm(
 )
 chain_with_history = llm_provider.build_chain(llm)
 tts = TextToSpeechService()
+
+# --- Load the active interview guide (see study_content/interviews/) ------
+# Which guide file is active is controlled by study_content/study_settings.yaml,
+# not by anything here — the fallback name below is only used if that
+# setting is missing entirely.
+_guide_filename = _settings.get("interview_guide", "depression_scid_example.yaml")
+interview = InterviewGuide(_guide_filename)
 
 # --- Web server (used with --web) ------------------------------------------
 # The frontend/ folder (the web page the participant sees) lives one level up
@@ -70,20 +86,59 @@ def index():
     return app.send_static_file("index.html")
 
 
+def _advance_and_combine(feedback: str) -> str:
+    """
+    After giving feedback on the answer to the current question, move the
+    guide forward one step and combine the feedback with whatever comes
+    next: either the next fixed question, or the closing message if the
+    guide is now finished.
+    """
+    next_question = interview.advance()
+    if next_question is not None:
+        return f"{feedback} {next_question['text']}".strip()
+    return f"{feedback} {interview.closing_message}".strip()
+
+
+@app.route("/api/interview/start", methods=["GET"])
+def interview_start_endpoint():
+    """
+    Called once when the participant opens the page: returns the framing
+    message and the first fixed question, verbatim from the active
+    interview guide. No LLM call is involved — there is nothing to
+    generate yet, only fixed text to present.
+    Returns JSON: {"message": "..."}.
+    """
+    interview.reset()
+    first_question = interview.current_question()
+    if first_question is None:
+        # An empty guide (e.g. a guide file with no questions yet).
+        message = interview.framing_message
+    else:
+        message = f"{interview.framing_message} {first_question['text']}".strip()
+    return jsonify({"message": message})
+
+
 @app.route("/api/chat", methods=["POST"])
 def chat_endpoint():
     """
-    Text-condition endpoint: the participant typed a message in the browser.
+    Text-condition endpoint: the participant typed an answer in the browser.
     Expects JSON: {"text": "..."}.
-    Returns JSON: {"response": "..."}.
+    Returns JSON: {"response": "..."} — the LLM's short feedback followed by
+    the next fixed question (or the closing message if the guide is done).
     """
     data = request.get_json(silent=True) or {}
-    text = (data.get("text") or "").strip()
-    if not text:
+    answer_text = (data.get("text") or "").strip()
+    if not answer_text:
         return jsonify({"error": "Kein Text eingegeben."}), 400
 
-    response = llm_provider.get_llm_response(chain_with_history, text)
-    return jsonify({"response": response})
+    question = interview.current_question()
+    if question is None:
+        # The guide was already finished; nothing left to ask.
+        return jsonify({"response": interview.closing_message})
+
+    feedback = llm_provider.get_feedback_response(chain_with_history, question["text"], answer_text)
+    combined = _advance_and_combine(feedback)
+    return jsonify({"response": combined})
 
 
 @app.route("/api/chat/audio", methods=["POST"])
@@ -91,7 +146,9 @@ def chat_audio_endpoint():
     """
     Voice-condition endpoint: the participant spoke into the browser's microphone.
     Expects multipart/form-data with an "audio" file and optional "language" field.
-    Returns JSON: {"transcript": "...", "response": "...", "audio": "...base64..."}.
+    Returns JSON: {"transcript": "...", "response": "...", "audio": "...base64..."}
+    — "response" is the LLM's short feedback followed by the next fixed
+    question (or the closing message if the guide is done).
     """
     audio_file = request.files.get("audio")
     if not audio_file:
@@ -104,7 +161,13 @@ def chat_audio_endpoint():
         return jsonify({"error": f"Unable to decode audio: {e}"}), 400
 
     transcript = stt.transcribe(audio_np, language=language)
-    response = llm_provider.get_llm_response(chain_with_history, transcript)
+
+    question = interview.current_question()
+    if question is None:
+        response = interview.closing_message
+    else:
+        feedback = llm_provider.get_feedback_response(chain_with_history, question["text"], transcript)
+        response = _advance_and_combine(feedback)
 
     sample_rate, audio_array = tts.long_form_synthesize(
         response,
@@ -148,10 +211,49 @@ def run_terminal_mode():
         os.makedirs("voices", exist_ok=True)
 
     response_count = 0
+    interview.reset()
+
+    def speak(text: str):
+        """Synthesize and play one piece of text out loud, honoring --save-voice."""
+        nonlocal response_count
+        dynamic_exaggeration = speech.analyze_emotion(text)
+        # More emotional text is spoken with a slightly lower cfg_weight,
+        # which makes the delivery a bit more expressive/less flat.
+        dynamic_cfg = args.cfg_weight * 0.8 if dynamic_exaggeration > 0.6 else args.cfg_weight
+
+        sample_rate, audio_array = tts.long_form_synthesize(
+            text,
+            audio_prompt_path=args.voice,
+            exaggeration=dynamic_exaggeration,
+            cfg_weight=dynamic_cfg,
+        )
+        print(f"(Emotion: {dynamic_exaggeration:.2f}, CFG: {dynamic_cfg:.2f})")
+
+        if args.save_voice:
+            response_count += 1
+            filename = f"voices/response_{response_count:03d}.wav"
+            tts.save_voice_sample(text, filename, args.voice)
+            print(f"Voice saved to: {filename}")
+
+        speech.play_audio(sample_rate, audio_array)
 
     try:
-        while True:
-            input("\U0001F3A4 Press Enter to start recording, then press Enter again to stop.")
+        # The framing message and the first fixed question open the
+        # interview — presented verbatim, no LLM call needed.
+        first_question = interview.current_question()
+        if first_question is None:
+            print(f"Assistant: {interview.framing_message}")
+            speak(interview.framing_message)
+            print("(This interview guide has no questions yet.)")
+            return
+        opening = f"{interview.framing_message} {first_question['text']}".strip()
+        print(f"Assistant: {opening}")
+        speak(opening)
+
+        while not interview.is_finished():
+            current_question = interview.current_question()
+
+            input("\U0001F3A4 Press Enter to start recording your answer, then press Enter again to stop.")
 
             data_queue: Queue = Queue()
             stop_event = threading.Event()
@@ -173,34 +275,20 @@ def run_terminal_mode():
                 continue
 
             print("Transcribing...")
-            text = stt.transcribe(audio_np, language=selected_language)
-            print(f"You: {text}")
+            answer_text = stt.transcribe(audio_np, language=selected_language)
+            print(f"You: {answer_text}")
 
             print("Generating response...")
-            response = llm_provider.get_llm_response(chain_with_history, text)
+            feedback = llm_provider.get_feedback_response(chain_with_history, current_question["text"], answer_text)
 
-            dynamic_exaggeration = speech.analyze_emotion(response)
-            # More emotional replies are spoken with a slightly lower cfg_weight,
-            # which makes the delivery a bit more expressive/less flat.
-            dynamic_cfg = args.cfg_weight * 0.8 if dynamic_exaggeration > 0.6 else args.cfg_weight
+            next_question = interview.advance()
+            if next_question is not None:
+                combined = f"{feedback} {next_question['text']}".strip()
+            else:
+                combined = f"{feedback} {interview.closing_message}".strip()
 
-            sample_rate, audio_array = tts.long_form_synthesize(
-                response,
-                audio_prompt_path=args.voice,
-                exaggeration=dynamic_exaggeration,
-                cfg_weight=dynamic_cfg,
-            )
-
-            print(f"Assistant: {response}")
-            print(f"(Emotion: {dynamic_exaggeration:.2f}, CFG: {dynamic_cfg:.2f})")
-
-            if args.save_voice:
-                response_count += 1
-                filename = f"voices/response_{response_count:03d}.wav"
-                tts.save_voice_sample(response, filename, args.voice)
-                print(f"Voice saved to: {filename}")
-
-            speech.play_audio(sample_rate, audio_array)
+            print(f"Assistant: {combined}")
+            speak(combined)
 
     except KeyboardInterrupt:
         print("\nExiting...")

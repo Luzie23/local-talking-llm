@@ -36,10 +36,13 @@ window.CONVERSATION = {
   /* --- GESPRÄCHSVERLAUF --------------------------------------------------- */
   /* role: "clinician" = Frage/Antwort des LLM, "user" = Antwort der Person   */
   /* Dein System hängt hier einfach neue Einträge an.                         */
+  /* Die eigentliche Eröffnungsnachricht (Framing + erste Frage) wird beim    */
+  /* Laden der Seite live vom Server geholt (siehe ganz unten in dieser       */
+  /* Datei) — sie kommt aus study_content/interviews/*.yaml, nicht von hier.  */
+  /* Dieser Platzhalter ist nur sichtbar, solange die Verbindung aufgebaut    */
+  /* wird bzw. falls kein Server erreichbar ist.                             */
   messages: [
-    { role: "clinician", text: "Danke, dass Sie sich heute Zeit nehmen. Zu Beginn: Wie würden Sie Ihre Stimmung in den letzten zwei Wochen beschreiben?" },
-    { role: "user",      text: "Ehrlich gesagt ziemlich flach. Das Aufstehen war der schwierigste Teil." },
-    { role: "clinician", text: "Das klingt belastend. Wenn Sie sagen flach – kommt und geht das, oder ist es die meiste Zeit des Tages da?" }
+    { role: "clinician", text: "(Verbindung zum Server wird hergestellt …)" }
   ],
 
   /* --- Zeigt die Klinikerin gerade "tippt …" an? (Denk-Punkte, Text) ----- */
@@ -406,3 +409,35 @@ function setupTextInput() {
   });
 }
 
+
+/* =============================================================================
+   INTERVIEW-START
+   -----------------------------------------------------------------------------
+   Beim Laden der Seite holt sich das Interface einmalig die Eröffnungsnachricht
+   (Framing-Text + erste Frage) vom Server. Diese kommt dort aus der aktiven
+   Leitfaden-Datei in study_content/interviews/ — hier im Frontend steht dazu
+   absichtlich kein Inhalt, nur die Abfrage.
+============================================================================= */
+async function loadInterviewStart() {
+  try {
+    const res = await fetch("/api/interview/start");
+    if (!res.ok) {
+      throw new Error(`Server antwortete mit Status ${res.status}`);
+    }
+    const data = await res.json();
+    window.CONVERSATION.messages = [{ role: "clinician", text: data.message }];
+  } catch (error) {
+    window.CONVERSATION.messages = [{
+      role: "clinician",
+      text: `Verbindung zum Server fehlgeschlagen: ${error.message}`,
+    }];
+  } finally {
+    if (typeof window.render === "function") {
+      window.render();
+    }
+  }
+}
+
+// Wartet, bis die Seite (inkl. der Render-Logik in index.html) fertig geladen
+// ist, damit window.render() beim Aufruf schon existiert.
+document.addEventListener("DOMContentLoaded", loadInterviewStart);

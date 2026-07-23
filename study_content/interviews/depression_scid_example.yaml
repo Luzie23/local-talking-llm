@@ -1,0 +1,49 @@
+# INTERVIEW GUIDE — EXAMPLE
+# ============================
+# This is a working example of the interview guide format. Copy this file
+# and edit it to create your own guide — you never need to touch any code
+# to change wording, order, or add/remove questions.
+#
+# Field reference:
+#   guide_id          - short internal identifier for this guide (letters,
+#                        numbers, underscores; used in stored data later)
+#   title             - human-readable name, shown nowhere to participants,
+#                        just for your own orientation
+#   behavior_profile  - NOT YET ACTIVE. Will let you choose, per guide, how
+#                        strictly the assistant behaves (Step 3 of the
+#                        project plan). Leave the placeholder value for now.
+#   framing_message   - the very first thing the participant sees/hears,
+#                        before any question. Explains what this is.
+#   closing_message   - shown after the last question has been answered.
+#   sections          - one or more thematic groups of questions. If you
+#                        don't need groups, use a single section.
+#   questions         - each needs a unique "id" (for the stored data) and
+#                        the exact "text" to be presented, verbatim.
+
+guide_id: depression_scid_example
+title: "Example: SCID Depression Module (shortened, for testing)"
+behavior_profile: strict_clinical
+
+framing_message: >
+  Guten Tag und vielen Dank, dass Sie sich Zeit nehmen. Ich bin ein
+  KI-gestütztes System und werde Ihnen im Rahmen dieser Studie einige
+  Fragen zu Ihrem Befinden in den letzten zwei Wochen stellen. Es gibt
+  keine richtigen oder falschen Antworten — antworten Sie einfach so,
+  wie es für Sie zutrifft.
+
+closing_message: >
+  Vielen Dank, das war bereits die letzte Frage. Der Interviewteil ist
+  damit abgeschlossen.
+
+sections:
+  - section_title: "Einstieg"
+    questions:
+      - id: dep_01
+        text: "Wie würden Sie Ihre Stimmung in den letzten zwei Wochen beschreiben?"
+      - id: dep_02
+        text: "Gab es Zeiten, in denen Sie sich über nichts mehr freuen konnten?"
+
+  - section_title: "Schlaf"
+    questions:
+      - id: sleep_01
+        text: "Wie war Ihr Schlaf in den letzten zwei Wochen?"
