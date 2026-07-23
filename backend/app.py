@@ -122,30 +122,30 @@ def process_answer(answer_text: str) -> str:
          used for it yet.
     """
     if interview.is_awaiting_followup_answer():
+        print(f"[interview] answering follow-up: \"{interview.pending_followup_text}\"")
         feedback, _ = llm_provider.get_feedback_and_followup(
             chain_with_history, profile, interview.pending_followup_text, answer_text,
             followup_allowed=False, language_code=args.language,
         )
+        print(f"[interview] feedback={feedback!r}")
         next_question = interview.advance()
         return _combine_with_next(feedback, next_question)
 
     question = interview.current_question()
     if question is None:
-        # The guide was already finished; nothing left to ask.
         return interview.closing_message
 
     followup_allowed = question["allow_followup"] and not interview.followup_already_used()
+    print(
+        f"[interview] question={question['id']!r} "
+        f"allow_followup(guide)={question['allow_followup']} "
+        f"followup_allowed(this turn)={followup_allowed}"
+    )
     feedback, followup = llm_provider.get_feedback_and_followup(
         chain_with_history, profile, question["text"], answer_text,
         followup_allowed=followup_allowed, language_code=args.language,
     )
-
-    if followup:
-        interview.start_followup(followup)
-        return f"{feedback} {followup}".strip()
-
-    next_question = interview.advance()
-    return _combine_with_next(feedback, next_question)
+    print(f"[interview] feedback={feedback!r} followup={followup!r}")
 
 
 @app.route("/api/interview/start", methods=["GET"])
