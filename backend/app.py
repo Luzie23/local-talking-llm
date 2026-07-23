@@ -31,6 +31,7 @@ import llm_provider
 import speech
 import stt
 import study_settings
+from behavior_profiles import load_behavior_profile
 from interview_guide import InterviewGuide
 from tts import TextToSpeechService
 
@@ -73,6 +74,12 @@ tts = TextToSpeechService()
 _guide_filename = _settings.get("interview_guide", "depression_scid_example.yaml")
 interview = InterviewGuide(_guide_filename)
 
+# --- Load the behavior profile the guide asks for (see study_content/prompts/) ---
+# This decides both the tone/strictness instructions and how the next fixed
+# question is delivered (verbatim vs. naturally reworded) — see Step 3 of
+# the project plan and backend/behavior_profiles.py.
+profile = load_behavior_profile(interview.behavior_profile)
+
 # --- Web server (used with --web) ------------------------------------------
 # The frontend/ folder (the web page the participant sees) lives one level up
 # from this file, so we point Flask there explicitly.
@@ -86,17 +93,59 @@ def index():
     return app.send_static_file("index.html")
 
 
-def _advance_and_combine(feedback: str) -> str:
+def _combine_with_next(feedback: str, next_question: dict | None) -> str:
     """
-    After giving feedback on the answer to the current question, move the
-    guide forward one step and combine the feedback with whatever comes
-    next: either the next fixed question, or the closing message if the
-    guide is now finished.
+    Combine a feedback sentence with whatever comes next: the next fixed
+    question (delivered according to the active profile's question_delivery
+    style), or the closing message if the guide is now finished.
     """
+    if next_question is None:
+        return f"{feedback} {interview.closing_message}".strip()
+    if profile.question_delivery == "natural_transition":
+        return llm_provider.get_natural_transition(llm, feedback, next_question["text"])
+    return f"{feedback} {next_question['text']}".strip()
+
+
+def process_answer(answer_text: str) -> str:
+    """
+    The core interview turn: given what the participant just said, decide
+    what the assistant says next, and advance the interview guide's state
+    accordingly. Shared by both web routes and the terminal mode, so the
+    behavior is identical regardless of modality.
+
+    Two cases:
+      1. The participant is answering a follow-up that was asked last turn
+         (interview.is_awaiting_followup_answer()) — no further follow-up
+         is allowed here (capped at one per question), then the guide moves on.
+      2. The participant is answering the current fixed question — a
+         follow-up may be offered if this item allows it and none has been
+         used for it yet.
+    """
+    if interview.is_awaiting_followup_answer():
+        feedback, _ = llm_provider.get_feedback_and_followup(
+            chain_with_history, profile, interview.pending_followup_text, answer_text,
+            followup_allowed=False,
+        )
+        next_question = interview.advance()
+        return _combine_with_next(feedback, next_question)
+
+    question = interview.current_question()
+    if question is None:
+        # The guide was already finished; nothing left to ask.
+        return interview.closing_message
+
+    followup_allowed = question["allow_followup"] and not interview.followup_already_used()
+    feedback, followup = llm_provider.get_feedback_and_followup(
+        chain_with_history, profile, question["text"], answer_text,
+        followup_allowed=followup_allowed,
+    )
+
+    if followup:
+        interview.start_followup(followup)
+        return f"{feedback} {followup}".strip()
+
     next_question = interview.advance()
-    if next_question is not None:
-        return f"{feedback} {next_question['text']}".strip()
-    return f"{feedback} {interview.closing_message}".strip()
+    return _combine_with_next(feedback, next_question)
 
 
 @app.route("/api/interview/start", methods=["GET"])
@@ -123,22 +172,17 @@ def chat_endpoint():
     """
     Text-condition endpoint: the participant typed an answer in the browser.
     Expects JSON: {"text": "..."}.
-    Returns JSON: {"response": "..."} — the LLM's short feedback followed by
-    the next fixed question (or the closing message if the guide is done).
+    Returns JSON: {"response": "..."} — see process_answer() for what this
+    might contain (feedback + next question, feedback + a follow-up, or the
+    closing message).
     """
     data = request.get_json(silent=True) or {}
     answer_text = (data.get("text") or "").strip()
     if not answer_text:
         return jsonify({"error": "Kein Text eingegeben."}), 400
 
-    question = interview.current_question()
-    if question is None:
-        # The guide was already finished; nothing left to ask.
-        return jsonify({"response": interview.closing_message})
-
-    feedback = llm_provider.get_feedback_response(chain_with_history, question["text"], answer_text)
-    combined = _advance_and_combine(feedback)
-    return jsonify({"response": combined})
+    response = process_answer(answer_text)
+    return jsonify({"response": response})
 
 
 @app.route("/api/chat/audio", methods=["POST"])
@@ -147,8 +191,7 @@ def chat_audio_endpoint():
     Voice-condition endpoint: the participant spoke into the browser's microphone.
     Expects multipart/form-data with an "audio" file and optional "language" field.
     Returns JSON: {"transcript": "...", "response": "...", "audio": "...base64..."}
-    — "response" is the LLM's short feedback followed by the next fixed
-    question (or the closing message if the guide is done).
+    — see process_answer() for what "response" might contain.
     """
     audio_file = request.files.get("audio")
     if not audio_file:
@@ -161,13 +204,7 @@ def chat_audio_endpoint():
         return jsonify({"error": f"Unable to decode audio: {e}"}), 400
 
     transcript = stt.transcribe(audio_np, language=language)
-
-    question = interview.current_question()
-    if question is None:
-        response = interview.closing_message
-    else:
-        feedback = llm_provider.get_feedback_response(chain_with_history, question["text"], transcript)
-        response = _advance_and_combine(feedback)
+    response = process_answer(transcript)
 
     sample_rate, audio_array = tts.long_form_synthesize(
         response,
@@ -251,8 +288,6 @@ def run_terminal_mode():
         speak(opening)
 
         while not interview.is_finished():
-            current_question = interview.current_question()
-
             input("\U0001F3A4 Press Enter to start recording your answer, then press Enter again to stop.")
 
             data_queue: Queue = Queue()
@@ -279,13 +314,7 @@ def run_terminal_mode():
             print(f"You: {answer_text}")
 
             print("Generating response...")
-            feedback = llm_provider.get_feedback_response(chain_with_history, current_question["text"], answer_text)
-
-            next_question = interview.advance()
-            if next_question is not None:
-                combined = f"{feedback} {next_question['text']}".strip()
-            else:
-                combined = f"{feedback} {interview.closing_message}".strip()
+            combined = process_answer(answer_text)
 
             print(f"Assistant: {combined}")
             speak(combined)

@@ -14,9 +14,13 @@ IMPORTANT FOR THE STUDY: This file no longer lets the model chat freely.
 As of Step 2 of the project plan ("Interview guide from files"), the model
 only ever generates a short acknowledgement of the participant's answer —
 the actual questions always come verbatim from
-study_content/interviews/*.yaml (see backend/interview_guide.py). Step 3
-("Constrain the LLM") will replace the current placeholder instructions
-below with the real, carefully worded behavior rules.
+study_content/interviews/*.yaml (see backend/interview_guide.py). As of
+Step 3 ("Constrain the LLM"), the model's actual instructions come from a
+researcher-editable behavior profile (see backend/behavior_profiles.py and
+study_content/prompts/), and the model replies in a structured
+"FEEDBACK: ... / FOLLOWUP: ..." format so the code can reliably tell
+whether a follow-up question was asked (see parse_feedback_and_followup()
+below).
 
 Used by: backend/app.py (the Flask web routes) and the terminal mode.
 """
@@ -72,22 +76,38 @@ def create_llm(provider: str, model: str | None = None, api_key: str | None = No
         raise ValueError(f"Unknown provider: {provider}. Supported: ollama, minimax")
 
 
-# The instructions given to the model before every conversation.
-# NOTE: this is a placeholder for now. Step 3 of the project plan ("Constrain
-# the LLM") will replace this with the real interview behavior rules, chosen
-# per interview guide via its "behavior_profile" field. For now, one fixed,
-# simple rule set is used for every guide.
+# The feedback prompt. Its actual behavior instructions ({instructions}) come
+# from a researcher-editable behavior profile (see backend/behavior_profiles.py)
+# rather than being fixed here — this template only supplies the *shape* of
+# the conversation, not the tone/strictness rules themselves.
 prompt_template = ChatPromptTemplate.from_messages([
-    ("system", (
-        "You are conducting a structured research interview. The participant "
-        "was just asked a fixed, pre-written question and has now answered it. "
-        "Give a short (max. about 15 words), neutral, empathetic acknowledgement "
-        "of their answer. Do not ask a question of your own. Do not give a "
-        "diagnosis or any clinical assessment. Always reply in the same "
-        "language the participant used."
-    )),
+    ("system", "{instructions}"),
     MessagesPlaceholder(variable_name="history"),
-    ("human", "I was asked: \"{question}\"\nI answered: \"{answer}\""),
+    ("human", (
+        "I was asked: \"{question}\"\n"
+        "I answered: \"{answer}\"\n"
+        "(Follow-up for this item: {followup_status}.)"
+    )),
+])
+
+# A second, independent prompt used only for behavior profiles whose
+# question_delivery is "natural_transition" (see profiles.yaml): it takes an
+# already-generated feedback sentence and the next fixed question, and asks
+# the model to smoothly reword the transition between them — without
+# changing what is actually being asked. This is intentionally a separate,
+# stateless call (no conversation history) since it is a wording task, not
+# part of the interview itself.
+transition_prompt = ChatPromptTemplate.from_messages([
+    ("system", (
+        "You will be given a short acknowledgement sentence and the exact "
+        "next question that must be asked. Rewrite them together as one "
+        "smooth, natural-sounding message. You MUST preserve the "
+        "acknowledgement's meaning and the question's exact meaning and "
+        "everything it asks for — only adjust the phrasing/wording for a "
+        "natural transition, never add, remove, or change what is being "
+        "asked. Reply with only the combined message, nothing else."
+    )),
+    ("human", "Acknowledgement: \"{feedback}\"\nNext question (preserve meaning exactly): \"{next_question}\""),
 ])
 
 # Keeps track of each participant's conversation history in memory, so the
@@ -138,30 +158,131 @@ def normalize_model_response(text: str) -> str:
     return normalized.strip()
 
 
-def get_feedback_response(chain_with_history, question_text: str, answer_text: str) -> str:
+def parse_feedback_and_followup(raw_response: str) -> tuple[str, str | None]:
+    """
+    Parse the model's structured "FEEDBACK: ...\\nFOLLOWUP: ..." response.
+
+    This is the mechanism that lets the rest of the code reliably know
+    whether the model asked a follow-up question, instead of guessing from
+    free-form text. If the model doesn't follow the format at all (models
+    occasionally deviate), the whole response is treated as the feedback
+    and no follow-up is assumed — fails safe, rather than crashing.
+
+    EXTENDING THIS: if you need something richer than a yes/no follow-up
+    (e.g. checking whether an open-ended answer actually covered several
+    required points, and asking more than one follow-up until it does),
+    this function — together with get_feedback_and_followup() below and
+    the follow-up state in backend/interview_guide.py — is the place to
+    change. A plain-text line format like this one gets unwieldy once you
+    need to return structured data (e.g. a list of covered/missing points);
+    at that point, switching this function to parse JSON (or using
+    LangChain's structured output / a Pydantic schema instead of a raw
+    prompt) is likely more robust than adding more regular expressions here.
+
+    Args:
+        raw_response: The model's raw text output.
+
+    Returns:
+        A tuple (feedback_text, followup_text). followup_text is None if
+        the model wrote "FOLLOWUP: NONE", left it empty, or the FOLLOWUP
+        line is missing entirely.
+    """
+    text = normalize_model_response(raw_response)
+
+    feedback_match = re.search(r'FEEDBACK:\s*(.*?)(?:\n\s*FOLLOWUP:|\Z)', text, re.DOTALL | re.IGNORECASE)
+    followup_match = re.search(r'FOLLOWUP:\s*(.*)', text, re.DOTALL | re.IGNORECASE)
+
+    if feedback_match:
+        feedback = feedback_match.group(1).strip()
+    else:
+        # The model didn't use the expected format — fail safe by treating
+        # everything it said as the feedback, and assume no follow-up.
+        feedback = text
+
+    followup_raw = followup_match.group(1).strip() if followup_match else ""
+    no_followup_markers = ("NONE", "KEINE")
+    if not followup_raw or followup_raw.upper().startswith(no_followup_markers):
+        followup = None
+    else:
+        followup = followup_raw
+
+    return feedback, followup
+
+
+def get_feedback_and_followup(
+    chain_with_history,
+    profile,
+    question_text: str,
+    answer_text: str,
+    followup_allowed: bool,
+) -> tuple[str, str | None]:
     """
     Ask the model for a short, neutral acknowledgement of the participant's
-    answer to a fixed question. This does NOT generate the next question —
-    that always comes verbatim from the interview guide (see
-    backend/interview_guide.py); this function only produces the brief
-    reaction in between two fixed questions.
+    answer, and — only if permitted for this specific item — an optional
+    single follow-up question. This does NOT generate the next fixed
+    question; that always comes verbatim from the interview guide (see
+    backend/interview_guide.py) and is combined afterwards by the caller
+    (see backend/app.py).
 
     Args:
         chain_with_history: The pipeline created by build_chain().
-        question_text: The fixed question the participant was just asked.
+        profile: A BehaviorProfile (see backend/behavior_profiles.py)
+            supplying the actual tone/strictness instructions.
+        question_text: The fixed question (or pending follow-up) the
+            participant was just asked.
         answer_text: What the participant said or typed in response.
+        followup_allowed: Whether a follow-up is allowed for this specific
+            item (set by the "allow_followup" field on the question, and
+            only if one hasn't already been used for it — see
+            InterviewGuide.followup_already_used()).
 
     Returns:
-        The model's short feedback, cleaned up and ready to display or
-        speak aloud, with the next fixed question appended afterwards by
-        the caller (see backend/app.py).
+        A tuple (feedback_text, followup_text_or_None). See
+        parse_feedback_and_followup() for how followup_text is determined.
     """
     # A single fixed session id is used because, per the project's core
     # principles, only one participant runs through the study at a time.
     session_id = "voice_assistant_session"
 
-    response = chain_with_history.invoke(
-        {"question": question_text, "answer": answer_text},
-        config={"session_id": session_id}
+    followup_status = (
+        "permitted for this item — you may use at most one, only if it "
+        "would meaningfully help"
+        if followup_allowed else
+        "not permitted for this item — always write FOLLOWUP: NONE"
     )
-    return normalize_model_response(response)
+
+    raw_response = chain_with_history.invoke(
+        {
+            "instructions": profile.instructions,
+            "question": question_text,
+            "answer": answer_text,
+            "followup_status": followup_status,
+        },
+        config={"session_id": session_id},
+    )
+    return parse_feedback_and_followup(raw_response)
+
+
+def get_natural_transition(llm, feedback_text: str, next_question_text: str) -> str:
+    """
+    For behavior profiles with question_delivery = "natural_transition":
+    smoothly reword the transition from the just-given feedback into the
+    next fixed question, without changing what the question actually asks.
+
+    This is a separate, stateless call (uses the plain `llm`, not the
+    chat-history chain) since it's a wording task, not part of the
+    interview conversation itself.
+
+    Args:
+        llm: The LLM object created by create_llm() (not the history chain).
+        feedback_text: The feedback sentence just generated for the
+            participant's previous answer.
+        next_question_text: The next fixed question, verbatim from the
+            interview guide — its meaning must be fully preserved.
+
+    Returns:
+        One combined, naturally-worded message.
+    """
+    chain = transition_prompt | llm | StrOutputParser()
+    result = chain.invoke({"feedback": feedback_text, "next_question": next_question_text})
+    return normalize_model_response(result)

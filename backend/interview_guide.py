@@ -14,6 +14,17 @@ Per the project's core principle "the LLM presents, it does not invent":
 question wording always comes from here, verbatim, exactly as written in
 the YAML file — never generated or reworded by the model.
 
+As of Step 3 ("Constrain the LLM"), a question may optionally allow a
+single, short LLM-initiated follow-up (see the "allow_followup" field per
+question, and start_followup()/is_awaiting_followup_answer()/
+followup_already_used() below). This is deliberately capped at exactly one
+follow-up per question for now. If you need something more elaborate later
+(e.g. checking whether an open-ended answer covered several required
+points, and allowing more than one follow-up until it does), this class —
+together with backend/llm_provider.py's parsing of the model's response —
+is the place to extend; see the comment on parse_feedback_and_followup()
+in llm_provider.py for more detail on that.
+
 Used by: backend/app.py.
 """
 import os
@@ -62,12 +73,24 @@ class InterviewGuide:
                     "id": question["id"],
                     "text": question["text"],
                     "section_title": section_title,
+                    # Whether a single, short LLM-initiated follow-up is
+                    # allowed for this specific item (see Step 3 / the
+                    # "strict_clinical"/"flexible_conversational" behavior
+                    # profiles). Defaults to False if not set.
+                    "allow_followup": bool(question.get("allow_followup", False)),
                 })
 
         # Index of the question that comes next. A single fixed value is
         # used because, per the project's core principles, only one
         # participant runs through the study at a time.
         self._current_index = 0
+
+        # Follow-up state for the CURRENT question only. Capped at one
+        # follow-up per question, per the project plan ("eine kurze
+        # Nachfrage"). Reset automatically whenever advance() moves on.
+        self._awaiting_followup_answer = False
+        self._followup_used_for_current = False
+        self.pending_followup_text: str | None = None
 
     def current_question(self) -> dict | None:
         """Return the question that should be asked right now, or None if the guide is finished."""
@@ -77,19 +100,47 @@ class InterviewGuide:
 
     def advance(self) -> dict | None:
         """
-        Move on to the next question, after the current one has been asked
-        and answered.
+        Move on to the next question, after the current one (and any
+        follow-up to it) has been asked and answered.
 
         Returns:
             The new current question, or None if the guide is now finished.
         """
         self._current_index += 1
+        self._awaiting_followup_answer = False
+        self._followup_used_for_current = False
+        self.pending_followup_text = None
         return self.current_question()
 
     def is_finished(self) -> bool:
         """True once every question in the guide has been asked."""
         return self._current_index >= len(self.questions)
 
+    def start_followup(self, followup_text: str) -> None:
+        """
+        Record that the model just asked a follow-up for the current
+        question. The participant's next answer should then be treated as
+        answering this follow-up, not the next fixed question — see
+        is_awaiting_followup_answer().
+        """
+        self._awaiting_followup_answer = True
+        self._followup_used_for_current = True
+        self.pending_followup_text = followup_text
+
+    def is_awaiting_followup_answer(self) -> bool:
+        """True if the participant's next answer is a response to a follow-up, not a new fixed question."""
+        return self._awaiting_followup_answer
+
+    def followup_already_used(self) -> bool:
+        """
+        True if a follow-up has already been used for the current question
+        — used to enforce the "at most one follow-up per question" cap.
+        """
+        return self._followup_used_for_current
+
     def reset(self) -> None:
         """Start the guide over from the first question (e.g. for a new participant)."""
         self._current_index = 0
+        self._awaiting_followup_answer = False
+        self._followup_used_for_current = False
+        self.pending_followup_text = None

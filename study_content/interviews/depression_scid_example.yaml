@@ -19,6 +19,10 @@
 #                        don't need groups, use a single section.
 #   questions         - each needs a unique "id" (for the stored data) and
 #                        the exact "text" to be presented, verbatim.
+#   allow_followup    - optional, per question, default false. If true, the
+#                        model is allowed to ask ONE short, clarifying
+#                        follow-up before moving to the next fixed question
+#                        (see Step 3 of the project plan / behavior profiles).
 
 guide_id: depression_scid_example
 title: "Example: SCID Depression Module (shortened, for testing)"
@@ -42,6 +46,7 @@ sections:
         text: "Wie würden Sie Ihre Stimmung in den letzten zwei Wochen beschreiben?"
       - id: dep_02
         text: "Gab es Zeiten, in denen Sie sich über nichts mehr freuen konnten?"
+        allow_followup: true
 
   - section_title: "Schlaf"
     questions:

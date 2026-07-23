@@ -180,5 +180,53 @@ class TestAnalyzeEmotion(unittest.TestCase):
         self.assertGreaterEqual(score, 0.3)
 
 
+class TestParseFeedbackAndFollowup(unittest.TestCase):
+    """Tests for llm_provider.parse_feedback_and_followup() (Step 3)."""
+
+    def _import_parse_fn(self):
+        if "llm_provider" in sys.modules:
+            del sys.modules["llm_provider"]
+        from llm_provider import parse_feedback_and_followup
+        return parse_feedback_and_followup
+
+    def test_no_followup(self):
+        parse = self._import_parse_fn()
+        feedback, followup = parse("FEEDBACK: That sounds understandable.\nFOLLOWUP: NONE")
+        self.assertEqual(feedback, "That sounds understandable.")
+        self.assertIsNone(followup)
+
+    def test_with_followup(self):
+        parse = self._import_parse_fn()
+        feedback, followup = parse(
+            "FEEDBACK: That's clear.\nFOLLOWUP: How long did that last?"
+        )
+        self.assertEqual(feedback, "That's clear.")
+        self.assertEqual(followup, "How long did that last?")
+
+    def test_german_none_marker(self):
+        parse = self._import_parse_fn()
+        feedback, followup = parse("FEEDBACK: Verstanden.\nFOLLOWUP: Keine")
+        self.assertIsNone(followup)
+
+    def test_missing_followup_line(self):
+        parse = self._import_parse_fn()
+        feedback, followup = parse("FEEDBACK: Danke für die Antwort.")
+        self.assertEqual(feedback, "Danke für die Antwort.")
+        self.assertIsNone(followup)
+
+    def test_model_ignores_format_entirely(self):
+        """If the model doesn't use the format at all, fail safe: treat everything as feedback."""
+        parse = self._import_parse_fn()
+        feedback, followup = parse("That sounds difficult for you.")
+        self.assertEqual(feedback, "That sounds difficult for you.")
+        self.assertIsNone(followup)
+
+    def test_strips_ai_prefix_before_parsing(self):
+        parse = self._import_parse_fn()
+        feedback, followup = parse("AI: FEEDBACK: Thanks for sharing.\nFOLLOWUP: NONE")
+        self.assertEqual(feedback, "Thanks for sharing.")
+        self.assertIsNone(followup)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,22 @@
+# BEHAVIOR PROFILES REGISTRY
+# ============================
+# Maps a behavior_profile name (referenced from study_content/interviews/*.yaml)
+# to its actual instructions file and its question-delivery style. Add a new
+# profile by adding a new entry here plus a new .txt file in this folder.
+#
+# question_delivery:
+#   verbatim           - the next fixed question is attached completely
+#                        unchanged after the model's feedback. Use this for
+#                        standardized / validated instruments where exact
+#                        wording matters (e.g. SCID-style modules).
+#   natural_transition - the model smoothly rewords the transition into the
+#                        next question, without changing its meaning. Use
+#                        this for more conversational, exploratory guides.
+
+strict_clinical:
+  instructions_file: strict_clinical.txt
+  question_delivery: verbatim
+
+flexible_conversational:
+  instructions_file: flexible_conversational.txt
+  question_delivery: natural_transition

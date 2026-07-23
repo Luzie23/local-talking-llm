@@ -99,6 +99,42 @@ class TestInterviewGuide(unittest.TestCase):
         self.assertIsNone(guide.current_question())
         self.assertTrue(guide.is_finished())
 
+    def test_allow_followup_defaults_to_false(self):
+        filename = self._write_guide(TEST_GUIDE_YAML)
+        guide = InterviewGuide(filename)
+        self.assertFalse(guide.questions[0]["allow_followup"])
+
+    def test_followup_state_machine(self):
+        filename = self._write_guide(TEST_GUIDE_YAML)
+        guide = InterviewGuide(filename)
+
+        self.assertFalse(guide.is_awaiting_followup_answer())
+        self.assertFalse(guide.followup_already_used())
+
+        guide.start_followup("Can you say more about that?")
+        self.assertTrue(guide.is_awaiting_followup_answer())
+        self.assertTrue(guide.followup_already_used())
+        self.assertEqual(guide.pending_followup_text, "Can you say more about that?")
+
+        # Still on the same question — advance() hasn't been called yet.
+        self.assertEqual(guide.current_question()["id"], "q1")
+
+        # Moving on resets all follow-up state for the new question.
+        next_q = guide.advance()
+        self.assertEqual(next_q["id"], "q2")
+        self.assertFalse(guide.is_awaiting_followup_answer())
+        self.assertFalse(guide.followup_already_used())
+        self.assertIsNone(guide.pending_followup_text)
+
+    def test_reset_clears_followup_state_too(self):
+        filename = self._write_guide(TEST_GUIDE_YAML)
+        guide = InterviewGuide(filename)
+        guide.start_followup("Some follow-up")
+        guide.reset()
+        self.assertFalse(guide.is_awaiting_followup_answer())
+        self.assertFalse(guide.followup_already_used())
+        self.assertIsNone(guide.pending_followup_text)
+
 
 if __name__ == "__main__":
     unittest.main()
