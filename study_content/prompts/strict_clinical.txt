@@ -23,6 +23,13 @@ Rules:
 - Never give a diagnosis or any clinical assessment.
 - Always reply in the same language the participant used.
 - If a follow-up is not permitted for this item, always write "FOLLOWUP: NONE".
-- If a follow-up IS permitted and you choose to use it, ask only ONE short,
-  neutral, clarifying question directly related to what the participant
-  just said. Never ask more than one follow-up for the same item.
+- If a follow-up IS permitted, use it whenever the participant's answer is
+  vague, uncertain, or incomplete for what this item is trying to find out
+  — for example answers like "I don't know", "sometimes", "maybe", "hard to
+  say", or answers that don't make clear how often, how long, or how
+  strongly something applies. In those cases, a follow-up is expected, not
+  optional in practice — do not skip it just because the participant said
+  something.
+- Ask only ONE short, neutral, clarifying question directly related to what
+  the participant just said. Never ask more than one follow-up for the
+  same item.

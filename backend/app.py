@@ -102,7 +102,7 @@ def _combine_with_next(feedback: str, next_question: dict | None) -> str:
     if next_question is None:
         return f"{feedback} {interview.closing_message}".strip()
     if profile.question_delivery == "natural_transition":
-        return llm_provider.get_natural_transition(llm, feedback, next_question["text"])
+        return llm_provider.get_natural_transition(llm, feedback, next_question["text"], language_code=args.language)
     return f"{feedback} {next_question['text']}".strip()
 
 
@@ -124,7 +124,7 @@ def process_answer(answer_text: str) -> str:
     if interview.is_awaiting_followup_answer():
         feedback, _ = llm_provider.get_feedback_and_followup(
             chain_with_history, profile, interview.pending_followup_text, answer_text,
-            followup_allowed=False,
+            followup_allowed=False, language_code=args.language,
         )
         next_question = interview.advance()
         return _combine_with_next(feedback, next_question)
@@ -137,7 +137,7 @@ def process_answer(answer_text: str) -> str:
     followup_allowed = question["allow_followup"] and not interview.followup_already_used()
     feedback, followup = llm_provider.get_feedback_and_followup(
         chain_with_history, profile, question["text"], answer_text,
-        followup_allowed=followup_allowed,
+        followup_allowed=followup_allowed, language_code=args.language,
     )
 
     if followup:

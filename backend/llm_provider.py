@@ -33,6 +33,22 @@ from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_core.chat_history import InMemoryChatMessageHistory
 from langchain_ollama import OllamaLLM
 
+# Maps a study_settings.yaml language code to a human-readable name that is
+# inserted directly into the prompt (see get_feedback_and_followup() and
+# get_natural_transition() below). This is deliberately explicit rather than
+# relying on the model to infer the participant's language on its own —
+# smaller local models are not reliable at that, and were observed drifting
+# into English regardless of what the participant actually said.
+LANGUAGE_NAMES = {
+    "de": "German",
+    "en": "English",
+}
+
+
+def _language_name(language_code: str) -> str:
+    """Turn a study_settings.yaml language code into a name usable in a prompt."""
+    return LANGUAGE_NAMES.get(language_code, language_code)
+
 
 def create_llm(provider: str, model: str | None = None, api_key: str | None = None, temperature: float = 0.7):
     """
@@ -101,11 +117,12 @@ transition_prompt = ChatPromptTemplate.from_messages([
     ("system", (
         "You will be given a short acknowledgement sentence and the exact "
         "next question that must be asked. Rewrite them together as one "
-        "smooth, natural-sounding message. You MUST preserve the "
-        "acknowledgement's meaning and the question's exact meaning and "
-        "everything it asks for — only adjust the phrasing/wording for a "
-        "natural transition, never add, remove, or change what is being "
-        "asked. Reply with only the combined message, nothing else."
+        "smooth, natural-sounding message, written in {language_name}. You "
+        "MUST preserve the acknowledgement's meaning and the question's "
+        "exact meaning and everything it asks for — only adjust the "
+        "phrasing/wording for a natural transition, never add, remove, or "
+        "change what is being asked. Reply with only the combined message, "
+        "nothing else."
     )),
     ("human", "Acknowledgement: \"{feedback}\"\nNext question (preserve meaning exactly): \"{next_question}\""),
 ])
@@ -215,6 +232,7 @@ def get_feedback_and_followup(
     question_text: str,
     answer_text: str,
     followup_allowed: bool,
+    language_code: str = "de",
 ) -> tuple[str, str | None]:
     """
     Ask the model for a short, neutral acknowledgement of the participant's
@@ -235,6 +253,11 @@ def get_feedback_and_followup(
             item (set by the "allow_followup" field on the question, and
             only if one hasn't already been used for it — see
             InterviewGuide.followup_already_used()).
+        language_code: The study's interview language (from
+            study_settings.yaml, e.g. "de"). The FEEDBACK/FOLLOWUP text is
+            explicitly required to be in this language — this is not left
+            to the model to infer, since smaller local models are not
+            reliable at that and can drift into English.
 
     Returns:
         A tuple (feedback_text, followup_text_or_None). See
@@ -251,9 +274,18 @@ def get_feedback_and_followup(
         "not permitted for this item — always write FOLLOWUP: NONE"
     )
 
+    language_name = _language_name(language_code)
+    instructions = (
+        f"{profile.instructions}\n\n"
+        f"LANGUAGE (mandatory, overrides anything above): write both the "
+        f"FEEDBACK text and the FOLLOWUP question (if used) in {language_name}, "
+        f"regardless of what language these instructions themselves are "
+        f"written in."
+    )
+
     raw_response = chain_with_history.invoke(
         {
-            "instructions": profile.instructions,
+            "instructions": instructions,
             "question": question_text,
             "answer": answer_text,
             "followup_status": followup_status,
@@ -263,7 +295,7 @@ def get_feedback_and_followup(
     return parse_feedback_and_followup(raw_response)
 
 
-def get_natural_transition(llm, feedback_text: str, next_question_text: str) -> str:
+def get_natural_transition(llm, feedback_text: str, next_question_text: str, language_code: str = "de") -> str:
     """
     For behavior profiles with question_delivery = "natural_transition":
     smoothly reword the transition from the just-given feedback into the
@@ -279,10 +311,17 @@ def get_natural_transition(llm, feedback_text: str, next_question_text: str) -> 
             participant's previous answer.
         next_question_text: The next fixed question, verbatim from the
             interview guide — its meaning must be fully preserved.
+        language_code: The study's interview language (from
+            study_settings.yaml, e.g. "de") — explicitly enforced for the
+            same reason as in get_feedback_and_followup() above.
 
     Returns:
         One combined, naturally-worded message.
     """
     chain = transition_prompt | llm | StrOutputParser()
-    result = chain.invoke({"feedback": feedback_text, "next_question": next_question_text})
+    result = chain.invoke({
+        "feedback": feedback_text,
+        "next_question": next_question_text,
+        "language_name": _language_name(language_code),
+    })
     return normalize_model_response(result)

@@ -228,5 +228,78 @@ class TestParseFeedbackAndFollowup(unittest.TestCase):
         self.assertIsNone(followup)
 
 
+class TestLanguageEnforcement(unittest.TestCase):
+    """
+    Regression tests for the language-drift bug: the model was observed
+    replying in English even when the participant used German, despite the
+    (implicit) instruction to match the participant's language. Fixed by
+    explicitly telling the model which language to use, based on
+    study_settings.yaml, instead of relying on it to infer this correctly.
+    """
+
+    def _import_get_feedback_and_followup(self):
+        if "llm_provider" in sys.modules:
+            del sys.modules["llm_provider"]
+        import llm_provider
+        return llm_provider
+
+    def test_german_language_directive_is_sent(self):
+        lp = self._import_get_feedback_and_followup()
+
+        captured = {}
+
+        class FakeChain:
+            def invoke(self, inputs, config=None):
+                captured.update(inputs)
+                return "FEEDBACK: ok\nFOLLOWUP: NONE"
+
+        class FakeProfile:
+            instructions = "Some instructions."
+
+        lp.get_feedback_and_followup(
+            FakeChain(), FakeProfile(), "Question?", "Answer.",
+            followup_allowed=False, language_code="de",
+        )
+        self.assertIn("German", captured["instructions"])
+
+    def test_english_language_directive_is_sent(self):
+        lp = self._import_get_feedback_and_followup()
+
+        captured = {}
+
+        class FakeChain:
+            def invoke(self, inputs, config=None):
+                captured.update(inputs)
+                return "FEEDBACK: ok\nFOLLOWUP: NONE"
+
+        class FakeProfile:
+            instructions = "Some instructions."
+
+        lp.get_feedback_and_followup(
+            FakeChain(), FakeProfile(), "Question?", "Answer.",
+            followup_allowed=False, language_code="en",
+        )
+        self.assertIn("English", captured["instructions"])
+
+    def test_unknown_language_code_falls_back_to_the_code_itself(self):
+        lp = self._import_get_feedback_and_followup()
+
+        captured = {}
+
+        class FakeChain:
+            def invoke(self, inputs, config=None):
+                captured.update(inputs)
+                return "FEEDBACK: ok\nFOLLOWUP: NONE"
+
+        class FakeProfile:
+            instructions = "Some instructions."
+
+        lp.get_feedback_and_followup(
+            FakeChain(), FakeProfile(), "Question?", "Answer.",
+            followup_allowed=False, language_code="fr",
+        )
+        self.assertIn("fr", captured["instructions"])
+
+
 if __name__ == "__main__":
     unittest.main()
