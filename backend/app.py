@@ -25,6 +25,7 @@ import time
 from queue import Queue
 
 import numpy as np
+from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 
 import llm_provider
@@ -34,6 +35,11 @@ import study_settings
 from behavior_profiles import load_behavior_profile
 from interview_guide import InterviewGuide
 from tts import TextToSpeechService
+
+# Loads variables from a local .env file (if present) into the environment,
+# e.g. MINIMAX_API_KEY, so it doesn't need to be exported in the shell every
+# time. .env is gitignored — never commit it.
+load_dotenv()
 
 # --- Load study settings (see study_content/study_settings.yaml) ---------
 # Loaded before the command-line options below, so that e.g. --language has
@@ -215,6 +221,7 @@ def chat_audio_endpoint():
 
     sample_rate, audio_array = tts.long_form_synthesize(
         response,
+        language=language,
         audio_prompt_path=args.voice,
         exaggeration=speech.analyze_emotion(response),
         cfg_weight=args.cfg_weight,
@@ -268,6 +275,7 @@ def run_terminal_mode():
 
         sample_rate, audio_array = tts.long_form_synthesize(
             text,
+            language=selected_language,
             audio_prompt_path=args.voice,
             exaggeration=dynamic_exaggeration,
             cfg_weight=dynamic_cfg,
@@ -277,7 +285,7 @@ def run_terminal_mode():
         if args.save_voice:
             response_count += 1
             filename = f"voices/response_{response_count:03d}.wav"
-            tts.save_voice_sample(text, filename, args.voice)
+            tts.save_voice_sample(text, filename, language=selected_language, audio_prompt_path=args.voice)
             print(f"Voice saved to: {filename}")
 
         speech.play_audio(sample_rate, audio_array)

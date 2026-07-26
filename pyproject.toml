@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "chatterbox-tts>=0.1.1",
     "flask>=3.1.3",
+    "python-dotenv>=1.0.1",
     "langchain-ollama>=0.3.3",
     "langchain-openai>=0.3.0",
     "langchain>=0.3.25",
@@ -16,6 +17,7 @@ dependencies = [
     "rich>=14.0.0",
     "setuptools>=80.9.0",
     "sounddevice>=0.5.2",
+    "torch>=2.6.0",
     "torchaudio>=2.6.0",
 ]
 
@@ -25,4 +27,13 @@ dev = [
 ]
 
 [tool.uv.extra-build-dependencies]
-openai-whisper = ["setuptools"]
+openai-whisper = ["setuptools<81"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchaudio = { index = "pytorch-cu124" }
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true

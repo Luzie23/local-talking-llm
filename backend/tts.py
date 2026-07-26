@@ -16,7 +16,7 @@ import nltk
 import torch
 import warnings
 import numpy as np
-from chatterbox.tts import ChatterboxTTS
+from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
 warnings.filterwarnings(
     "ignore",
@@ -50,7 +50,7 @@ class TextToSpeechService:
             self.device = "cpu"
 
         self._patch_torch_load()
-        self.model = ChatterboxTTS.from_pretrained(device=self.device)
+        self.model = ChatterboxMultilingualTTS.from_pretrained(device=self.device)
         self.sample_rate = self.model.sr
 
     def _patch_torch_load(self):
@@ -70,12 +70,17 @@ class TextToSpeechService:
 
         torch.load = patched_torch_load
 
-    def synthesize(self, text: str, audio_prompt_path: str | None = None, exaggeration: float = 0.5, cfg_weight: float = 0.5):
+    def synthesize(self, text: str, language: str = "en", audio_prompt_path: str | None = None, exaggeration: float = 0.5, cfg_weight: float = 0.5):
         """
         Synthesizes audio from the given text using ChatterBox TTS.
 
         Args:
             text (str): The input text to be synthesized.
+            language (str, optional): Language code to speak in (e.g. "en", "de") —
+                see chatterbox.mtl_tts.SUPPORTED_LANGUAGES for the full list. This
+                must match the language of the text, otherwise the model will
+                carry over an English accent regardless of what's being said.
+                Defaults to "en".
             audio_prompt_path (str, optional): Path to audio file for voice cloning. Defaults to None.
             exaggeration (float, optional): Emotion exaggeration control (0-1). Defaults to 0.5.
             cfg_weight (float, optional): Control for pacing and delivery. Defaults to 0.5.
@@ -85,6 +90,7 @@ class TextToSpeechService:
         """
         wav = self.model.generate(
             text,
+            language_id=language,
             audio_prompt_path=audio_prompt_path,
             exaggeration=exaggeration,
             cfg_weight=cfg_weight
@@ -94,12 +100,13 @@ class TextToSpeechService:
         audio_array = wav.squeeze().cpu().numpy()
         return self.sample_rate, audio_array
 
-    def long_form_synthesize(self, text: str, audio_prompt_path: str | None = None, exaggeration: float = 0.5, cfg_weight: float = 0.5):
+    def long_form_synthesize(self, text: str, language: str = "en", audio_prompt_path: str | None = None, exaggeration: float = 0.5, cfg_weight: float = 0.5):
         """
         Synthesizes audio from the given long-form text using ChatterBox TTS.
 
         Args:
             text (str): The input text to be synthesized.
+            language (str, optional): Language code to speak in — see synthesize(). Defaults to "en".
             audio_prompt_path (str, optional): Path to audio file for voice cloning. Defaults to None.
             exaggeration (float, optional): Emotion exaggeration control (0-1). Defaults to 0.5.
             cfg_weight (float, optional): Control for pacing and delivery. Defaults to 0.5.
@@ -114,6 +121,7 @@ class TextToSpeechService:
         for sent in sentences:
             sample_rate, audio_array = self.synthesize(
                 sent,
+                language=language,
                 audio_prompt_path=audio_prompt_path,
                 exaggeration=exaggeration,
                 cfg_weight=cfg_weight
@@ -122,14 +130,15 @@ class TextToSpeechService:
 
         return self.sample_rate, np.concatenate(pieces)
 
-    def save_voice_sample(self, text: str, output_path: str, audio_prompt_path: str | None = None):
+    def save_voice_sample(self, text: str, output_path: str, language: str = "en", audio_prompt_path: str | None = None):
         """
         Saves a voice sample to file for later use as voice prompt.
 
         Args:
             text (str): The text to synthesize.
             output_path (str): Path where to save the audio file.
+            language (str, optional): Language code to speak in — see synthesize(). Defaults to "en".
             audio_prompt_path (str, optional): Path to audio file for voice cloning.
         """
-        wav = self.model.generate(text, audio_prompt_path=audio_prompt_path)
+        wav = self.model.generate(text, language_id=language, audio_prompt_path=audio_prompt_path)
         ta.save(output_path, wav, self.sample_rate)
