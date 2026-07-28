@@ -142,43 +142,6 @@ class TestCreateLlm(unittest.TestCase):
         self.assertEqual(call_kwargs["base_url"], "https://api.minimax.io/v1")
 
 
-# speech.py needs a microphone/speaker library (sounddevice) which may not be
-# installed in a plain test environment, so a stand-in is registered here,
-# once, before speech.py is imported. This is done at module load time (not
-# inside patch.dict) because numpy's C extension cannot be re-imported
-# within the same process, and patch.dict would otherwise undo the import.
-if "sounddevice" not in sys.modules:
-    sys.modules["sounddevice"] = MagicMock()
-import speech  # noqa: E402  (must come after the sounddevice stand-in above)
-
-
-class TestAnalyzeEmotion(unittest.TestCase):
-    """Tests for the analyze_emotion() helper function (now in backend/speech.py)."""
-
-    def _import_analyze_emotion(self):
-        return speech.analyze_emotion
-
-    def test_neutral_text(self):
-        analyze_emotion = self._import_analyze_emotion()
-        score = analyze_emotion("The weather is nice today.")
-        self.assertAlmostEqual(score, 0.5)
-
-    def test_emotional_text(self):
-        analyze_emotion = self._import_analyze_emotion()
-        score = analyze_emotion("This is amazing! I love it!")
-        self.assertGreater(score, 0.5)
-
-    def test_score_capped_at_max(self):
-        analyze_emotion = self._import_analyze_emotion()
-        # Text with many emotional keywords
-        score = analyze_emotion("amazing terrible love hate excited sad happy angry wonderful awful !")
-        self.assertLessEqual(score, 0.9)
-
-    def test_score_has_minimum(self):
-        analyze_emotion = self._import_analyze_emotion()
-        score = analyze_emotion("ok")
-        self.assertGreaterEqual(score, 0.3)
-
 
 class TestParseFeedbackAndFollowup(unittest.TestCase):
     """Tests for llm_provider.parse_feedback_and_followup() (Step 3)."""

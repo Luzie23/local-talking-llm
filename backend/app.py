@@ -16,7 +16,8 @@ How to run it:
     python backend/app.py --web      (starts a local web server, open in browser)
 
 See the project's README for the full list of command-line options
-(model choice, voice cloning, language, etc.).
+(model choice, language, etc.), and for how to download a Piper voice
+before running the voice condition for the first time.
 """
 import argparse
 import os
@@ -42,16 +43,13 @@ from tts import TextToSpeechService
 _settings = study_settings.load_study_settings()
 
 # --- Command-line options -------------------------------------------------
-parser = argparse.ArgumentParser(description="Local Voice Assistant with ChatterBox TTS")
-parser.add_argument("--voice", type=str, help="Path to voice sample for cloning")
-parser.add_argument("--exaggeration", type=float, default=0.5, help="Emotion exaggeration (0.0-1.0)")
-parser.add_argument("--cfg-weight", type=float, default=0.5, help="CFG weight for pacing (0.0-1.0)")
+parser = argparse.ArgumentParser(description="Local Voice Assistant")
 parser.add_argument("--model", type=str, default=None, help="LLM model name (default: gemma3 for ollama, MiniMax-M2.7 for minimax)")
 parser.add_argument("--provider", type=str, default="ollama", choices=["ollama", "minimax"],
                     help="LLM provider: 'ollama' for local models, 'minimax' for MiniMax cloud API (default: ollama)")
 parser.add_argument("--api-key", type=str, default=None, help="API key for cloud LLM providers (or set MINIMAX_API_KEY env var)")
 parser.add_argument("--temperature", type=float, default=0.7, help="LLM temperature (default: 0.7)")
-parser.add_argument("--save-voice", action="store_true", help="Save generated voice samples")
+parser.add_argument("--save-voice", action="store_true", help="Save generated voice samples to voices/")
 parser.add_argument("--web", action="store_true", help="Run the app as a Flask web server instead of terminal mode")
 parser.add_argument("--language", type=str, default=_settings.get("language", "de"),
                     help="Language code for speech transcription (default: from study_settings.yaml, else 'de')")
@@ -65,7 +63,12 @@ llm = llm_provider.create_llm(
     temperature=args.temperature,
 )
 chain_with_history = llm_provider.build_chain(llm)
-tts = TextToSpeechService()
+
+# Which Piper voice to use is a researcher setting (study_content/study_settings.yaml),
+# not a command-line option — see backend/tts.py's module docstring for how
+# to download a voice the first time.
+_tts_voice = _settings.get("tts_voice", "de_DE-thorsten-high")
+tts = TextToSpeechService(voice_name=_tts_voice)
 
 # --- Load the active interview guide (see study_content/interviews/) ------
 # Which guide file is active is controlled by study_content/study_settings.yaml,
@@ -120,6 +123,12 @@ def process_answer(answer_text: str) -> str:
       2. The participant is answering the current fixed question — a
          follow-up may be offered if this item allows it and none has been
          used for it yet.
+
+    Prints a short debug line to the console for every turn (visible only
+    in the terminal running this app, never sent to the participant) — this
+    is meant to make it easy to check whether the follow-up mechanism is
+    actually engaging as expected while testing, instead of having to guess
+    from the final combined text alone.
     """
     if interview.is_awaiting_followup_answer():
         print(f"[interview] answering follow-up: \"{interview.pending_followup_text}\"")
@@ -133,6 +142,7 @@ def process_answer(answer_text: str) -> str:
 
     question = interview.current_question()
     if question is None:
+        # The guide was already finished; nothing left to ask.
         return interview.closing_message
 
     followup_allowed = question["allow_followup"] and not interview.followup_already_used()
@@ -153,6 +163,7 @@ def process_answer(answer_text: str) -> str:
 
     next_question = interview.advance()
     return _combine_with_next(feedback, next_question)
+
 
 @app.route("/api/interview/start", methods=["GET"])
 def interview_start_endpoint():
@@ -212,16 +223,11 @@ def chat_audio_endpoint():
 
     transcript = stt.transcribe(audio_np, language=language)
     response = process_answer(transcript)
+    print(f"[interview] final response sent to browser: {response!r}")
 
-    sample_rate, audio_array = tts.long_form_synthesize(
-        response,
-        audio_prompt_path=args.voice,
-        exaggeration=speech.analyze_emotion(response),
-        cfg_weight=args.cfg_weight,
-    )
+    sample_rate, audio_array = tts.synthesize(response)
     audio_base64 = speech.encode_wav_base64(sample_rate, audio_array)
 
-    print(f"[interview] final response sent to browser: {response!r}")
     return jsonify({
         "transcript": transcript,
         "response": response,
@@ -236,17 +242,11 @@ def run_terminal_mode():
     again to stop, and the assistant replies out loud. Useful for quick local
     testing without opening a browser.
     """
-    print("\U0001F916 Local Voice Assistant with ChatterBox TTS")
+    print("\U0001F916 Local Voice Assistant")
     print("\u2500" * 42)
     selected_language = input("Which language should I use for transcription? (e.g. de, en, fr): ").strip().lower() or "en"
 
-    if args.voice:
-        print(f"Using voice cloning from: {args.voice}")
-    else:
-        print("Using default voice (no cloning)")
-
-    print(f"Emotion exaggeration: {args.exaggeration}")
-    print(f"CFG weight: {args.cfg_weight}")
+    print(f"TTS voice: {_tts_voice}")
     print(f"LLM model: {args.model or ('gemma3' if args.provider == 'ollama' else 'MiniMax-M2.7')}")
     print(f"LLM provider: {args.provider}")
     print("\u2500" * 42)
@@ -261,23 +261,12 @@ def run_terminal_mode():
     def speak(text: str):
         """Synthesize and play one piece of text out loud, honoring --save-voice."""
         nonlocal response_count
-        dynamic_exaggeration = speech.analyze_emotion(text)
-        # More emotional text is spoken with a slightly lower cfg_weight,
-        # which makes the delivery a bit more expressive/less flat.
-        dynamic_cfg = args.cfg_weight * 0.8 if dynamic_exaggeration > 0.6 else args.cfg_weight
-
-        sample_rate, audio_array = tts.long_form_synthesize(
-            text,
-            audio_prompt_path=args.voice,
-            exaggeration=dynamic_exaggeration,
-            cfg_weight=dynamic_cfg,
-        )
-        print(f"(Emotion: {dynamic_exaggeration:.2f}, CFG: {dynamic_cfg:.2f})")
+        sample_rate, audio_array = tts.synthesize(text)
 
         if args.save_voice:
             response_count += 1
             filename = f"voices/response_{response_count:03d}.wav"
-            tts.save_voice_sample(text, filename, args.voice)
+            speech.write_wav_file(filename, sample_rate, audio_array)
             print(f"Voice saved to: {filename}")
 
         speech.play_audio(sample_rate, audio_array)

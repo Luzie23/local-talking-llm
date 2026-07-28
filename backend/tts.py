@@ -1,135 +1,99 @@
 """
 TEXT-TO-SPEECH (TTS) ENGINE
 ============================
-This file turns written text into spoken audio (a voice reading the text out loud).
-It is only used for the "voice" condition of the study. In the "text" condition,
-this file is never called, so no voice model needs to be loaded.
+This file turns written text into spoken audio (a voice reading the text out
+loud), using Piper — a fast, fully local, open-source neural TTS engine.
 
-It wraps a third-party voice model called "ChatterBox". You should not need to
-change anything in this file for normal study configuration changes (wording,
-question order, etc.) — those live in the study_content/ folder instead.
+It is only used for the "voice" condition of the study. In the "text"
+condition, this file is never called, so no voice model needs to be loaded.
 
-Used by: backend/speech.py (which connects recording, transcription, and speaking
-together for the voice condition).
+WHY PIPER (as of Step 4 of the project plan): the previous engine
+(ChatterBox) speaks German with a noticeable English accent, and offers
+voice cloning plus "emotion" controls (exaggeration/cfg_weight) that this
+study doesn't need. Piper ships genuinely natural-sounding, purpose-built
+German voices, runs fast enough for real-time use even on a plain CPU, and
+is actively maintained. The trade-off: one fixed voice per model, no
+cloning, no per-line emotional expressiveness — for a calm, consistent
+study interview, that's a reasonable trade, not a loss.
+
+SETUP — downloading a voice (one-time, per machine):
+    python -m piper.download_voices de_DE-thorsten-high --download-dir tts_models
+This downloads two files into tts_models/ (a .onnx model and a .onnx.json
+config) — see study_content/study_settings.yaml's "tts_voice" setting for
+which voice name is currently active, and the project README for other
+available German voices.
+
+Used by: backend/app.py.
 """
-import nltk
-import torch
-import warnings
-import numpy as np
-from chatterbox.tts import ChatterboxTTS
+import os
 
-warnings.filterwarnings(
-    "ignore",
-    message="torch.nn.utils.weight_norm is deprecated in favor of torch.nn.utils.parametrizations.weight_norm.",
+import numpy as np
+from piper import PiperVoice
+
+# Where downloaded voice model files (.onnx + .onnx.json) live. Not inside
+# study_content/, since these are large binary downloads you fetch once per
+# machine, not something you hand-edit — see the setup instructions above.
+TTS_MODELS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tts_models"
 )
 
 
 class TextToSpeechService:
-    def __init__(self, device: str | None = None):
-        """
-        Initializes the TextToSpeechService class with ChatterBox TTS.
+    """Loads one Piper voice and turns text into audio for it."""
 
+    def __init__(self, voice_name: str = "de_DE-thorsten-high", use_cuda: bool = False):
+        """
         Args:
-            device (str, optional): The device to be used for the model. If None, will auto-detect.
-                Can be "cuda", "mps", or "cpu".
+            voice_name: Which downloaded Piper voice to use, e.g.
+                "de_DE-thorsten-high" (see study_content/study_settings.yaml's
+                "tts_voice" setting — this is normally passed in from there,
+                not hardcoded by callers).
+            use_cuda: Whether to run the voice model on an NVIDIA GPU via
+                onnxruntime-gpu. Piper is fast enough on a plain CPU that
+                this is usually unnecessary — only turn it on if you've
+                installed onnxruntime-gpu and want to double-check it helps.
+
+        Raises:
+            FileNotFoundError: if the voice hasn't been downloaded yet (see
+                the setup instructions in this file's module docstring).
         """
-        if device is None:
-            if torch.cuda.is_available():
-                self.device = "cuda"
-            elif torch.backends.mps.is_available():
-                self.device = "mps"
-            else:
-                self.device = "cpu"
-        else:
-            self.device = device
+        model_path = os.path.join(TTS_MODELS_DIR, f"{voice_name}.onnx")
+        config_path = os.path.join(TTS_MODELS_DIR, f"{voice_name}.onnx.json")
 
-        print(f"Using device: {self.device}")
-
-        if self.device == "cuda" and not torch.cuda.is_available():
-            print("CUDA requested but not available, falling back to CPU")
-            self.device = "cpu"
-
-        self._patch_torch_load()
-        self.model = ChatterboxTTS.from_pretrained(device=self.device)
-        self.sample_rate = self.model.sr
-
-    def _patch_torch_load(self):
-        """
-        Patches torch.load to automatically map tensors to the correct device.
-        This is needed because ChatterBox models may have been saved on CUDA.
-        """
-        map_location = torch.device(self.device)
-
-        if not hasattr(torch, '_original_load'):
-            torch._original_load = torch.load
-
-        def patched_torch_load(*args, **kwargs):
-            if 'map_location' not in kwargs:
-                kwargs['map_location'] = map_location
-            return torch._original_load(*args, **kwargs)
-
-        torch.load = patched_torch_load
-
-    def synthesize(self, text: str, audio_prompt_path: str | None = None, exaggeration: float = 0.5, cfg_weight: float = 0.5):
-        """
-        Synthesizes audio from the given text using ChatterBox TTS.
-
-        Args:
-            text (str): The input text to be synthesized.
-            audio_prompt_path (str, optional): Path to audio file for voice cloning. Defaults to None.
-            exaggeration (float, optional): Emotion exaggeration control (0-1). Defaults to 0.5.
-            cfg_weight (float, optional): Control for pacing and delivery. Defaults to 0.5.
-
-        Returns:
-            tuple: A tuple containing the sample rate and the generated audio array.
-        """
-        wav = self.model.generate(
-            text,
-            audio_prompt_path=audio_prompt_path,
-            exaggeration=exaggeration,
-            cfg_weight=cfg_weight
-        )
-
-        # Convert tensor to numpy array format compatible with sounddevice
-        audio_array = wav.squeeze().cpu().numpy()
-        return self.sample_rate, audio_array
-
-    def long_form_synthesize(self, text: str, audio_prompt_path: str | None = None, exaggeration: float = 0.5, cfg_weight: float = 0.5):
-        """
-        Synthesizes audio from the given long-form text using ChatterBox TTS.
-
-        Args:
-            text (str): The input text to be synthesized.
-            audio_prompt_path (str, optional): Path to audio file for voice cloning. Defaults to None.
-            exaggeration (float, optional): Emotion exaggeration control (0-1). Defaults to 0.5.
-            cfg_weight (float, optional): Control for pacing and delivery. Defaults to 0.5.
-
-        Returns:
-            tuple: A tuple containing the sample rate and the generated audio array.
-        """
-        pieces = []
-        sentences = nltk.sent_tokenize(text)
-        silence = np.zeros(int(0.25 * self.sample_rate))
-
-        for sent in sentences:
-            sample_rate, audio_array = self.synthesize(
-                sent,
-                audio_prompt_path=audio_prompt_path,
-                exaggeration=exaggeration,
-                cfg_weight=cfg_weight
+        if not os.path.exists(model_path) or not os.path.exists(config_path):
+            raise FileNotFoundError(
+                f"Piper voice '{voice_name}' not found in {TTS_MODELS_DIR}.\n"
+                f"Download it once with:\n"
+                f"  python -m piper.download_voices {voice_name} --download-dir {TTS_MODELS_DIR}"
             )
-            pieces += [audio_array, silence.copy()]
 
-        return self.sample_rate, np.concatenate(pieces)
+        self.voice_name = voice_name
+        self.voice = PiperVoice.load(model_path, config_path=config_path, use_cuda=use_cuda)
 
-    def save_voice_sample(self, text: str, output_path: str, audio_prompt_path: str | None = None):
+    def synthesize(self, text: str) -> tuple[int, np.ndarray]:
         """
-        Saves a voice sample to file for later use as voice prompt.
+        Convert text into spoken audio.
+
+        Piper internally splits the text into sentences and generates one
+        audio chunk per sentence; this method stitches them back together
+        into a single array, matching how backend/app.py expects to receive
+        audio (as one clip, not several).
 
         Args:
-            text (str): The text to synthesize.
-            output_path (str): Path where to save the audio file.
-            audio_prompt_path (str, optional): Path to audio file for voice cloning.
+            text: The text to speak aloud. Can be more than one sentence.
+
+        Returns:
+            (sample_rate, audio_array) — audio_array is a 1-D float32 numpy
+            array (mono), with values between -1 and 1. If text is empty,
+            audio_array will be empty too.
         """
-        wav = self.model.generate(text, audio_prompt_path=audio_prompt_path)
-        ta.save(output_path, wav, self.sample_rate)
+        if not text.strip():
+            return self.voice.config.sample_rate, np.zeros(0, dtype=np.float32)
+
+        chunks = list(self.voice.synthesize(text))
+        if not chunks:
+            return self.voice.config.sample_rate, np.zeros(0, dtype=np.float32)
+
+        sample_rate = chunks[0].sample_rate
+        audio = np.concatenate([chunk.audio_float_array for chunk in chunks])
+        return sample_rate, audio

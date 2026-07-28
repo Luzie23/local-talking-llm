@@ -8,9 +8,8 @@ for speaking) with the actual hardware and network plumbing:
   - recording from the participant's microphone (terminal mode)
   - playing the assistant's reply out loud (terminal mode)
   - converting uploaded browser audio into the format the STT engine expects
-  - converting the assistant's spoken reply into the format the browser expects
-  - a simple heuristic that makes the voice sound a bit more expressive when
-    the reply text seems more emotional
+  - converting the assistant's spoken reply into formats other code needs
+    (a base64 string for the browser, or a .wav file on disk)
 
 In the "text" condition, none of this file is used: the participant types,
 the model replies in writing, done. That is what keeps the two conditions
@@ -86,6 +85,13 @@ def decode_uploaded_wav(audio_bytes: bytes) -> np.ndarray:
     return audio_np
 
 
+def _audio_to_int16_bytes(audio_array: np.ndarray) -> bytes:
+    """Convert floating-point audio (-1 to 1) into the 16-bit PCM bytes a .wav file needs."""
+    clipped = np.clip(audio_array, -1.0, 1.0)
+    int16_audio = (clipped * 32767).astype(np.int16)
+    return int16_audio.tobytes()
+
+
 def encode_wav_base64(sample_rate: int, audio_array: np.ndarray) -> str:
     """
     Convert a generated voice reply (numpy array) into a base64-encoded WAV
@@ -104,31 +110,22 @@ def encode_wav_base64(sample_rate: int, audio_array: np.ndarray) -> str:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(sample_rate)
-        clipped = np.clip(audio_array, -1.0, 1.0)
-        int16_audio = (clipped * 32767).astype(np.int16)
-        wf.writeframes(int16_audio.tobytes())
+        wf.writeframes(_audio_to_int16_bytes(audio_array))
     return base64.b64encode(wav_buffer.getvalue()).decode("ascii")
 
 
-def analyze_emotion(text: str) -> float:
+def write_wav_file(path: str, sample_rate: int, audio_array: np.ndarray) -> None:
     """
-    A simple, rough heuristic that estimates how "emotional" a reply sounds,
-    based on a few keywords and punctuation marks. The result is used to
-    make the synthesized voice sound a little more or less expressive
-    (see the "exaggeration" setting in backend/tts.py).
+    Write a generated voice reply (numpy array) to a .wav file on disk.
+    Used by the terminal mode's --save-voice option.
 
-    This is intentionally simple and NOT a clinical or diagnostic measure —
-    it only adjusts voice delivery, nothing else.
-
-    Returns:
-        A value between 0.3 (calm) and 0.9 (expressive).
+    Args:
+        path: Where to write the .wav file.
+        sample_rate: The audio's sample rate, as returned by the TTS engine.
+        audio_array: The generated audio, as floating-point values.
     """
-    emotional_keywords = ['amazing', 'terrible', 'love', 'hate', 'excited', 'sad', 'happy', 'angry', 'wonderful', 'awful', '!', '?!', '...']
-
-    emotion_score = 0.5  # Neutral starting point.
-    text_lower = text.lower()
-    for keyword in emotional_keywords:
-        if keyword in text_lower:
-            emotion_score += 0.1
-
-    return min(0.9, max(0.3, emotion_score))
+    with wave.open(path, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(_audio_to_int16_bytes(audio_array))
