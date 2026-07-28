@@ -70,17 +70,23 @@ class TextToSpeechService:
         self.voice_name = voice_name
         self.voice = PiperVoice.load(model_path, config_path=config_path, use_cuda=use_cuda)
 
-    def synthesize(self, text: str) -> tuple[int, np.ndarray]:
+    def synthesize(self, text: str, sentence_silence: float = 0.3) -> tuple[int, np.ndarray]:
         """
         Convert text into spoken audio.
 
         Piper internally splits the text into sentences and generates one
-        audio chunk per sentence; this method stitches them back together
-        into a single array, matching how backend/app.py expects to receive
-        audio (as one clip, not several).
+        audio chunk per sentence, with no gap between them. This method
+        stitches the chunks back together with a short silence inserted
+        between each one — without it, sentences run directly into each
+        other with no natural pause, which sounds abrupt/"choppy" rather
+        than like normal speech.
 
         Args:
             text: The text to speak aloud. Can be more than one sentence.
+            sentence_silence: Seconds of silence to insert between
+                sentences. 0.3 is a natural-sounding default; raise it a
+                bit (e.g. 0.4-0.5) for an even calmer, slower-paced
+                delivery, or lower it for snappier pacing.
 
         Returns:
             (sample_rate, audio_array) — audio_array is a 1-D float32 numpy
@@ -95,5 +101,13 @@ class TextToSpeechService:
             return self.voice.config.sample_rate, np.zeros(0, dtype=np.float32)
 
         sample_rate = chunks[0].sample_rate
-        audio = np.concatenate([chunk.audio_float_array for chunk in chunks])
+        silence = np.zeros(int(sample_rate * sentence_silence), dtype=np.float32)
+
+        pieces = []
+        for i, chunk in enumerate(chunks):
+            if i > 0:
+                pieces.append(silence)
+            pieces.append(chunk.audio_float_array)
+
+        audio = np.concatenate(pieces)
         return sample_rate, audio
