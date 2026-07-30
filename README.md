@@ -20,7 +20,7 @@ After my latest post about how to build your own RAG and run it locally. Today, 
 First, you should set up a virtual Python environment. You have several options for this, including pyenv, virtualenv, poetry, and others that serve a similar purpose. Personally, I'll use Poetry for this tutorial due to my personal preferences. Here are several crucial libraries you'll need to install:
 
 - **rich**: For a visually appealing console output.
-- **openai-whisper**: A robust tool for speech-to-text conversion.
+- **faster-whisper**: A fast reimplementation of OpenAI's Whisper for speech-to-text conversion (same models and accuracy, runs significantly faster — see the project plan, Step 5).
 - **piper-tts**: Fast, local, natural-sounding text-to-speech (German voices).
 - **langchain**: A straightforward library for interfacing with Large Language Models (LLMs).
 - **langchain-openai**: For connecting to OpenAI-compatible cloud LLM providers like [MiniMax](https://www.minimaxi.com).
@@ -33,7 +33,7 @@ The most critical component here is the Large Language Model (LLM) backend. By d
 ### Architecture
 Okay, if everything has been set up, let's proceed to the next step. Below is the overall architecture of our application, which fundamentally comprises 3 main components:
 
-- **Speech Recognition**: Utilizing OpenAI's Whisper, we convert spoken language into text. Whisper's training on diverse datasets ensures its proficiency across various languages and dialects.
+- **Speech Recognition**: Utilizing faster-whisper (a faster reimplementation of OpenAI's Whisper), we convert spoken language into text. Whisper's training on diverse datasets ensures its proficiency across various languages and dialects.
 - **Conversational Chain**: For the conversational capabilities, we'll employ the Langchain interface with a pluggable LLM backend — either a local model via Ollama (e.g., Gemma3, Llama-4) or a cloud model via [MiniMax](https://www.minimaxi.com) (MiniMax-M2.7). This setup promises a seamless and engaging conversational flow.
 - **Speech Synthesizer**: The transformation of text to speech is achieved through Piper, a fast, fully local neural TTS engine with natural-sounding, purpose-built German voices.
 
@@ -41,7 +41,7 @@ The workflow is straightforward: record speech, transcribe to text, generate a r
 
 ```mermaid
 flowchart TD
-    A[🎤 User Speech Input] --> B[Speech Recognition<br/>OpenAI Whisper]
+    A[🎤 User Speech Input] --> B[Speech Recognition<br/>faster-whisper]
     B --> C[📝 Text Transcription]
     C --> D[Conversational Chain<br/>Langchain + Ollama / MiniMax<br/>Gemma3 / Llama-4 / MiniMax-M2.7]
     D --> E[🤖 Generated Response]
@@ -252,7 +252,7 @@ For those aiming to elevate this application to a production-ready status, consi
 
 3. **Manual installation of core packages**:
    ```bash
-   pip install piper-tts langchain-ollama openai-whisper sounddevice rich
+   pip install piper-tts langchain-ollama faster-whisper sounddevice rich
    ```
 
 #### Runtime Issues
@@ -273,7 +273,7 @@ With Whisper for listening, Ollama (or MiniMax) for the conversational core, and
 - [Piper voice samples](https://rhasspy.github.io/piper-samples/)
 - [Ollama](https://ollama.ai)
 - [MiniMax Platform](https://www.minimaxi.com)
-- [Whisper](https://github.com/openai/whisper)
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
 - [Original Blog Post](https://blog.duy-huynh.com/build-your-own-voice-assistant-and-run-it-locally/)
 
 ---
