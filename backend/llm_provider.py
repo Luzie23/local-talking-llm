@@ -155,6 +155,19 @@ def build_chain(llm):
     )
 
 
+def _strip_leading_junk(text: str) -> str:
+    """
+    Remove a stray leading comma/whitespace some models produce (e.g.
+    ", Das ist verständlich." instead of "Das ist verständlich."). Shared
+    by normalize_model_response() (for the raw response as a whole) and
+    parse_feedback_and_followup() (for the FEEDBACK/FOLLOWUP field
+    contents individually — a leading comma there sits right after the
+    "FEEDBACK:"/"FOLLOWUP:" label, not at the very start of the raw
+    response, so normalize_model_response() alone never reached it).
+    """
+    return re.sub(r'^[,\s\u2028\u2029]+', '', text).strip()
+
+
 def normalize_model_response(text: str) -> str:
     """
     Clean up the model's raw reply before showing it to the participant.
@@ -170,9 +183,7 @@ def normalize_model_response(text: str) -> str:
             break
         normalized = new_text.strip()
 
-    # Remove a leading comma/space from replies like ", Hallo..."
-    normalized = re.sub(r'^[,\s\u2028\u2029]+', '', normalized)
-    return normalized.strip()
+    return _strip_leading_junk(normalized)
 
 
 def parse_feedback_and_followup(raw_response: str) -> tuple[str, str | None]:
@@ -210,13 +221,13 @@ def parse_feedback_and_followup(raw_response: str) -> tuple[str, str | None]:
     followup_match = re.search(r'FOLLOWUP:\s*(.*)', text, re.DOTALL | re.IGNORECASE)
 
     if feedback_match:
-        feedback = feedback_match.group(1).strip()
+        feedback = _strip_leading_junk(feedback_match.group(1).strip())
     else:
         # The model didn't use the expected format — fail safe by treating
         # everything it said as the feedback, and assume no follow-up.
         feedback = text
 
-    followup_raw = followup_match.group(1).strip() if followup_match else ""
+    followup_raw = _strip_leading_junk(followup_match.group(1).strip()) if followup_match else ""
     no_followup_markers = ("NONE", "KEINE")
     if not followup_raw or followup_raw.upper().startswith(no_followup_markers):
         followup = None
