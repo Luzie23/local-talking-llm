@@ -32,6 +32,21 @@
       <div class="starttitle" id="startTitle">Bereit fürs Interview?</div>
       <div class="startsub" id="startSub"></div>
       <ul class="startlist" id="startList"></ul>
+
+      <div class="starttest">
+        <button class="testbtn" id="testSoundBtn" type="button">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>
+          <span>Lautsprecher testen</span>
+        </button>
+        <button class="testbtn" id="testMicBtn" type="button">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg>
+          <span>Mikrofon testen</span>
+        </button>
+        <div class="miclevel" id="micLevelMeter">
+          <span></span><span></span><span></span><span></span><span></span>
+        </div>
+      </div>
+
       <button class="startbtn" id="startBtn" disabled>Wird vorbereitet …</button>
     </div>
   </div>
@@ -309,6 +324,107 @@
     render();
   });
 
+  /* --- Testton: reine Web-Audio-Erzeugung, kein Server/TTS nötig --------- */
+  function playTestTone() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = 440;
+      gain.gain.setValueAtTime(0, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0.25, ctx.currentTime + 0.06);
+      gain.gain.linearRampToValueAtTime(0.25, ctx.currentTime + 0.5);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.6);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.65);
+      osc.onended = function () { ctx.close(); };
+    } catch (err) {
+      console.warn("Testton konnte nicht abgespielt werden.", err);
+    }
+  }
+
+  /* --- Mikrofon-Test: zeigt eine echte Pegelanzeige, nimmt aber nichts auf,
+         sendet nichts und speichert nichts — reines lokales Feedback. ----- */
+  let micTestStream = null;
+  let micTestContext = null;
+  let micTestRafId = null;
+
+  async function toggleMicTest() {
+    if (micTestStream) {
+      stopMicTest();
+      return;
+    }
+    const btn = document.getElementById("testMicBtn");
+    const meter = document.getElementById("micLevelMeter");
+    try {
+      micTestStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micTestContext = new (window.AudioContext || window.webkitAudioContext)();
+      const source = micTestContext.createMediaStreamSource(micTestStream);
+      const analyser = micTestContext.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      const data = new Uint8Array(analyser.frequencyBinCount);
+
+      if (btn) {
+        btn.classList.add("active");
+        btn.querySelector("span").textContent = "Mikrofon-Test stoppen";
+      }
+      if (meter) {
+        meter.classList.add("on");
+      }
+      const bars = meter ? meter.querySelectorAll("span") : [];
+
+      (function tick() {
+        analyser.getByteTimeDomainData(data);
+        let sumSquares = 0;
+        for (let i = 0; i < data.length; i++) {
+          const v = (data[i] - 128) / 128;
+          sumSquares += v * v;
+        }
+        const rms = Math.sqrt(sumSquares / data.length);
+        const level = Math.min(1, rms * 4); // normale Sprechlautstärke sichtbar ausschlagen lassen
+        const litCount = Math.round(level * bars.length);
+        bars.forEach(function (bar, i) {
+          bar.classList.toggle("lit", i < litCount);
+        });
+        micTestRafId = requestAnimationFrame(tick);
+      })();
+    } catch (err) {
+      console.warn("Mikrofon-Test fehlgeschlagen.", err);
+      if (btn) {
+        btn.querySelector("span").textContent = "Mikrofon nicht verfügbar";
+      }
+    }
+  }
+
+  function stopMicTest() {
+    if (micTestRafId) {
+      cancelAnimationFrame(micTestRafId);
+      micTestRafId = null;
+    }
+    if (micTestStream) {
+      micTestStream.getTracks().forEach(function (track) { track.stop(); });
+      micTestStream = null;
+    }
+    if (micTestContext) {
+      micTestContext.close();
+      micTestContext = null;
+    }
+    const btn = document.getElementById("testMicBtn");
+    const meter = document.getElementById("micLevelMeter");
+    if (btn) {
+      btn.classList.remove("active");
+      btn.querySelector("span").textContent = "Mikrofon testen";
+    }
+    if (meter) {
+      meter.classList.remove("on");
+      meter.querySelectorAll("span").forEach(function (bar) { bar.classList.remove("lit"); });
+    }
+  }
+
   /* --- Start-Overlay: Checkliste befüllen, Button erst aktiv, sobald die
          Eröffnungsnachricht vom Server da ist (siehe loadInterviewStart()
          in conversation.js, das parallel im Hintergrund lädt). ----------- */
@@ -333,6 +449,17 @@
       });
     }
 
+    const soundBtn = document.getElementById("testSoundBtn");
+    if (soundBtn) {
+      soundBtn.querySelector("span").textContent = cfg.startSoundTestLabel || "Testton abspielen";
+      soundBtn.addEventListener("click", playTestTone);
+    }
+    const micTestBtn = document.getElementById("testMicBtn");
+    if (micTestBtn) {
+      micTestBtn.querySelector("span").textContent = cfg.startMicTestLabel || "Mikrofon testen";
+      micTestBtn.addEventListener("click", toggleMicTest);
+    }
+
     const btn = document.getElementById("startBtn");
     btn.textContent = cfg.startButton || "Interview starten";
     // Erst klickbar, sobald die Eröffnungsnachricht wirklich da ist (siehe
@@ -342,6 +469,7 @@
 
     btn.addEventListener("click", function () {
       if (btn.disabled) return;
+      stopMicTest(); // Mikrofon freigeben, falls der Test noch lief
       ov.classList.add("hidden");
       playOpening(cfg.pendingOpeningMessage || "");
     });

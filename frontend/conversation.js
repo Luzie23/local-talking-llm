@@ -31,13 +31,18 @@ window.CONVERSATION = {
   /* --- FAKTOR 2: MODALITÄT ----------------------------------------------- */
   /* "text"   -> Chat-Blasen + Texteingabe                                   */
   /* "speech" -> nur Sprach-Oberfläche, KEIN Text für die teilnehmende Person */
-  modality: "text",
+  modality: "speech",
 
   /* --- START-OVERLAY ------------------------------------------------------ */
   /* Wird angezeigt, bis "Interview starten" geklickt wird. Text frei anpassbar. */
   startTitle:    "Bereit fürs Interview?",
   startSubtitle: "Bitte prüfen Sie kurz, ob die folgenden Voraussetzungen erfüllt sind. Sobald Sie starten, beginnt das Gespräch mit einer ersten Frage.",
   startButton:   "Interview starten",
+
+  /* Beschriftungen für den optionalen Ton-/Mikrofon-Test im Start-Overlay.
+     Der Test selbst blockiert "Interview starten" nicht — reines Angebot. */
+  startSoundTestLabel: "Testton abspielen",
+  startMicTestLabel:   "Mikrofon testen",
 
   /* Voraussetzungen, die vor dem Start erinnert werden. Zeilen frei anpassen,
      hinzufügen oder löschen. */

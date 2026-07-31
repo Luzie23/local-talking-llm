@@ -215,6 +215,33 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 .startbtn:hover:not(:disabled){ background:var(--accent-ink); }
 .startbtn:disabled{ opacity:.55; cursor:not-allowed; }
 
+/* Ton- und Mikrofon-Test (freiwillig, blockiert den Start-Button nicht) */
+.starttest{
+  display:flex; align-items:center; justify-content:center; gap:10px;
+  flex-wrap:wrap; margin:20px 0 4px;
+}
+.testbtn{
+  display:inline-flex; align-items:center; gap:7px;
+  padding:9px 15px; border-radius:20px;
+  background:rgba(0,0,0,.05); border:1px solid rgba(0,0,0,.08);
+  font:500 12.5px 'Instrument Sans',sans-serif; color:var(--ink);
+  cursor:pointer;
+}
+.testbtn:hover{ background:rgba(0,0,0,.09); }
+.testbtn.active{ background:color-mix(in srgb,var(--accent) 18%,transparent); border-color:var(--accent); }
+.miclevel{
+  display:none; align-items:flex-end; gap:3px; height:16px; margin-left:2px;
+}
+.miclevel.on{ display:flex; }
+.miclevel span{
+  width:4px; height:100%; border-radius:2px; background:#dcd6c8;
+  transform:scaleY(.25); transform-origin:bottom; transition:transform .09s ease, background-color .09s ease;
+}
+.miclevel span:nth-child(1){ height:40%; } .miclevel span:nth-child(2){ height:60%; }
+.miclevel span:nth-child(3){ height:100%; } .miclevel span:nth-child(4){ height:60%; }
+.miclevel span:nth-child(5){ height:40%; }
+.miclevel span.lit{ background:var(--accent); transform:scaleY(1); }
+
 /* 7) =========================  FORSCHER-OVERLAY  =========================
    Ein-/ausblenden mit  Cmd/Strg + Shift + R  (siehe index.html).            */
 .ovpanel{
