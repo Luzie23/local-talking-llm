@@ -33,17 +33,31 @@ window.CONVERSATION = {
   /* "speech" -> nur Sprach-Oberfläche, KEIN Text für die teilnehmende Person */
   modality: "text",
 
+  /* --- START-OVERLAY ------------------------------------------------------ */
+  /* Wird angezeigt, bis "Interview starten" geklickt wird. Text frei anpassbar. */
+  startTitle:    "Bereit fürs Interview?",
+  startSubtitle: "Bitte prüfen Sie kurz, ob die folgenden Voraussetzungen erfüllt sind. Sobald Sie starten, beginnt das Gespräch mit einer ersten Frage.",
+  startButton:   "Interview starten",
+
+  /* Voraussetzungen, die vor dem Start erinnert werden. Zeilen frei anpassen,
+     hinzufügen oder löschen. */
+  startChecklist: [
+    "Sie sitzen in einer ruhigen Umgebung und werden in den nächsten Minuten nicht gestört.",
+    "Ton und Mikrofon Ihres Geräts funktionieren; Kopfhörer werden empfohlen.",
+    "Sie haben etwa 20 Minuten ununterbrochen Zeit.",
+    "Benachrichtigungen sind stummgeschaltet.",
+  ],
+
+  /* Die Eröffnungsnachricht (Framing + erste Frage) wird schon im Hintergrund
+     geladen, bevor auf "Interview starten" geklickt wird — siehe ganz unten
+     in dieser Datei. Angezeigt wird sie erst nach dem Klick, Wort für Wort. */
+  pendingOpeningMessage: null,
+
   /* --- GESPRÄCHSVERLAUF --------------------------------------------------- */
   /* role: "clinician" = Frage/Antwort des LLM, "user" = Antwort der Person   */
-  /* Dein System hängt hier einfach neue Einträge an.                         */
-  /* Die eigentliche Eröffnungsnachricht (Framing + erste Frage) wird beim    */
-  /* Laden der Seite live vom Server geholt (siehe ganz unten in dieser       */
-  /* Datei) — sie kommt aus study_content/interviews/*.yaml, nicht von hier.  */
-  /* Dieser Platzhalter ist nur sichtbar, solange die Verbindung aufgebaut    */
-  /* wird bzw. falls kein Server erreichbar ist.                             */
-  messages: [
-    { role: "clinician", text: "(Verbindung zum Server wird hergestellt …)" }
-  ],
+  /* Dein System hängt hier einfach neue Einträge an. Bleibt leer, bis das    */
+  /* Start-Overlay geschlossen und die Eröffnungsnachricht angezeigt wird.    */
+  messages: [],
 
   /* --- Zeigt die Klinikerin gerade "tippt …" an? (Denk-Punkte, Text) ----- */
   clinicianTyping: false,
@@ -413,8 +427,11 @@ function setupTextInput() {
 /* =============================================================================
    INTERVIEW-START
    -----------------------------------------------------------------------------
-   Beim Laden der Seite holt sich das Interface einmalig die Eröffnungsnachricht
-   (Framing-Text + erste Frage) vom Server. Diese kommt dort aus der aktiven
+   Beim Laden der Seite holt sich das Interface im Hintergrund schon einmal die
+   Eröffnungsnachricht (Framing-Text + erste Frage) vom Server — noch BEVOR
+   "Interview starten" geklickt wird, damit sie ohne Wartezeit bereitsteht,
+   sobald der Button gedrückt wird. Angezeigt wird sie erst danach, Wort für
+   Wort (siehe playOpening() in index.html). Diese kommt aus der aktiven
    Leitfaden-Datei in study_content/interviews/ — hier im Frontend steht dazu
    absichtlich kein Inhalt, nur die Abfrage.
 ============================================================================= */
@@ -425,19 +442,17 @@ async function loadInterviewStart() {
       throw new Error(`Server antwortete mit Status ${res.status}`);
     }
     const data = await res.json();
-    window.CONVERSATION.messages = [{ role: "clinician", text: data.message }];
+    window.CONVERSATION.pendingOpeningMessage = data.message;
   } catch (error) {
-    window.CONVERSATION.messages = [{
-      role: "clinician",
-      text: `Verbindung zum Server fehlgeschlagen: ${error.message}`,
-    }];
+    window.CONVERSATION.pendingOpeningMessage = `Verbindung zum Server fehlgeschlagen: ${error.message}`;
   } finally {
-    if (typeof window.render === "function") {
-      window.render();
+    if (typeof window.onOpeningMessageReady === "function") {
+      window.onOpeningMessageReady();
     }
   }
 }
 
 // Wartet, bis die Seite (inkl. der Render-Logik in index.html) fertig geladen
-// ist, damit window.render() beim Aufruf schon existiert.
+// ist, damit window.onOpeningMessageReady() beim Aufruf schon existiert.
 document.addEventListener("DOMContentLoaded", loadInterviewStart);
+

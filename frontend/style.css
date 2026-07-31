@@ -7,8 +7,9 @@
      3) Embodiment-Bühne (feste Größe in JEDER Bedingung!)
      4) Text-Modalität (Chat)
      5) Sprach-Modalität (Kugel, Aufnahme-Button)
-     6) Forscher-Overlay
-     7) Animationen (@keyframes)
+     6) Start-Overlay (Bereitschafts-Checkliste)
+     7) Forscher-Overlay
+     8) Animationen (@keyframes)
    ============================================================================= */
 
 /* 1) ======================  REGLER — HIER ÄNDERN  ==========================
@@ -25,8 +26,6 @@
   --page:   #e9e5dd;        /* Hintergrund hinter dem Fenster */
 
   /* Größen (Layout) */
-  --win-width:   1000px;    /* Fensterbreite */
-  --win-height:  600px;     /* Fensterhöhe */
   --stage-width: 404px;     /* Breite der Embodiment-Bühne (bleibt fix -> vergleichbar) */
   --slot-size:   280px;     /* Kantenlänge des Embodiment-Kastens */
   --radius:      22px;      /* Rundung des Embodiment-Kastens */
@@ -37,38 +36,24 @@
 
 /* 2) ============================  GRUNDGERÜST  ============================= */
 *{ box-sizing: border-box; }
+html,body{ height:100%; }
 body{
   margin:0;
-  min-height:100vh;
-  display:grid; place-items:center;        /* Fenster zentrieren */
   background:var(--page);
   font-family:'Instrument Sans', system-ui, sans-serif;
   color:var(--ink);
 }
 a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 
-/* Desktop-Fenster */
+/* Vollbild-Fläche: KEIN nachgebautes Fenster-Chrome (keine Ampel-Punkte,
+   keine Titelleiste) — die Seite läuft ohnehin schon in einem Browser. */
 .deskwin{
-  position:relative;                        /* Bezug für das Overlay */
-  width:var(--win-width); height:var(--win-height);
+  position:relative;                        /* Bezug für Start-Overlay + Forscher-Overlay */
+  width:100%; height:100%;
   background:var(--paper);
-  border-radius:14px; overflow:hidden;
-  box-shadow:0 30px 70px -24px rgba(30,26,20,.45), 0 2px 8px rgba(0,0,0,.08);
+  overflow:hidden;
 }
-.titlebar{
-  height:42px; display:flex; align-items:center; padding:0 16px;
-  background:rgba(0,0,0,.03); border-bottom:1px solid rgba(0,0,0,.06);
-  position:relative;
-}
-.lights{ display:flex; gap:8px; }
-.tl{ width:12px; height:12px; border-radius:50%; }
-.tlr{ background:#ec6a5e; } .tly{ background:#f4bf4f; } .tlg{ background:#61c554; }
-.wintitle{
-  position:absolute; left:0; right:0; text-align:center;
-  font:500 12px 'Instrument Sans',sans-serif; color:var(--muted);
-  pointer-events:none;
-}
-.deskbody{ display:flex; height:calc(var(--win-height) - 42px); }
+.deskbody{ display:flex; height:100%; }
 
 /* 3) ======================  EMBODIMENT-BÜHNE  =============================
    Feste Breite + fester Kasten -> in Logo/Bild/Video/Avatar identisch groß. */
@@ -150,6 +135,21 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 .speakbars i:nth-child(2){ animation-delay:.15s; }
 .speakbars i:nth-child(3){ animation-delay:.3s; }
 .speakbars i:nth-child(4){ animation-delay:.45s; }
+/* Generierungs-Anzeige (Sprach-Modalität): ruhig atmende Balken statt
+   Tipp-Punkten, solange die Antwort noch nicht da ist. Dieselbe Formsprache
+   wie .speakbars, aber gedämpft — "bereitet vor" soll sich klar von
+   "spricht gerade" unterscheiden. */
+.thinkbars{
+  align-self:flex-start; display:inline-flex; align-items:flex-end; gap:3px;
+  height:14px; padding:6px 2px; opacity:.55;
+}
+.thinkbars i{
+  width:2.5px; height:6px; background:var(--muted); border-radius:2px;
+  animation:veq 1.5s ease-in-out infinite;
+}
+.thinkbars i:nth-child(2){ animation-delay:.2s; }
+.thinkbars i:nth-child(3){ animation-delay:.4s; }
+.thinkbars i:nth-child(4){ animation-delay:.6s; }
 /* LLM-Blase, während gesprochen wird: Balken vorangestellt */
 .bqspk{ display:inline-flex; align-items:center; gap:9px; align-self:flex-start;
   background:rgba(0,0,0,.04); border-radius:14px; padding:8px 13px; }
@@ -172,7 +172,50 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
   background:rgba(255,255,255,.22); }
 .mictoggle.rec .miccircle:after{ content:""; width:9px; height:9px; border-radius:2px; background:#fff; }
 
-/* 6) =========================  FORSCHER-OVERLAY  =========================
+/* 6) ===========================  START-OVERLAY  ============================
+   Sichtbar bis "Interview starten" geklickt wird (siehe initStart() in
+   index.html). Deckt die gesamte Fläche ab, damit vorher nichts vom
+   Interview zu sehen ist. */
+.startov{
+  position:absolute; inset:0; z-index:50;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(20,18,15,.55); backdrop-filter:blur(3px);
+}
+.startov.hidden{ display:none; }
+.startbox{
+  width:min(460px, 86%);
+  background:var(--paper); border-radius:20px;
+  padding:36px 34px 32px;
+  box-shadow:0 30px 70px -24px rgba(30,26,20,.45), 0 2px 8px rgba(0,0,0,.08);
+  text-align:center;
+}
+.starttitle{ font:600 22px 'Instrument Sans',sans-serif; margin-bottom:10px; }
+.startsub{ font:400 14px/1.55 'Instrument Sans',sans-serif; color:var(--muted); margin-bottom:22px; }
+.startlist{
+  list-style:none; margin:2px 0 0; padding:0;
+  display:flex; flex-direction:column; gap:12px;
+  max-width:46ch; text-align:left;
+}
+.startlist li{
+  display:flex; align-items:flex-start; gap:11px;
+  font:400 14.5px 'Instrument Sans',sans-serif; color:var(--ink);
+  line-height:1.5; text-wrap:pretty;
+}
+.startcheck{
+  flex:0 0 auto; margin-top:1px;
+  width:19px; height:19px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  background:var(--accent); color:#fff;
+}
+.startbtn{
+  margin-top:26px; padding:13px 30px; border:none; border-radius:26px;
+  background:var(--accent); color:#fff; font:600 14px 'Instrument Sans',sans-serif;
+  cursor:pointer;
+}
+.startbtn:hover:not(:disabled){ background:var(--accent-ink); }
+.startbtn:disabled{ opacity:.55; cursor:not-allowed; }
+
+/* 7) =========================  FORSCHER-OVERLAY  =========================
    Ein-/ausblenden mit  Cmd/Strg + Shift + R  (siehe index.html).            */
 .ovpanel{
   position:absolute; right:18px; bottom:18px; width:304px;
@@ -206,7 +249,7 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 .logrow{ font:400 10.5px/1.5 ui-monospace,Menlo,monospace; color:#8a8579; }
 .logrow b{ color:color-mix(in srgb,var(--accent) 55%,#fff); font-weight:600; }
 
-/* 7) ============================  ANIMATIONEN  ============================ */
+/* 8) ============================  ANIMATIONEN  ============================ */
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }                          /* Live-Punkt */
 @keyframes bounce{ 0%,60%,100%{transform:translateY(0)} 30%{transform:translateY(-5px)} } /* Denk-Punkte */
 @keyframes breathe{ 0%,100%{transform:scale(1)} 50%{transform:scale(1.05)} }     /* Kugel atmet */

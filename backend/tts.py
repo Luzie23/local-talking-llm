@@ -111,3 +111,48 @@ class TextToSpeechService:
 
         audio = np.concatenate(pieces)
         return sample_rate, audio
+
+    def synthesize_streaming(self, text: str, sentence_silence: float = 0.3):
+        """
+        Like synthesize(), but yields one (sample_rate, audio_array) pair
+        per sentence as soon as each one is ready, instead of waiting for
+        the entire text to finish and returning it all as a single array.
+
+        This is what makes Step 5 ("reduce latency") possible for spoken
+        replies: a caller can start playing the first sentence while later
+        sentences are still being synthesized, instead of waiting for the
+        whole reply before any sound plays at all — see backend/app.py's
+        terminal-mode speak() for how this is used.
+
+        Args:
+            text: The text to speak aloud. Can be more than one sentence.
+            sentence_silence: Seconds of silence appended after each
+                sentence except the last one, so consecutive playback
+                calls still sound like natural speech with a pause in
+                between (see synthesize()'s docstring for why this matters).
+
+        Yields:
+            (sample_rate, audio_array) tuples, one per sentence, in the
+            order they should be played.
+        """
+        if not text.strip():
+            return
+
+        silence = None
+        pending_chunk = None
+        pending_sample_rate = None
+
+        # One chunk is held back at a time so we know, once the loop ends,
+        # which chunk was the LAST one — that one should have no trailing
+        # silence appended (nothing comes after it).
+        for chunk in self.voice.synthesize(text):
+            if pending_chunk is not None:
+                yield pending_sample_rate, np.concatenate([pending_chunk, silence])
+
+            pending_sample_rate = chunk.sample_rate
+            pending_chunk = chunk.audio_float_array
+            if silence is None:
+                silence = np.zeros(int(chunk.sample_rate * sentence_silence), dtype=np.float32)
+
+        if pending_chunk is not None:
+            yield pending_sample_rate, pending_chunk

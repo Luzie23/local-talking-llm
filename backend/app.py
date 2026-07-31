@@ -259,17 +259,32 @@ def run_terminal_mode():
     interview.reset()
 
     def speak(text: str):
-        """Synthesize and play one piece of text out loud, honoring --save-voice."""
-        nonlocal response_count
-        sample_rate, audio_array = tts.synthesize(text)
+        """
+        Synthesize and play text out loud, sentence by sentence — the
+        first sentence starts playing as soon as it's ready, while later
+        sentences are still being synthesized, instead of waiting for the
+        whole reply (see the project plan, Step 5 "reduce latency").
 
-        if args.save_voice:
+        Honors --save-voice by collecting the sentences actually played
+        and writing them to disk afterwards as one file, instead of
+        synthesizing everything a second time just for saving.
+        """
+        nonlocal response_count
+        sample_rate = None
+        played_chunks = []
+
+        for sr, audio_array in tts.synthesize_streaming(text):
+            sample_rate = sr
+            speech.play_audio(sr, audio_array)
+            if args.save_voice:
+                played_chunks.append(audio_array)
+
+        if args.save_voice and played_chunks:
             response_count += 1
             filename = f"voices/response_{response_count:03d}.wav"
-            speech.write_wav_file(filename, sample_rate, audio_array)
+            full_audio = np.concatenate(played_chunks)
+            speech.write_wav_file(filename, sample_rate, full_audio)
             print(f"Voice saved to: {filename}")
-
-        speech.play_audio(sample_rate, audio_array)
 
     try:
         # The framing message and the first fixed question open the

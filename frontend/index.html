@@ -25,10 +25,15 @@
      ========================================================================= -->
 <div class="deskwin">
 
-  <!-- Titelleiste -->
-  <div class="titlebar">
-    <div class="lights"><div class="tl tlr"></div><div class="tl tly"></div><div class="tl tlg"></div></div>
-    <div class="wintitle" id="winTitle">Klinisches Interview</div>
+  <!-- START-OVERLAY: sichtbar bis "Interview starten" geklickt wird.
+       Inhalte (Titel, Text, Checkliste) kommen aus conversation.js. -->
+  <div class="startov" id="startov">
+    <div class="startbox">
+      <div class="starttitle" id="startTitle">Bereit fürs Interview?</div>
+      <div class="startsub" id="startSub"></div>
+      <ul class="startlist" id="startList"></ul>
+      <button class="startbtn" id="startBtn" disabled>Wird vorbereitet …</button>
+    </div>
   </div>
 
   <div class="deskbody">
@@ -118,8 +123,15 @@
     modality: "text",
     clinicianTyping: true,
     clinicianSpeaking: false, userRecording: false, liveTranscript: "", spokenChars: null,
+    startTitle: "Bereit fürs Interview?",
+    startSubtitle: "Bitte prüfen Sie kurz, ob die folgenden Voraussetzungen erfüllt sind.",
+    startButton: "Interview starten",
+    startChecklist: [
+      "Sie sitzen in einer ruhigen Umgebung und werden nicht gestört.",
+      "Ton und Mikrofon Ihres Geräts funktionieren.",
+    ],
+    pendingOpeningMessage: "Danke, dass Sie sich heute Zeit nehmen. Wie würden Sie Ihre Stimmung in den letzten zwei Wochen beschreiben?",
     messages: [
-      { role: "clinician", text: "Danke, dass Sie sich heute Zeit nehmen. Wie würden Sie Ihre Stimmung in den letzten zwei Wochen beschreiben?" },
       { role: "user",      text: "Ehrlich gesagt ziemlich flach." },
       { role: "clinician", text: "Das klingt belastend. Ist das die meiste Zeit des Tages da?" }
     ]
@@ -161,7 +173,7 @@
     // Kopf
     document.getElementById("clinicianName").textContent = cfg.clinicianName;
     document.getElementById("clinicianRole").textContent = cfg.clinicianRole;
-    document.getElementById("winTitle").textContent =
+    document.title =
       "Klinisches Interview · " + (cfg.modality === "speech" ? "Sprache" : "Text");
 
     // Embodiment
@@ -188,9 +200,6 @@
       const el = spk.querySelector(".bq");
       const shown = (cfg.spokenChars == null) ? lastMsg.text : lastMsg.text.slice(0, cfg.spokenChars);
       el.textContent = shown;
-      if (cfg.spokenChars != null && cfg.spokenChars < lastMsg.text.length) {
-        el.insertAdjacentHTML("beforeend", '<span class="caret"></span>');
-      }
       chat.scrollTop = chat.scrollHeight;
       return;
     }
@@ -209,9 +218,8 @@
         var shown = (cfg.spokenChars == null) ? m.text : m.text.slice(0, cfg.spokenChars);
         var el = chat.querySelector(".bqspk:last-child .bq");
         el.textContent = shown;
-        if (cfg.spokenChars != null && cfg.spokenChars < m.text.length) {
-          el.insertAdjacentHTML("beforeend", '<span class="caret"></span>');
-        }
+        // Kein Tipp-Cursor: im Sprachmodus wird gesprochen, nicht getippt.
+        // Das Sprechen zeigen allein die Balken links der Blase an.
       } else {
         const b = document.createElement("div");
         b.className = m.role === "user" ? "ba" : "bq";
@@ -241,8 +249,11 @@
           cfg.processingResponse ? "Bitte warten…" : (cfg.userRecording ? "Aufnahme … zum Stoppen klicken" : "Zum Sprechen klicken");
       }
       if ((cfg.clinicianTyping || cfg.processingResponse) && !cfg.userRecording) {
+        // Sprach-Modalität: keine Tipp-Punkte (es wird ja nicht getippt),
+        // sondern ruhig atmende Balken — dieselbe Formsprache wie die
+        // "spricht gerade"-Anzeige, nur gedämpft.
         chat.insertAdjacentHTML("beforeend",
-          '<div class="typing"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>');
+          '<div class="thinkbars"><i></i><i></i><i></i><i></i></div>');
       }
     } else if (cfg.clinicianTyping) {
       // Text-Modalität: "tippt …"-Punkte
@@ -298,10 +309,83 @@
     render();
   });
 
+  /* --- Start-Overlay: Checkliste befüllen, Button erst aktiv, sobald die
+         Eröffnungsnachricht vom Server da ist (siehe loadInterviewStart()
+         in conversation.js, das parallel im Hintergrund lädt). ----------- */
+  function initStart() {
+    const ov = document.getElementById("startov");
+    if (!ov) return;
+
+    document.getElementById("startTitle").textContent = cfg.startTitle || "Bereit fürs Interview?";
+    document.getElementById("startSub").textContent = cfg.startSubtitle || "";
+
+    const list = document.getElementById("startList");
+    if (list && Array.isArray(cfg.startChecklist)) {
+      list.innerHTML = cfg.startChecklist.map(function () {
+        return '<li><span class="startcheck">' +
+          '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>' +
+          '</span><span></span></li>';
+      }).join("");
+      // Text per textContent gesetzt, nicht per String-Konkatenation — so
+      // kann kein Inhalt aus conversation.js als HTML interpretiert werden.
+      list.querySelectorAll("li > span:last-child").forEach(function (el, i) {
+        el.textContent = cfg.startChecklist[i];
+      });
+    }
+
+    const btn = document.getElementById("startBtn");
+    btn.textContent = cfg.startButton || "Interview starten";
+    // Erst klickbar, sobald die Eröffnungsnachricht wirklich da ist (siehe
+    // window.onOpeningMessageReady) — falls der Server schneller war als
+    // dieses Skript hier, ist sie es unter Umständen schon jetzt.
+    btn.disabled = !cfg.pendingOpeningMessage;
+
+    btn.addEventListener("click", function () {
+      if (btn.disabled) return;
+      ov.classList.add("hidden");
+      playOpening(cfg.pendingOpeningMessage || "");
+    });
+  }
+
+  /* --- Gibt die Eröffnungsnachricht Wort für Wort aus, so als würde das
+         LLM sie gerade live generieren (gilt nur für DIESE eine Nachricht,
+         nicht für spätere Antworten). --------------------------------- */
+  function playOpening(text) {
+    const words = text.split(" ").filter(function (w) { return w.length > 0; });
+    cfg.messages = [{ role: "clinician", text: "" }];
+    render();
+
+    if (words.length === 0) {
+      return;
+    }
+
+    let shown = 0;
+    const timer = setInterval(function () {
+      shown += 1;
+      cfg.messages[0].text = words.slice(0, shown).join(" ");
+      render();
+      if (shown >= words.length) {
+        clearInterval(timer);
+      }
+    }, 150);
+  }
+
+  // Vom Hintergrund-Fetch in conversation.js aufgerufen, sobald die
+  // Eröffnungsnachricht angekommen ist (auch wenn das Overlay schon
+  // sichtbar ist und noch auf den Klick gewartet wird).
+  window.onOpeningMessageReady = function () {
+    const btn = document.getElementById("startBtn");
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = cfg.startButton || "Interview starten";
+    }
+  };
+
   window.render = render;
   window.setupTextInput = setupTextInput;
 
   setupTextInput();
+  initStart();
   render();
 })();
 </script>
