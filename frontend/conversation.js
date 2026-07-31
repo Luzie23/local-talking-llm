@@ -80,7 +80,6 @@ let audioStream = null;
 let audioContext = null;
 let recorderNode = null;
 let recordedBuffers = [];
-let playbackTimer = null;
 let speechRecognition = null;
 
 function floatTo16BitPCM(output, offset, input) {
@@ -223,7 +222,7 @@ async function startMicRecording() {
   }
 }
 
-function stopMicRecording() {
+async function stopMicRecording() {
   if (!audioStream) {
     return;
   }
@@ -261,95 +260,150 @@ function stopMicRecording() {
   formData.append("audio", wavBlob, "speech.wav");
   formData.append("language", "de");
 
-  fetch("/api/chat/audio", {
-    method: "POST",
-    body: formData,
-  })
-    .then(async (response) => {
-          if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.error || `Server error ${response.status}`);
-      }
-      return response.json();
-    })
-    .then((result) => {
-      if (!result.response) {
-        throw new Error("Ungültige Antwort vom Server.");
-      }
-
-      window.CONVERSATION.processingResponse = false;
-      window.CONVERSATION.clinicianTyping = false;
-      window.CONVERSATION.liveTranscript = result.transcript || window.CONVERSATION.liveTranscript || "";
-      window.CONVERSATION.clinicianSpeaking = true;
-      window.CONVERSATION.spokenChars = 0;
-      window.CONVERSATION.messages.push({ role: "clinician", text: result.response });
-      render();
-
-      playResponseAudio(result.audio, result.response);
-    })
-    .catch((error) => {
-      window.CONVERSATION.processingResponse = false;
-      window.CONVERSATION.clinicianTyping = false;
-      window.CONVERSATION.clinicianSpeaking = false;
-      window.CONVERSATION.spokenChars = null;
-      window.CONVERSATION.liveTranscript = "";
-      pushClinicianMessage(`Fehler: ${error.message}`);
-      render();
+  try {
+    const response = await fetch("/api/chat/audio", {
+      method: "POST",
+      body: formData,
     });
+
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error || `Server error ${response.status}`);
+    }
+
+    window.CONVERSATION.processingResponse = false;
+    window.CONVERSATION.clinicianTyping = false;
+    render();
+
+    await readStreamedReply(response);
+  } catch (error) {
+    window.CONVERSATION.processingResponse = false;
+    window.CONVERSATION.clinicianTyping = false;
+    window.CONVERSATION.clinicianSpeaking = false;
+    window.CONVERSATION.spokenChars = null;
+    window.CONVERSATION.liveTranscript = "";
+    pushClinicianMessage(`Fehler: ${error.message}`);
+    render();
+  }
 }
 
-function playResponseAudio(base64Audio, responseText) {
-  if (playbackTimer) {
-    clearInterval(playbackTimer);
-    playbackTimer = null;
-  }
+/* =============================================================================
+   GESTREAMTE SPRACH-ANTWORT (Step 5b)
+   -----------------------------------------------------------------------------
+   /api/chat/audio schickt die Antwort nicht mehr als einen einzigen Block,
+   sondern als NDJSON-Stream — eine JSON-Zeile pro Satz, sobald dieser fertig
+   vertont ist. Das lässt den ersten Satz schon losspielen, während spätere
+   Sätze noch synthetisiert werden. Zeilentypen: "transcript" (einmal, zuerst),
+   "sentence" (eine pro Satz, mit Text + Audio), "error" (bei einem Problem
+   während der Vertonung — bereits gespielte Sätze bleiben davon unberührt).
+============================================================================= */
+async function readStreamedReply(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
 
-  const audioData = atob(base64Audio);
-  const buffer = new Uint8Array(audioData.length);
-  for (let i = 0; i < audioData.length; i++) {
-    buffer[i] = audioData.charCodeAt(i);
-  }
-  const blob = new Blob([buffer], { type: "audio/wav" });
-  const url = URL.createObjectURL(blob);
-  const audio = new Audio(url);
+  // Eine gemeinsame Sprechblase, die satzweise wächst.
+  const msg = { role: "clinician", text: "" };
+  window.CONVERSATION.messages.push(msg);
+  window.CONVERSATION.spokenChars = null; // volle Kontrolle über msg.text, kein Slicing in render()
 
-  const fullLength = responseText.length;
-  audio.addEventListener("play", () => {
-    window.CONVERSATION.clinicianSpeaking = true;
-    window.CONVERSATION.spokenChars = 0;
-    render();
+  const audioQueue = [];
+  let playing = false;
+  let completedText = "";
 
-    playbackTimer = setInterval(() => {
-      const ratio = Math.min(1, audio.currentTime / Math.max(audio.duration, 0.001));
-      window.CONVERSATION.spokenChars = Math.floor(fullLength * ratio);
-      render();
-    }, 50);
-  });
-
-  audio.addEventListener("ended", () => {
-    if (playbackTimer) {
-      clearInterval(playbackTimer);
-      playbackTimer = null;
+  function maybePlayNext() {
+    if (playing || audioQueue.length === 0) {
+      return;
     }
-    window.CONVERSATION.clinicianSpeaking = false;
-    window.CONVERSATION.liveTranscript = "";
-    render();
-    URL.revokeObjectURL(url);
+    playing = true;
+    const piece = audioQueue.shift();
+    playSentencePiece(piece, function () {
+      playing = false;
+      maybePlayNext();
+    });
+  }
+
+  function playSentencePiece(piece, onDone) {
+    const audioData = atob(piece.audio);
+    const bytes = new Uint8Array(audioData.length);
+    for (let i = 0; i < audioData.length; i++) {
+      bytes[i] = audioData.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: "audio/wav" });
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    let timer = null;
+
+    audio.addEventListener("play", () => {
+      window.CONVERSATION.clinicianSpeaking = true;
+      timer = setInterval(() => {
+        const ratio = Math.min(1, audio.currentTime / Math.max(audio.duration, 0.001));
+        const shown = piece.text.slice(0, Math.floor(piece.text.length * ratio));
+        msg.text = completedText ? completedText + " " + shown : shown;
+        render();
+      }, 50);
+    });
+
+    const finish = () => {
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+      completedText = completedText ? completedText + " " + piece.text : piece.text;
+      msg.text = completedText;
+      render();
+      URL.revokeObjectURL(url);
+      onDone();
+    };
+
+    audio.addEventListener("ended", finish);
+    audio.addEventListener("error", finish);
+    audio.play().catch(finish);
+  }
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+
+    let newlineIndex;
+    while ((newlineIndex = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+      if (!line) {
+        continue;
+      }
+      const data = JSON.parse(line);
+      if (data.type === "transcript") {
+        window.CONVERSATION.liveTranscript = data.transcript || "";
+      } else if (data.type === "sentence") {
+        audioQueue.push({ text: data.text, audio: data.audio });
+        maybePlayNext();
+      } else if (data.type === "error") {
+        pushClinicianMessage(`Fehler: ${data.message}`);
+        render();
+      }
+    }
+  }
+
+  // Der Server ist fertig, aber es kann noch Audio in der Warteschlange
+  // liegen oder gerade spielen — erst danach gilt der Zug als beendet.
+  await new Promise((resolve) => {
+    const check = () => {
+      if (!playing && audioQueue.length === 0) {
+        resolve();
+      } else {
+        setTimeout(check, 50);
+      }
+    };
+    check();
   });
 
-  audio.addEventListener("error", () => {
-    window.CONVERSATION.clinicianSpeaking = false;
-    window.CONVERSATION.liveTranscript = "Audiowiedergabe fehlgeschlagen.";
-    render();
-    URL.revokeObjectURL(url);
-  });
-
-  audio.play().catch((error) => {
-    console.error("Audio playback failed", error);
-    window.CONVERSATION.clinicianSpeaking = false;
-    window.CONVERSATION.liveTranscript = "Audiowiedergabe fehlgeschlagen.";
-    render();
-  });
+  window.CONVERSATION.clinicianSpeaking = false;
+  window.CONVERSATION.liveTranscript = "";
+  render();
 }
 
 window.onMicToggle = function (isRecording) {

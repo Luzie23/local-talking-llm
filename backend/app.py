@@ -20,13 +20,15 @@ See the project's README for the full list of command-line options
 before running the voice condition for the first time.
 """
 import argparse
+import json
 import os
+import re
 import threading
 import time
 from queue import Queue
 
 import numpy as np
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 
 import llm_provider
 import speech
@@ -96,25 +98,60 @@ def index():
     return app.send_static_file("index.html")
 
 
-def _combine_with_next(feedback: str, next_question: dict | None) -> str:
+def _split_sentences(text: str) -> list[str]:
     """
-    Combine a feedback sentence with whatever comes next: the next fixed
-    question (delivered according to the active profile's question_delivery
-    style), or the closing message if the guide is now finished.
+    Split a piece of text into individual sentences, so each one can be
+    streamed to the browser (and spoken) as soon as it's ready, instead of
+    waiting for the whole piece. This matters because "the feedback" or "a
+    question" are not guaranteed to always be exactly one sentence — if a
+    prompt in study_content/prompts/ is edited later to allow a longer,
+    multi-sentence feedback, this still splits it up correctly instead of
+    silently becoming one large, slower chunk.
+
+    This is a simple, punctuation-based split (not aware of abbreviations
+    like "Dr." or "z.B.") — good enough for short interview responses. Piper
+    does its own, more careful sentence splitting internally for the actual
+    audio; this split only decides how text is grouped for streaming.
     """
-    if next_question is None:
-        return f"{feedback} {interview.closing_message}".strip()
+    text = text.strip()
+    if not text:
+        return []
+    parts = re.split(r'(?<=[.!?])\s+', text)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _response_pieces(feedback: str, next_question: dict | None) -> list[str]:
+    """
+    Break the reply that follows a piece of feedback into the individual
+    sentences it's made of, in speaking order — this is what lets the voice
+    condition start speaking the first sentence while later ones are still
+    being synthesized (see Step 5b of the project plan).
+
+    For "natural_transition" delivery, the model blends the feedback and
+    the next question into one smoothly-worded message — there are no
+    separately-known pieces in that case, only sentences within the result.
+    """
+    following_text = next_question["text"] if next_question is not None else interview.closing_message
+
     if profile.question_delivery == "natural_transition":
-        return llm_provider.get_natural_transition(llm, feedback, next_question["text"], language_code=args.language)
-    return f"{feedback} {next_question['text']}".strip()
+        combined = llm_provider.get_natural_transition(llm, feedback, following_text, language_code=args.language)
+        return _split_sentences(combined)
+
+    return _split_sentences(feedback) + _split_sentences(following_text)
 
 
-def process_answer(answer_text: str) -> str:
+def process_answer(answer_text: str) -> list[str]:
     """
     The core interview turn: given what the participant just said, decide
     what the assistant says next, and advance the interview guide's state
     accordingly. Shared by both web routes and the terminal mode, so the
     behavior is identical regardless of modality.
+
+    Returns a list of individual sentences, in speaking order, rather than
+    one combined string — this is what backend/app.py's audio endpoint
+    streams to the browser one at a time (see Step 5b of the project plan).
+    Callers that just want the full text (text condition, terminal mode)
+    can simply join the list with spaces.
 
     Two cases:
       1. The participant is answering a follow-up that was asked last turn
@@ -138,12 +175,12 @@ def process_answer(answer_text: str) -> str:
         )
         print(f"[interview] feedback={feedback!r}")
         next_question = interview.advance()
-        return _combine_with_next(feedback, next_question)
+        return _response_pieces(feedback, next_question)
 
     question = interview.current_question()
     if question is None:
         # The guide was already finished; nothing left to ask.
-        return interview.closing_message
+        return _split_sentences(interview.closing_message)
 
     followup_allowed = question["allow_followup"] and not interview.followup_already_used()
     print(
@@ -159,10 +196,10 @@ def process_answer(answer_text: str) -> str:
 
     if followup:
         interview.start_followup(followup)
-        return f"{feedback} {followup}".strip()
+        return _split_sentences(feedback) + _split_sentences(followup)
 
     next_question = interview.advance()
-    return _combine_with_next(feedback, next_question)
+    return _response_pieces(feedback, next_question)
 
 
 @app.route("/api/interview/start", methods=["GET"])
@@ -198,7 +235,8 @@ def chat_endpoint():
     if not answer_text:
         return jsonify({"error": "Kein Text eingegeben."}), 400
 
-    response = process_answer(answer_text)
+    pieces = process_answer(answer_text)
+    response = " ".join(pieces).strip()
     print(f"[interview] final response sent to browser: {response!r}")
     return jsonify({"response": response})
 
@@ -208,8 +246,20 @@ def chat_audio_endpoint():
     """
     Voice-condition endpoint: the participant spoke into the browser's microphone.
     Expects multipart/form-data with an "audio" file and optional "language" field.
-    Returns JSON: {"transcript": "...", "response": "...", "audio": "...base64..."}
-    — see process_answer() for what "response" might contain.
+
+    Streams the reply back as NDJSON (one JSON object per line), instead of
+    waiting for the whole reply to be synthesized before responding — this
+    is what Step 5b of the project plan is for: the browser can start
+    playing the first sentence while later ones are still being
+    synthesized. Line types:
+
+      {"type": "transcript", "transcript": "..."}
+        Sent first, as soon as speech-to-text is done.
+      {"type": "sentence", "text": "...", "audio": "...base64 wav...", "is_last": bool}
+        One per sentence, in speaking order.
+      {"type": "error", "message": "..."}
+        Sent instead of a "sentence" line if synthesizing one sentence
+        fails; playback of anything already sent is unaffected.
     """
     audio_file = request.files.get("audio")
     if not audio_file:
@@ -222,17 +272,37 @@ def chat_audio_endpoint():
         return jsonify({"error": f"Unable to decode audio: {e}"}), 400
 
     transcript = stt.transcribe(audio_np, language=language)
-    response = process_answer(transcript)
-    print(f"[interview] final response sent to browser: {response!r}")
+    pieces = process_answer(transcript)
+    print(f"[interview] final response sent to browser: {' '.join(pieces)!r}")
 
-    sample_rate, audio_array = tts.synthesize(response)
-    audio_base64 = speech.encode_wav_base64(sample_rate, audio_array)
+    def generate():
+        yield json.dumps({"type": "transcript", "transcript": transcript}) + "\n"
 
-    return jsonify({
-        "transcript": transcript,
-        "response": response,
-        "audio": audio_base64,
-    })
+        # Short pause appended after every sentence except the last, so
+        # consecutive audio pieces played back-to-back in the browser still
+        # sound like natural speech instead of running into each other —
+        # same reasoning as the pause between sentences in backend/tts.py.
+        gap_seconds = 0.3
+
+        for i, sentence_text in enumerate(pieces):
+            is_last = (i == len(pieces) - 1)
+            try:
+                sample_rate, audio_array = tts.synthesize(sentence_text)
+                if not is_last:
+                    gap = np.zeros(int(sample_rate * gap_seconds), dtype=np.float32)
+                    audio_array = np.concatenate([audio_array, gap])
+                audio_base64 = speech.encode_wav_base64(sample_rate, audio_array)
+                yield json.dumps({
+                    "type": "sentence",
+                    "text": sentence_text,
+                    "audio": audio_base64,
+                    "is_last": is_last,
+                }) + "\n"
+            except Exception as e:
+                yield json.dumps({"type": "error", "message": str(e)}) + "\n"
+                break
+
+    return Response(generate(), mimetype="application/x-ndjson")
 
 
 # --- Terminal mode (used without --web) -------------------------------------
@@ -326,7 +396,8 @@ def run_terminal_mode():
             print(f"You: {answer_text}")
 
             print("Generating response...")
-            combined = process_answer(answer_text)
+            pieces = process_answer(answer_text)
+            combined = " ".join(pieces).strip()
 
             print(f"Assistant: {combined}")
             speak(combined)
