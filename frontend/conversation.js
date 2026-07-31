@@ -86,6 +86,7 @@ let audioContext = null;
 let recorderNode = null;
 let recordedBuffers = [];
 let speechRecognition = null;
+let replyTurnCounter = 0;
 
 function floatTo16BitPCM(output, offset, input) {
   for (let i = 0; i < input.length; i++, offset += 2) {
@@ -259,6 +260,14 @@ async function stopMicRecording() {
     window.CONVERSATION.messages.push({ role: "user", text: transcriptText });
   }
   window.CONVERSATION.liveTranscript = "Verarbeite Sprachaufzeichnung…";
+
+  // Platzhalter für die kommende Antwort schon jetzt anlegen (noch leer) —
+  // damit die "denkt nach"/"spricht gerade"-Anzeige in render() ein
+  // einziges, durchgehendes Element bleibt, von hier bis zum letzten
+  // gesprochenen Satz. turnId identifiziert diese eine Blase eindeutig,
+  // unabhängig davon, wie oft sich ihr Text noch ändert.
+  const replyMsg = { role: "clinician", text: "", turnId: ++replyTurnCounter };
+  window.CONVERSATION.messages.push(replyMsg);
   render();
 
   const formData = new FormData();
@@ -276,18 +285,14 @@ async function stopMicRecording() {
       throw new Error(body.error || `Server error ${response.status}`);
     }
 
-    window.CONVERSATION.processingResponse = false;
-    window.CONVERSATION.clinicianTyping = false;
-    render();
-
-    await readStreamedReply(response);
+    await readStreamedReply(response, replyMsg);
   } catch (error) {
     window.CONVERSATION.processingResponse = false;
     window.CONVERSATION.clinicianTyping = false;
     window.CONVERSATION.clinicianSpeaking = false;
     window.CONVERSATION.spokenChars = null;
     window.CONVERSATION.liveTranscript = "";
-    pushClinicianMessage(`Fehler: ${error.message}`);
+    replyMsg.text = `Fehler: ${error.message}`;
     render();
   }
 }
@@ -302,14 +307,11 @@ async function stopMicRecording() {
    "sentence" (eine pro Satz, mit Text + Audio), "error" (bei einem Problem
    während der Vertonung — bereits gespielte Sätze bleiben davon unberührt).
 ============================================================================= */
-async function readStreamedReply(response) {
+async function readStreamedReply(response, msg) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
 
-  // Eine gemeinsame Sprechblase, die satzweise wächst.
-  const msg = { role: "clinician", text: "" };
-  window.CONVERSATION.messages.push(msg);
   window.CONVERSATION.spokenChars = null; // volle Kontrolle über msg.text, kein Slicing in render()
 
   const audioQueue = [];
@@ -340,11 +342,22 @@ async function readStreamedReply(response) {
     let timer = null;
 
     audio.addEventListener("play", () => {
+      // Erster Ton dieser Antwort -> von "denkt nach" (grau) auf "spricht
+      // gerade" (grün) umschalten. Das Balken-Element selbst bleibt
+      // dasselbe (siehe turnId-Erkennung in render()) — nur die CSS-Klasse
+      // wechselt, keine Animation wird neu gestartet.
+      window.CONVERSATION.clinicianTyping = false;
+      window.CONVERSATION.processingResponse = false;
       window.CONVERSATION.clinicianSpeaking = true;
+
+      const revealBaseText = completedText ? completedText + " " + piece.text : piece.text;
+      const revealBaseLength = completedText ? completedText.length + 1 : 0;
+      msg.text = revealBaseText;
+      window.CONVERSATION.spokenChars = revealBaseLength;
+
       timer = setInterval(() => {
         const ratio = Math.min(1, audio.currentTime / Math.max(audio.duration, 0.001));
-        const shown = piece.text.slice(0, Math.floor(piece.text.length * ratio));
-        msg.text = completedText ? completedText + " " + shown : shown;
+        window.CONVERSATION.spokenChars = revealBaseLength + Math.floor(piece.text.length * ratio);
         render();
       }, 50);
     });
@@ -356,6 +369,7 @@ async function readStreamedReply(response) {
       }
       completedText = completedText ? completedText + " " + piece.text : piece.text;
       msg.text = completedText;
+      window.CONVERSATION.spokenChars = null; // dieses Häppchen ist fertig -> voll anzeigen
       render();
       URL.revokeObjectURL(url);
       onDone();
@@ -387,7 +401,16 @@ async function readStreamedReply(response) {
         audioQueue.push({ text: data.text, audio: data.audio });
         maybePlayNext();
       } else if (data.type === "error") {
-        pushClinicianMessage(`Fehler: ${data.message}`);
+        window.CONVERSATION.clinicianTyping = false;
+        window.CONVERSATION.processingResponse = false;
+        if (!completedText) {
+          // Noch kein Satz wurde gesprochen — die "denkt nach"-Blase selbst
+          // wird zur Fehlermeldung, statt eine hängende leere Blase plus
+          // eine zweite Nachricht darunter zu hinterlassen.
+          msg.text = `Fehler: ${data.message}`;
+        } else {
+          pushClinicianMessage(`Fehler: ${data.message}`);
+        }
         render();
       }
     }
@@ -407,6 +430,8 @@ async function readStreamedReply(response) {
   });
 
   window.CONVERSATION.clinicianSpeaking = false;
+  window.CONVERSATION.clinicianTyping = false;
+  window.CONVERSATION.processingResponse = false;
   window.CONVERSATION.liveTranscript = "";
   render();
 }

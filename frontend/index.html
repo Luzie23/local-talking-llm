@@ -36,7 +36,7 @@
       <div class="starttest">
         <button class="testbtn" id="testSoundBtn" type="button">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>
-          <span>Lautsprecher testen</span>
+          <span>Testton abspielen</span>
         </button>
         <button class="testbtn" id="testMicBtn" type="button">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg>
@@ -204,32 +204,49 @@
     // (auch live mitgeschriebene) Eingabe der teilnehmenden Person.
     const chat = document.getElementById("chat");
 
-    // Schnellpfad während der Sprachausgabe: NICHT das Chat-DOM neu aufbauen,
-    // sonst starten die "spricht gerade"-Balken bei jedem render()-Tick (alle
-    // 50 ms) ihre CSS-Animation neu und wirken dadurch eingefroren. Wir
-    // aktualisieren nur den bereits gesprochenen Text der bestehenden Blase.
+    // Ein durchgehender Zustand "Antwort ist gerade in Arbeit" — deckt sowohl
+    // "denkt nach" (noch kein Ton) als auch "spricht gerade" ab. Das ist die
+    // Grundlage dafür, dass die Balken-Anzeige EIN einziges DOM-Element
+    // bleibt, egal ob gerade nachgedacht oder gesprochen wird oder zwischen
+    // Sätzen gewechselt wird — nur Farbe/Tempo wechseln per CSS-Klasse.
+    const turnInProgress = cfg.clinicianTyping || cfg.processingResponse || cfg.clinicianSpeaking;
+
+    // Schnellpfad während einer laufenden Antwort: NICHT das Chat-DOM neu
+    // aufbauen, sonst startet die Balken-CSS-Animation bei jedem
+    // render()-Tick (alle 50 ms) bzw. bei jedem Satzwechsel neu und wirkt
+    // dadurch eingefroren/springend. Erkennung "ist das noch dieselbe
+    // Blase?" läuft bewusst über eine STABILE Kennung (turnId), NICHT über
+    // den Text — der Text ändert sich hier laufend (das ist ja der Sinn),
+    // ein Vergleich über Textgleichheit würde also ständig fälschlich
+    // "nein, neu bauen" ergeben.
     const lastMsg = cfg.messages[cfg.messages.length - 1];
     const spk = chat.querySelector(".bqspk:last-child");
-    if (isSpeech && cfg.clinicianSpeaking && spk && lastMsg && lastMsg.role === "clinician"
-        && spk.dataset.msg === lastMsg.text) {
+    if (isSpeech && turnInProgress && spk && lastMsg && lastMsg.role === "clinician"
+        && lastMsg.turnId != null && spk.dataset.turnId === String(lastMsg.turnId)) {
       const el = spk.querySelector(".bq");
       const shown = (cfg.spokenChars == null) ? lastMsg.text : lastMsg.text.slice(0, cfg.spokenChars);
       el.textContent = shown;
+      spk.querySelector(".speakbars").classList.toggle("thinking", !cfg.clinicianSpeaking);
       chat.scrollTop = chat.scrollHeight;
       return;
     }
-    
+
     chat.innerHTML = "";
     cfg.messages.forEach(function (m, i) {
       const isLast = i === cfg.messages.length - 1;
-      if (isSpeech && m.role === "clinician" && isLast && cfg.clinicianSpeaking) {
-        // LLM spricht gerade -> Blase mit "spricht gerade"-Balken statt Punkt,
-        // Text SYNCHRON zum Ton (nur bereits gesprochene Zeichen).
+      if (isSpeech && m.role === "clinician" && isLast && turnInProgress) {
+        // Antwort läuft noch (Nachdenken ODER Sprechen) -> Blase mit
+        // Balken-Anzeige statt fertigem Text. ".thinking" macht die Balken
+        // grau/langsam (nachdenken, noch kein Ton — vermeidet den Eindruck,
+        // man müsste bereits etwas hören); ohne die Klasse sind sie grün/
+        // schneller (spricht gerade). Text erscheint SYNCHRON zum Ton
+        // (nur bereits gesprochene Zeichen), während des Nachdenkens leer.
+        const thinkingClass = cfg.clinicianSpeaking ? "" : " thinking";
         chat.insertAdjacentHTML("beforeend",
           '<div class="bqspk">' +
-          '<span class="speakbars"><i></i><i></i><i></i><i></i></span>' +
+          '<span class="speakbars' + thinkingClass + '"><i></i><i></i><i></i><i></i></span>' +
           '<span class="bq" style="font-size:16px"></span></div>');
-        chat.querySelector(".bqspk:last-child").dataset.msg = m.text;
+        chat.querySelector(".bqspk:last-child").dataset.turnId = m.turnId != null ? String(m.turnId) : "";
         var shown = (cfg.spokenChars == null) ? m.text : m.text.slice(0, cfg.spokenChars);
         var el = chat.querySelector(".bqspk:last-child .bq");
         el.textContent = shown;
@@ -262,13 +279,6 @@
         btn.style.pointerEvents = disabled ? "none" : "auto";
         document.getElementById("micLabel").textContent =
           cfg.processingResponse ? "Bitte warten…" : (cfg.userRecording ? "Aufnahme … zum Stoppen klicken" : "Zum Sprechen klicken");
-      }
-      if ((cfg.clinicianTyping || cfg.processingResponse) && !cfg.userRecording) {
-        // Sprach-Modalität: keine Tipp-Punkte (es wird ja nicht getippt),
-        // sondern ruhig atmende Balken — dieselbe Formsprache wie die
-        // "spricht gerade"-Anzeige, nur gedämpft.
-        chat.insertAdjacentHTML("beforeend",
-          '<div class="thinkbars"><i></i><i></i><i></i><i></i></div>');
       }
     } else if (cfg.clinicianTyping) {
       // Text-Modalität: "tippt …"-Punkte
