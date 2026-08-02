@@ -31,19 +31,38 @@ window.CONVERSATION = {
   /* --- FAKTOR 2: MODALITÄT ----------------------------------------------- */
   /* "text"   -> Chat-Blasen + Texteingabe                                   */
   /* "speech" -> nur Sprach-Oberfläche, KEIN Text für die teilnehmende Person */
-  modality: "text",
+  modality: "speech",
+
+  /* --- START-OVERLAY ------------------------------------------------------ */
+  /* Wird angezeigt, bis "Interview starten" geklickt wird. Text frei anpassbar. */
+  startTitle:    "Bereit fürs Interview?",
+  startSubtitle: "Bitte prüfen Sie kurz, ob die folgenden Voraussetzungen erfüllt sind. Sobald Sie starten, beginnt das Gespräch mit einer ersten Frage.",
+  startButton:   "Interview starten",
+
+  /* Beschriftungen für den optionalen Ton-/Mikrofon-Test im Start-Overlay.
+     Der Test selbst blockiert "Interview starten" nicht — reines Angebot. */
+  startSoundTestLabel: "Testton abspielen",
+  startMicTestLabel:   "Mikrofon testen",
+
+  /* Voraussetzungen, die vor dem Start erinnert werden. Zeilen frei anpassen,
+     hinzufügen oder löschen. */
+  startChecklist: [
+    "Sie sitzen in einer ruhigen Umgebung und werden in den nächsten Minuten nicht gestört.",
+    "Ton und Mikrofon Ihres Geräts funktionieren; Kopfhörer werden empfohlen.",
+    "Sie haben etwa 20 Minuten ununterbrochen Zeit.",
+    "Benachrichtigungen sind stummgeschaltet.",
+  ],
+
+  /* Die Eröffnungsnachricht (Framing + erste Frage) wird schon im Hintergrund
+     geladen, bevor auf "Interview starten" geklickt wird — siehe ganz unten
+     in dieser Datei. Angezeigt wird sie erst nach dem Klick, Wort für Wort. */
+  pendingOpeningMessage: null,
 
   /* --- GESPRÄCHSVERLAUF --------------------------------------------------- */
   /* role: "clinician" = Frage/Antwort des LLM, "user" = Antwort der Person   */
-  /* Dein System hängt hier einfach neue Einträge an.                         */
-  /* Die eigentliche Eröffnungsnachricht (Framing + erste Frage) wird beim    */
-  /* Laden der Seite live vom Server geholt (siehe ganz unten in dieser       */
-  /* Datei) — sie kommt aus study_content/interviews/*.yaml, nicht von hier.  */
-  /* Dieser Platzhalter ist nur sichtbar, solange die Verbindung aufgebaut    */
-  /* wird bzw. falls kein Server erreichbar ist.                             */
-  messages: [
-    { role: "clinician", text: "(Verbindung zum Server wird hergestellt …)" }
-  ],
+  /* Dein System hängt hier einfach neue Einträge an. Bleibt leer, bis das    */
+  /* Start-Overlay geschlossen und die Eröffnungsnachricht angezeigt wird.    */
+  messages: [],
 
   /* --- Zeigt die Klinikerin gerade "tippt …" an? (Denk-Punkte, Text) ----- */
   clinicianTyping: false,
@@ -66,8 +85,8 @@ let audioStream = null;
 let audioContext = null;
 let recorderNode = null;
 let recordedBuffers = [];
-let playbackTimer = null;
 let speechRecognition = null;
+let replyTurnCounter = 0;
 
 function floatTo16BitPCM(output, offset, input) {
   for (let i = 0; i < input.length; i++, offset += 2) {
@@ -209,7 +228,7 @@ async function startMicRecording() {
   }
 }
 
-function stopMicRecording() {
+async function stopMicRecording() {
   if (!audioStream) {
     return;
   }
@@ -241,101 +260,180 @@ function stopMicRecording() {
     window.CONVERSATION.messages.push({ role: "user", text: transcriptText });
   }
   window.CONVERSATION.liveTranscript = "Verarbeite Sprachaufzeichnung…";
+
+  // Platzhalter für die kommende Antwort schon jetzt anlegen (noch leer) —
+  // damit die "denkt nach"/"spricht gerade"-Anzeige in render() ein
+  // einziges, durchgehendes Element bleibt, von hier bis zum letzten
+  // gesprochenen Satz. turnId identifiziert diese eine Blase eindeutig,
+  // unabhängig davon, wie oft sich ihr Text noch ändert.
+  const replyMsg = { role: "clinician", text: "", turnId: ++replyTurnCounter };
+  window.CONVERSATION.messages.push(replyMsg);
   render();
 
   const formData = new FormData();
   formData.append("audio", wavBlob, "speech.wav");
   formData.append("language", "de");
 
-  fetch("/api/chat/audio", {
-    method: "POST",
-    body: formData,
-  })
-    .then(async (response) => {
-          if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.error || `Server error ${response.status}`);
-      }
-      return response.json();
-    })
-    .then((result) => {
-      if (!result.response) {
-        throw new Error("Ungültige Antwort vom Server.");
-      }
-
-      window.CONVERSATION.processingResponse = false;
-      window.CONVERSATION.clinicianTyping = false;
-      window.CONVERSATION.liveTranscript = result.transcript || window.CONVERSATION.liveTranscript || "";
-      window.CONVERSATION.clinicianSpeaking = true;
-      window.CONVERSATION.spokenChars = 0;
-      window.CONVERSATION.messages.push({ role: "clinician", text: result.response });
-      render();
-
-      playResponseAudio(result.audio, result.response);
-    })
-    .catch((error) => {
-      window.CONVERSATION.processingResponse = false;
-      window.CONVERSATION.clinicianTyping = false;
-      window.CONVERSATION.clinicianSpeaking = false;
-      window.CONVERSATION.spokenChars = null;
-      window.CONVERSATION.liveTranscript = "";
-      pushClinicianMessage(`Fehler: ${error.message}`);
-      render();
+  try {
+    const response = await fetch("/api/chat/audio", {
+      method: "POST",
+      body: formData,
     });
+
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error || `Server error ${response.status}`);
+    }
+
+    await readStreamedReply(response, replyMsg);
+  } catch (error) {
+    window.CONVERSATION.processingResponse = false;
+    window.CONVERSATION.clinicianTyping = false;
+    window.CONVERSATION.clinicianSpeaking = false;
+    window.CONVERSATION.spokenChars = null;
+    window.CONVERSATION.liveTranscript = "";
+    replyMsg.text = `Fehler: ${error.message}`;
+    render();
+  }
 }
 
-function playResponseAudio(base64Audio, responseText) {
-  if (playbackTimer) {
-    clearInterval(playbackTimer);
-    playbackTimer = null;
-  }
+/* =============================================================================
+   GESTREAMTE SPRACH-ANTWORT (Step 5b)
+   -----------------------------------------------------------------------------
+   /api/chat/audio schickt die Antwort nicht mehr als einen einzigen Block,
+   sondern als NDJSON-Stream — eine JSON-Zeile pro Satz, sobald dieser fertig
+   vertont ist. Das lässt den ersten Satz schon losspielen, während spätere
+   Sätze noch synthetisiert werden. Zeilentypen: "transcript" (einmal, zuerst),
+   "sentence" (eine pro Satz, mit Text + Audio), "error" (bei einem Problem
+   während der Vertonung — bereits gespielte Sätze bleiben davon unberührt).
+============================================================================= */
+async function readStreamedReply(response, msg) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
 
-  const audioData = atob(base64Audio);
-  const buffer = new Uint8Array(audioData.length);
-  for (let i = 0; i < audioData.length; i++) {
-    buffer[i] = audioData.charCodeAt(i);
-  }
-  const blob = new Blob([buffer], { type: "audio/wav" });
-  const url = URL.createObjectURL(blob);
-  const audio = new Audio(url);
+  window.CONVERSATION.spokenChars = null; // volle Kontrolle über msg.text, kein Slicing in render()
 
-  const fullLength = responseText.length;
-  audio.addEventListener("play", () => {
-    window.CONVERSATION.clinicianSpeaking = true;
-    window.CONVERSATION.spokenChars = 0;
-    render();
+  const audioQueue = [];
+  let playing = false;
+  let completedText = "";
 
-    playbackTimer = setInterval(() => {
-      const ratio = Math.min(1, audio.currentTime / Math.max(audio.duration, 0.001));
-      window.CONVERSATION.spokenChars = Math.floor(fullLength * ratio);
-      render();
-    }, 50);
-  });
-
-  audio.addEventListener("ended", () => {
-    if (playbackTimer) {
-      clearInterval(playbackTimer);
-      playbackTimer = null;
+  function maybePlayNext() {
+    if (playing || audioQueue.length === 0) {
+      return;
     }
-    window.CONVERSATION.clinicianSpeaking = false;
-    window.CONVERSATION.liveTranscript = "";
-    render();
-    URL.revokeObjectURL(url);
+    playing = true;
+    const piece = audioQueue.shift();
+    playSentencePiece(piece, function () {
+      playing = false;
+      maybePlayNext();
+    });
+  }
+
+  function playSentencePiece(piece, onDone) {
+    const audioData = atob(piece.audio);
+    const bytes = new Uint8Array(audioData.length);
+    for (let i = 0; i < audioData.length; i++) {
+      bytes[i] = audioData.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: "audio/wav" });
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    let timer = null;
+
+    audio.addEventListener("play", () => {
+      // Erster Ton dieser Antwort -> von "denkt nach" (grau) auf "spricht
+      // gerade" (grün) umschalten. Das Balken-Element selbst bleibt
+      // dasselbe (siehe turnId-Erkennung in render()) — nur die CSS-Klasse
+      // wechselt, keine Animation wird neu gestartet.
+      window.CONVERSATION.clinicianTyping = false;
+      window.CONVERSATION.processingResponse = false;
+      window.CONVERSATION.clinicianSpeaking = true;
+
+      const revealBaseText = completedText ? completedText + " " + piece.text : piece.text;
+      const revealBaseLength = completedText ? completedText.length + 1 : 0;
+      msg.text = revealBaseText;
+      window.CONVERSATION.spokenChars = revealBaseLength;
+
+      timer = setInterval(() => {
+        const ratio = Math.min(1, audio.currentTime / Math.max(audio.duration, 0.001));
+        window.CONVERSATION.spokenChars = revealBaseLength + Math.floor(piece.text.length * ratio);
+        render();
+      }, 50);
+    });
+
+    const finish = () => {
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+      completedText = completedText ? completedText + " " + piece.text : piece.text;
+      msg.text = completedText;
+      window.CONVERSATION.spokenChars = null; // dieses Häppchen ist fertig -> voll anzeigen
+      render();
+      URL.revokeObjectURL(url);
+      onDone();
+    };
+
+    audio.addEventListener("ended", finish);
+    audio.addEventListener("error", finish);
+    audio.play().catch(finish);
+  }
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+
+    let newlineIndex;
+    while ((newlineIndex = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+      if (!line) {
+        continue;
+      }
+      const data = JSON.parse(line);
+      if (data.type === "transcript") {
+        window.CONVERSATION.liveTranscript = data.transcript || "";
+      } else if (data.type === "sentence") {
+        audioQueue.push({ text: data.text, audio: data.audio });
+        maybePlayNext();
+      } else if (data.type === "error") {
+        window.CONVERSATION.clinicianTyping = false;
+        window.CONVERSATION.processingResponse = false;
+        if (!completedText) {
+          // Noch kein Satz wurde gesprochen — die "denkt nach"-Blase selbst
+          // wird zur Fehlermeldung, statt eine hängende leere Blase plus
+          // eine zweite Nachricht darunter zu hinterlassen.
+          msg.text = `Fehler: ${data.message}`;
+        } else {
+          pushClinicianMessage(`Fehler: ${data.message}`);
+        }
+        render();
+      }
+    }
+  }
+
+  // Der Server ist fertig, aber es kann noch Audio in der Warteschlange
+  // liegen oder gerade spielen — erst danach gilt der Zug als beendet.
+  await new Promise((resolve) => {
+    const check = () => {
+      if (!playing && audioQueue.length === 0) {
+        resolve();
+      } else {
+        setTimeout(check, 50);
+      }
+    };
+    check();
   });
 
-  audio.addEventListener("error", () => {
-    window.CONVERSATION.clinicianSpeaking = false;
-    window.CONVERSATION.liveTranscript = "Audiowiedergabe fehlgeschlagen.";
-    render();
-    URL.revokeObjectURL(url);
-  });
-
-  audio.play().catch((error) => {
-    console.error("Audio playback failed", error);
-    window.CONVERSATION.clinicianSpeaking = false;
-    window.CONVERSATION.liveTranscript = "Audiowiedergabe fehlgeschlagen.";
-    render();
-  });
+  window.CONVERSATION.clinicianSpeaking = false;
+  window.CONVERSATION.clinicianTyping = false;
+  window.CONVERSATION.processingResponse = false;
+  window.CONVERSATION.liveTranscript = "";
+  render();
 }
 
 window.onMicToggle = function (isRecording) {
@@ -413,8 +511,11 @@ function setupTextInput() {
 /* =============================================================================
    INTERVIEW-START
    -----------------------------------------------------------------------------
-   Beim Laden der Seite holt sich das Interface einmalig die Eröffnungsnachricht
-   (Framing-Text + erste Frage) vom Server. Diese kommt dort aus der aktiven
+   Beim Laden der Seite holt sich das Interface im Hintergrund schon einmal die
+   Eröffnungsnachricht (Framing-Text + erste Frage) vom Server — noch BEVOR
+   "Interview starten" geklickt wird, damit sie ohne Wartezeit bereitsteht,
+   sobald der Button gedrückt wird. Angezeigt wird sie erst danach, Wort für
+   Wort (siehe playOpening() in index.html). Diese kommt aus der aktiven
    Leitfaden-Datei in study_content/interviews/ — hier im Frontend steht dazu
    absichtlich kein Inhalt, nur die Abfrage.
 ============================================================================= */
@@ -425,19 +526,17 @@ async function loadInterviewStart() {
       throw new Error(`Server antwortete mit Status ${res.status}`);
     }
     const data = await res.json();
-    window.CONVERSATION.messages = [{ role: "clinician", text: data.message }];
+    window.CONVERSATION.pendingOpeningMessage = data.message;
   } catch (error) {
-    window.CONVERSATION.messages = [{
-      role: "clinician",
-      text: `Verbindung zum Server fehlgeschlagen: ${error.message}`,
-    }];
+    window.CONVERSATION.pendingOpeningMessage = `Verbindung zum Server fehlgeschlagen: ${error.message}`;
   } finally {
-    if (typeof window.render === "function") {
-      window.render();
+    if (typeof window.onOpeningMessageReady === "function") {
+      window.onOpeningMessageReady();
     }
   }
 }
 
 // Wartet, bis die Seite (inkl. der Render-Logik in index.html) fertig geladen
-// ist, damit window.render() beim Aufruf schon existiert.
+// ist, damit window.onOpeningMessageReady() beim Aufruf schon existiert.
 document.addEventListener("DOMContentLoaded", loadInterviewStart);
+

@@ -25,10 +25,30 @@
      ========================================================================= -->
 <div class="deskwin">
 
-  <!-- Titelleiste -->
-  <div class="titlebar">
-    <div class="lights"><div class="tl tlr"></div><div class="tl tly"></div><div class="tl tlg"></div></div>
-    <div class="wintitle" id="winTitle">Klinisches Interview</div>
+  <!-- START-OVERLAY: sichtbar bis "Interview starten" geklickt wird.
+       Inhalte (Titel, Text, Checkliste) kommen aus conversation.js. -->
+  <div class="startov" id="startov">
+    <div class="startbox">
+      <div class="starttitle" id="startTitle">Bereit fürs Interview?</div>
+      <div class="startsub" id="startSub"></div>
+      <ul class="startlist" id="startList"></ul>
+
+      <div class="starttest">
+        <button class="testbtn" id="testSoundBtn" type="button">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>
+          <span>Testton abspielen</span>
+        </button>
+        <button class="testbtn" id="testMicBtn" type="button">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg>
+          <span>Mikrofon testen</span>
+        </button>
+        <div class="miclevel" id="micLevelMeter">
+          <span></span><span></span><span></span><span></span><span></span>
+        </div>
+      </div>
+
+      <button class="startbtn" id="startBtn" disabled>Wird vorbereitet …</button>
+    </div>
   </div>
 
   <div class="deskbody">
@@ -118,8 +138,15 @@
     modality: "text",
     clinicianTyping: true,
     clinicianSpeaking: false, userRecording: false, liveTranscript: "", spokenChars: null,
+    startTitle: "Bereit fürs Interview?",
+    startSubtitle: "Bitte prüfen Sie kurz, ob die folgenden Voraussetzungen erfüllt sind.",
+    startButton: "Interview starten",
+    startChecklist: [
+      "Sie sitzen in einer ruhigen Umgebung und werden nicht gestört.",
+      "Ton und Mikrofon Ihres Geräts funktionieren.",
+    ],
+    pendingOpeningMessage: "Danke, dass Sie sich heute Zeit nehmen. Wie würden Sie Ihre Stimmung in den letzten zwei Wochen beschreiben?",
     messages: [
-      { role: "clinician", text: "Danke, dass Sie sich heute Zeit nehmen. Wie würden Sie Ihre Stimmung in den letzten zwei Wochen beschreiben?" },
       { role: "user",      text: "Ehrlich gesagt ziemlich flach." },
       { role: "clinician", text: "Das klingt belastend. Ist das die meiste Zeit des Tages da?" }
     ]
@@ -161,7 +188,7 @@
     // Kopf
     document.getElementById("clinicianName").textContent = cfg.clinicianName;
     document.getElementById("clinicianRole").textContent = cfg.clinicianRole;
-    document.getElementById("winTitle").textContent =
+    document.title =
       "Klinisches Interview · " + (cfg.modality === "speech" ? "Sprache" : "Text");
 
     // Embodiment
@@ -177,41 +204,54 @@
     // (auch live mitgeschriebene) Eingabe der teilnehmenden Person.
     const chat = document.getElementById("chat");
 
-    // Schnellpfad während der Sprachausgabe: NICHT das Chat-DOM neu aufbauen,
-    // sonst starten die "spricht gerade"-Balken bei jedem render()-Tick (alle
-    // 50 ms) ihre CSS-Animation neu und wirken dadurch eingefroren. Wir
-    // aktualisieren nur den bereits gesprochenen Text der bestehenden Blase.
+    // Ein durchgehender Zustand "Antwort ist gerade in Arbeit" — deckt sowohl
+    // "denkt nach" (noch kein Ton) als auch "spricht gerade" ab. Das ist die
+    // Grundlage dafür, dass die Balken-Anzeige EIN einziges DOM-Element
+    // bleibt, egal ob gerade nachgedacht oder gesprochen wird oder zwischen
+    // Sätzen gewechselt wird — nur Farbe/Tempo wechseln per CSS-Klasse.
+    const turnInProgress = cfg.clinicianTyping || cfg.processingResponse || cfg.clinicianSpeaking;
+
+    // Schnellpfad während einer laufenden Antwort: NICHT das Chat-DOM neu
+    // aufbauen, sonst startet die Balken-CSS-Animation bei jedem
+    // render()-Tick (alle 50 ms) bzw. bei jedem Satzwechsel neu und wirkt
+    // dadurch eingefroren/springend. Erkennung "ist das noch dieselbe
+    // Blase?" läuft bewusst über eine STABILE Kennung (turnId), NICHT über
+    // den Text — der Text ändert sich hier laufend (das ist ja der Sinn),
+    // ein Vergleich über Textgleichheit würde also ständig fälschlich
+    // "nein, neu bauen" ergeben.
     const lastMsg = cfg.messages[cfg.messages.length - 1];
     const spk = chat.querySelector(".bqspk:last-child");
-    if (isSpeech && cfg.clinicianSpeaking && spk && lastMsg && lastMsg.role === "clinician"
-        && spk.dataset.msg === lastMsg.text) {
+    if (isSpeech && turnInProgress && spk && lastMsg && lastMsg.role === "clinician"
+        && lastMsg.turnId != null && spk.dataset.turnId === String(lastMsg.turnId)) {
       const el = spk.querySelector(".bq");
       const shown = (cfg.spokenChars == null) ? lastMsg.text : lastMsg.text.slice(0, cfg.spokenChars);
       el.textContent = shown;
-      if (cfg.spokenChars != null && cfg.spokenChars < lastMsg.text.length) {
-        el.insertAdjacentHTML("beforeend", '<span class="caret"></span>');
-      }
+      spk.querySelector(".speakbars").classList.toggle("thinking", !cfg.clinicianSpeaking);
       chat.scrollTop = chat.scrollHeight;
       return;
     }
-    
+
     chat.innerHTML = "";
     cfg.messages.forEach(function (m, i) {
       const isLast = i === cfg.messages.length - 1;
-      if (isSpeech && m.role === "clinician" && isLast && cfg.clinicianSpeaking) {
-        // LLM spricht gerade -> Blase mit "spricht gerade"-Balken statt Punkt,
-        // Text SYNCHRON zum Ton (nur bereits gesprochene Zeichen).
+      if (isSpeech && m.role === "clinician" && isLast && turnInProgress) {
+        // Antwort läuft noch (Nachdenken ODER Sprechen) -> Blase mit
+        // Balken-Anzeige statt fertigem Text. ".thinking" macht die Balken
+        // grau/langsam (nachdenken, noch kein Ton — vermeidet den Eindruck,
+        // man müsste bereits etwas hören); ohne die Klasse sind sie grün/
+        // schneller (spricht gerade). Text erscheint SYNCHRON zum Ton
+        // (nur bereits gesprochene Zeichen), während des Nachdenkens leer.
+        const thinkingClass = cfg.clinicianSpeaking ? "" : " thinking";
         chat.insertAdjacentHTML("beforeend",
           '<div class="bqspk">' +
-          '<span class="speakbars"><i></i><i></i><i></i><i></i></span>' +
+          '<span class="speakbars' + thinkingClass + '"><i></i><i></i><i></i><i></i></span>' +
           '<span class="bq" style="font-size:16px"></span></div>');
-        chat.querySelector(".bqspk:last-child").dataset.msg = m.text;
+        chat.querySelector(".bqspk:last-child").dataset.turnId = m.turnId != null ? String(m.turnId) : "";
         var shown = (cfg.spokenChars == null) ? m.text : m.text.slice(0, cfg.spokenChars);
         var el = chat.querySelector(".bqspk:last-child .bq");
         el.textContent = shown;
-        if (cfg.spokenChars != null && cfg.spokenChars < m.text.length) {
-          el.insertAdjacentHTML("beforeend", '<span class="caret"></span>');
-        }
+        // Kein Tipp-Cursor: im Sprachmodus wird gesprochen, nicht getippt.
+        // Das Sprechen zeigen allein die Balken links der Blase an.
       } else {
         const b = document.createElement("div");
         b.className = m.role === "user" ? "ba" : "bq";
@@ -239,10 +279,6 @@
         btn.style.pointerEvents = disabled ? "none" : "auto";
         document.getElementById("micLabel").textContent =
           cfg.processingResponse ? "Bitte warten…" : (cfg.userRecording ? "Aufnahme … zum Stoppen klicken" : "Zum Sprechen klicken");
-      }
-      if ((cfg.clinicianTyping || cfg.processingResponse) && !cfg.userRecording) {
-        chat.insertAdjacentHTML("beforeend",
-          '<div class="typing"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>');
       }
     } else if (cfg.clinicianTyping) {
       // Text-Modalität: "tippt …"-Punkte
@@ -298,10 +334,196 @@
     render();
   });
 
+  /* --- Testton: reine Web-Audio-Erzeugung, kein Server/TTS nötig --------- */
+  function playTestTone() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = 440;
+      gain.gain.setValueAtTime(0, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0.25, ctx.currentTime + 0.06);
+      gain.gain.linearRampToValueAtTime(0.25, ctx.currentTime + 0.5);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.6);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.65);
+      osc.onended = function () { ctx.close(); };
+    } catch (err) {
+      console.warn("Testton konnte nicht abgespielt werden.", err);
+    }
+  }
+
+  /* --- Mikrofon-Test: zeigt eine echte Pegelanzeige, nimmt aber nichts auf,
+         sendet nichts und speichert nichts — reines lokales Feedback. ----- */
+  let micTestStream = null;
+  let micTestContext = null;
+  let micTestRafId = null;
+
+  async function toggleMicTest() {
+    if (micTestStream) {
+      stopMicTest();
+      return;
+    }
+    const btn = document.getElementById("testMicBtn");
+    const meter = document.getElementById("micLevelMeter");
+    try {
+      micTestStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micTestContext = new (window.AudioContext || window.webkitAudioContext)();
+      const source = micTestContext.createMediaStreamSource(micTestStream);
+      const analyser = micTestContext.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      const data = new Uint8Array(analyser.frequencyBinCount);
+
+      if (btn) {
+        btn.classList.add("active");
+        btn.querySelector("span").textContent = "Mikrofon-Test stoppen";
+      }
+      if (meter) {
+        meter.classList.add("on");
+      }
+      const bars = meter ? meter.querySelectorAll("span") : [];
+
+      (function tick() {
+        analyser.getByteTimeDomainData(data);
+        let sumSquares = 0;
+        for (let i = 0; i < data.length; i++) {
+          const v = (data[i] - 128) / 128;
+          sumSquares += v * v;
+        }
+        const rms = Math.sqrt(sumSquares / data.length);
+        const level = Math.min(1, rms * 4); // normale Sprechlautstärke sichtbar ausschlagen lassen
+        const litCount = Math.round(level * bars.length);
+        bars.forEach(function (bar, i) {
+          bar.classList.toggle("lit", i < litCount);
+        });
+        micTestRafId = requestAnimationFrame(tick);
+      })();
+    } catch (err) {
+      console.warn("Mikrofon-Test fehlgeschlagen.", err);
+      if (btn) {
+        btn.querySelector("span").textContent = "Mikrofon nicht verfügbar";
+      }
+    }
+  }
+
+  function stopMicTest() {
+    if (micTestRafId) {
+      cancelAnimationFrame(micTestRafId);
+      micTestRafId = null;
+    }
+    if (micTestStream) {
+      micTestStream.getTracks().forEach(function (track) { track.stop(); });
+      micTestStream = null;
+    }
+    if (micTestContext) {
+      micTestContext.close();
+      micTestContext = null;
+    }
+    const btn = document.getElementById("testMicBtn");
+    const meter = document.getElementById("micLevelMeter");
+    if (btn) {
+      btn.classList.remove("active");
+      btn.querySelector("span").textContent = "Mikrofon testen";
+    }
+    if (meter) {
+      meter.classList.remove("on");
+      meter.querySelectorAll("span").forEach(function (bar) { bar.classList.remove("lit"); });
+    }
+  }
+
+  /* --- Start-Overlay: Checkliste befüllen, Button erst aktiv, sobald die
+         Eröffnungsnachricht vom Server da ist (siehe loadInterviewStart()
+         in conversation.js, das parallel im Hintergrund lädt). ----------- */
+  function initStart() {
+    const ov = document.getElementById("startov");
+    if (!ov) return;
+
+    document.getElementById("startTitle").textContent = cfg.startTitle || "Bereit fürs Interview?";
+    document.getElementById("startSub").textContent = cfg.startSubtitle || "";
+
+    const list = document.getElementById("startList");
+    if (list && Array.isArray(cfg.startChecklist)) {
+      list.innerHTML = cfg.startChecklist.map(function () {
+        return '<li><span class="startcheck">' +
+          '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>' +
+          '</span><span></span></li>';
+      }).join("");
+      // Text per textContent gesetzt, nicht per String-Konkatenation — so
+      // kann kein Inhalt aus conversation.js als HTML interpretiert werden.
+      list.querySelectorAll("li > span:last-child").forEach(function (el, i) {
+        el.textContent = cfg.startChecklist[i];
+      });
+    }
+
+    const soundBtn = document.getElementById("testSoundBtn");
+    if (soundBtn) {
+      soundBtn.querySelector("span").textContent = cfg.startSoundTestLabel || "Testton abspielen";
+      soundBtn.addEventListener("click", playTestTone);
+    }
+    const micTestBtn = document.getElementById("testMicBtn");
+    if (micTestBtn) {
+      micTestBtn.querySelector("span").textContent = cfg.startMicTestLabel || "Mikrofon testen";
+      micTestBtn.addEventListener("click", toggleMicTest);
+    }
+
+    const btn = document.getElementById("startBtn");
+    btn.textContent = cfg.startButton || "Interview starten";
+    // Erst klickbar, sobald die Eröffnungsnachricht wirklich da ist (siehe
+    // window.onOpeningMessageReady) — falls der Server schneller war als
+    // dieses Skript hier, ist sie es unter Umständen schon jetzt.
+    btn.disabled = !cfg.pendingOpeningMessage;
+
+    btn.addEventListener("click", function () {
+      if (btn.disabled) return;
+      stopMicTest(); // Mikrofon freigeben, falls der Test noch lief
+      ov.classList.add("hidden");
+      playOpening(cfg.pendingOpeningMessage || "");
+    });
+  }
+
+  /* --- Gibt die Eröffnungsnachricht Wort für Wort aus, so als würde das
+         LLM sie gerade live generieren (gilt nur für DIESE eine Nachricht,
+         nicht für spätere Antworten). --------------------------------- */
+  function playOpening(text) {
+    const words = text.split(" ").filter(function (w) { return w.length > 0; });
+    cfg.messages = [{ role: "clinician", text: "" }];
+    render();
+
+    if (words.length === 0) {
+      return;
+    }
+
+    let shown = 0;
+    const timer = setInterval(function () {
+      shown += 1;
+      cfg.messages[0].text = words.slice(0, shown).join(" ");
+      render();
+      if (shown >= words.length) {
+        clearInterval(timer);
+      }
+    }, 150);
+  }
+
+  // Vom Hintergrund-Fetch in conversation.js aufgerufen, sobald die
+  // Eröffnungsnachricht angekommen ist (auch wenn das Overlay schon
+  // sichtbar ist und noch auf den Klick gewartet wird).
+  window.onOpeningMessageReady = function () {
+    const btn = document.getElementById("startBtn");
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = cfg.startButton || "Interview starten";
+    }
+  };
+
   window.render = render;
   window.setupTextInput = setupTextInput;
 
   setupTextInput();
+  initStart();
   render();
 })();
 </script>

@@ -1,8 +1,8 @@
-## Build your own voice assistant and run it locally: Whisper + Ollama + ChatterBox
+## Build your own voice assistant and run it locally: Whisper + Ollama + Piper
 
 > Original article: https://blog.duy-huynh.com/build-your-own-voice-assistant-and-run-it-locally/
 >
-> **Updated May 2025**: Now using [Chatterbox TTS](https://github.com/resemble-ai/chatterbox), a state-of-the-art open-source TTS model from Resemble AI!
+> **Updated for this project (Step 4 of the project plan)**: now using [Piper](https://github.com/OHF-Voice/piper1-gpl), a fast, fully local, open-source neural TTS engine, instead of Chatterbox — Chatterbox speaks German with a noticeable English accent, and this project doesn't need its voice-cloning or emotion controls. See `backend/tts.py` for details.
 >
 > The original implementation using Bark has been preserved in the `archive-2025-05-29` branch for reference.
 
@@ -11,18 +11,17 @@
 
 After my latest post about how to build your own RAG and run it locally. Today, we're taking it a step further by not only implementing the conversational abilities of large language models but also adding listening and speaking capabilities. The idea is straightforward: we are going to create a voice assistant reminiscent of Jarvis or Friday from the iconic Iron Man movies, which can operate offline on your computer.
 
-**New Features with ChatterBox:**
-- 🎯 **Voice Cloning**: Clone any voice with just a short audio sample
-- 🎭 **Emotion Control**: Adjust emotional expressiveness of responses
-- 🚀 **Better Performance**: 0.5B parameter model with faster inference
-- 💧 **Watermarked Audio**: Built-in neural watermarking for authenticity
+**TTS: Piper**
+- 🇩🇪 **Natural German voices**: purpose-built voices, not an accented multilingual model
+- 🚀 **Fast**: real-time synthesis, even on a plain CPU
+- 🧩 **Simple**: one fixed voice per model — no cloning, no emotion controls, which this project doesn't need (see the project plan, Step 4)
 
 ### Techstack
 First, you should set up a virtual Python environment. You have several options for this, including pyenv, virtualenv, poetry, and others that serve a similar purpose. Personally, I'll use Poetry for this tutorial due to my personal preferences. Here are several crucial libraries you'll need to install:
 
 - **rich**: For a visually appealing console output.
-- **openai-whisper**: A robust tool for speech-to-text conversion.
-- **chatterbox-tts**: State-of-the-art text-to-speech synthesis with voice cloning and emotion control.
+- **faster-whisper**: A fast reimplementation of OpenAI's Whisper for speech-to-text conversion (same models and accuracy, runs significantly faster — see the project plan, Step 5).
+- **piper-tts**: Fast, local, natural-sounding text-to-speech (German voices).
 - **langchain**: A straightforward library for interfacing with Large Language Models (LLMs).
 - **langchain-openai**: For connecting to OpenAI-compatible cloud LLM providers like [MiniMax](https://www.minimaxi.com).
 - **sounddevice**, **pyaudio**, and **speechrecognition**: Essential for audio recording and playback.
@@ -34,15 +33,15 @@ The most critical component here is the Large Language Model (LLM) backend. By d
 ### Architecture
 Okay, if everything has been set up, let's proceed to the next step. Below is the overall architecture of our application, which fundamentally comprises 3 main components:
 
-- **Speech Recognition**: Utilizing OpenAI's Whisper, we convert spoken language into text. Whisper's training on diverse datasets ensures its proficiency across various languages and dialects.
+- **Speech Recognition**: Utilizing faster-whisper (a faster reimplementation of OpenAI's Whisper), we convert spoken language into text. Whisper's training on diverse datasets ensures its proficiency across various languages and dialects.
 - **Conversational Chain**: For the conversational capabilities, we'll employ the Langchain interface with a pluggable LLM backend — either a local model via Ollama (e.g., Gemma3, Llama-4) or a cloud model via [MiniMax](https://www.minimaxi.com) (MiniMax-M2.7). This setup promises a seamless and engaging conversational flow.
-- **Speech Synthesizer**: The transformation of text to speech is achieved through Chatterbox TTS, a state-of-the-art model from Resemble AI, renowned for its lifelike speech production and voice cloning capabilities.
+- **Speech Synthesizer**: The transformation of text to speech is achieved through Piper, a fast, fully local neural TTS engine with natural-sounding, purpose-built German voices.
 
-The workflow is straightforward: record speech, transcribe to text, generate a response using an LLM, and vocalize the response using ChatterBox.
+The workflow is straightforward: record speech, transcribe to text, generate a response using an LLM, and vocalize the response using Piper.
 
 ```mermaid
 flowchart TD
-    A[🎤 User Speech Input] --> B[Speech Recognition<br/>OpenAI Whisper]
+    A[🎤 User Speech Input] --> B[Speech Recognition<br/>faster-whisper]
     B --> C[📝 Text Transcription]
     C --> D[Conversational Chain<br/>Langchain + Ollama / MiniMax<br/>Gemma3 / Llama-4 / MiniMax-M2.7]
     D --> E[🤖 Generated Response]
@@ -81,9 +80,6 @@ uv sync
 
 # Activate the virtual environment
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Download NLTK data (for sentence tokenization)
-python -c "import nltk; nltk.download('punkt_tab')"
 ```
 
 #### Option 2: Using pip (Alternative)
@@ -101,9 +97,6 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install from pyproject.toml (NOT requirements.txt)
 pip install -e .
-
-# Download NLTK data
-python -c "import nltk; nltk.download('punkt')"
 ```
 
 #### Install and Setup Ollama
@@ -128,26 +121,24 @@ No Ollama installation is needed when using MiniMax — the LLM runs in the clou
 
 ### Usage
 
+#### One-time setup: download a Piper voice
+Before running the voice condition for the first time, download the German voice (only needs to be done once per machine):
+```bash
+python -m piper.download_voices de_DE-thorsten-high --download-dir tts_models
+```
+Other German voices you can use instead (see `study_content/study_settings.yaml`'s `tts_voice` setting to switch): `de_DE-thorsten-medium`, `de_DE-kerstin-low`, `de_DE-eva_k-x_low`. Run `python -m piper.download_voices` with no arguments to list every available voice, in any language.
+
 #### Basic Usage
 ```bash
 python backend/app.py
 ```
 
-#### With Voice Cloning
-Record a 10-30 second audio sample of the voice you want to clone, then:
-```bash
-python backend/app.py --voice path/to/voice_sample.wav
-```
-
 #### With Custom Settings
 ```bash
-# Adjust emotion and pacing
-python backend/app.py --exaggeration 0.7 --cfg-weight 0.3
-
 # Use a different LLM model
 python backend/app.py --model codellama
 
-# Save generated voice samples
+# Save generated voice samples to voices/
 python backend/app.py --save-voice
 ```
 
@@ -161,9 +152,6 @@ python backend/app.py --provider minimax --model MiniMax-M2.7 --temperature 0.8
 
 # Pass API key directly
 python backend/app.py --provider minimax --api-key your-api-key-here
-
-# Combine with voice cloning and emotion control
-python backend/app.py --provider minimax --voice path/to/voice.wav --exaggeration 0.7
 ```
 
 ### Configuration Options
@@ -171,77 +159,50 @@ python backend/app.py --provider minimax --voice path/to/voice.wav --exaggeratio
 - `--provider`: LLM provider (`ollama` or `minimax`, default: ollama)
 - `--api-key`: API key for cloud LLM providers (or use `MINIMAX_API_KEY` env var)
 - `--temperature`: LLM temperature (0.0-1.0, default: 0.7)
-- `--voice`: Path to audio file for voice cloning
-- `--exaggeration`: Emotion intensity (0.0-1.0, default: 0.5)
-  - Lower values (0.3-0.4): Calmer, more neutral delivery
-  - Higher values (0.7-0.9): More expressive and emotional
-- `--cfg-weight`: Controls pacing and delivery style (0.0-1.0, default: 0.5)
-  - Lower values: Faster, more dynamic speech
-  - Higher values: Slower, more deliberate speech
-- `--model`: Ollama model to use (default: llama2)
+- `--model`: Ollama model to use (default: gemma3)
+- `--language`: Language code for speech transcription (default: from `study_settings.yaml`)
 - `--save-voice`: Save generated audio responses to `voices/` directory
+- `--web`: Run as a local web server instead of terminal mode
+
+The TTS voice itself (which Piper voice to speak with) is not a command-line
+option — it's set via `tts_voice` in `study_content/study_settings.yaml`,
+since it's a researcher setting, not a technical one.
 
 ### Implementation Details
 
-#### TextToSpeechService with ChatterBox
-The new TextToSpeechService leverages ChatterBox's advanced features:
+#### TextToSpeechService with Piper
+`backend/tts.py` wraps Piper — a single fixed voice model, no cloning, no
+per-line emotion controls:
 
 ```python
-from chatterbox.tts import ChatterboxTTS
+from piper import PiperVoice
 
 class TextToSpeechService:
-    def __init__(self, device: str = "cuda" if torch.cuda.is_available() else "cpu"):
-        self.device = device
-        self.model = ChatterboxTTS.from_pretrained(device=device)
-        self.sample_rate = self.model.sr
+    def __init__(self, voice_name: str = "de_DE-thorsten-high"):
+        model_path = f"tts_models/{voice_name}.onnx"
+        config_path = f"tts_models/{voice_name}.onnx.json"
+        self.voice = PiperVoice.load(model_path, config_path=config_path)
 
-    def synthesize(self, text: str, audio_prompt_path: str = None,
-                  exaggeration: float = 0.5, cfg_weight: float = 0.5):
-        wav = self.model.generate(
-            text,
-            audio_prompt_path=audio_prompt_path,
-            exaggeration=exaggeration,
-            cfg_weight=cfg_weight
-        )
-        return self.sample_rate, wav.squeeze().cpu().numpy()
+    def synthesize(self, text: str):
+        chunks = list(self.voice.synthesize(text))  # one chunk per sentence
+        sample_rate = chunks[0].sample_rate
+        audio = np.concatenate([c.audio_float_array for c in chunks])
+        return sample_rate, audio
 ```
 
-Key improvements over the previous Bark implementation:
-- **Voice Cloning**: Pass an audio file to clone any voice
-- **Emotion Control**: Adjust expressiveness with the `exaggeration` parameter
-- **Better Quality**: ChatterBox produces more natural-sounding speech
-- **Faster Inference**: Smaller model size (0.5B vs Bark's larger models)
-
-#### Dynamic Emotion Analysis
-The app now includes automatic emotion detection to make responses more expressive:
-
-```python
-def analyze_emotion(text: str) -> float:
-    emotional_keywords = ['amazing', 'terrible', 'love', 'hate', 'excited',
-                         'sad', 'happy', 'angry', '!', '?!']
-    emotion_score = 0.5
-    for keyword in emotional_keywords:
-        if keyword in text.lower():
-            emotion_score += 0.1
-    return min(0.9, max(0.3, emotion_score))
-```
+Why this is a good fit for a research interview: a fixed, natural-sounding
+voice speaks every participant's session identically — no variability from
+voice cloning or emotion heuristics to account for when analyzing results.
 
 ### Tips for Best Results
 
-1. **Voice Cloning**:
-   - Use a clear 10-30 second audio sample
-   - Ensure the sample has minimal background noise
-   - The voice should speak naturally in the sample
-
-2. **Emotion Control**:
-   - For general conversation: `exaggeration=0.5, cfg_weight=0.5`
-   - For dramatic/expressive speech: `exaggeration=0.7+, cfg_weight=0.3`
-   - For calm/professional tone: `exaggeration=0.3, cfg_weight=0.7`
-
-3. **Performance**:
-   - Use CUDA if available for faster inference
-   - The first generation might be slower due to model loading
-   - Consider using smaller Whisper models ("tiny.en" or "base.en") for faster transcription
+1. **Voice choice**: `de_DE-thorsten-high` is the best-quality German voice
+   currently available in Piper. Female German voices (`kerstin`, `eva_k`)
+   exist but only at lower quality tiers as of this writing — worth
+   listening to both before committing to one for real data collection.
+2. **Performance**: Piper runs in real time even on a CPU; no GPU is
+   required. Consider using smaller Whisper models ("tiny" or "base") if
+   transcription feels slow on your machine.
 
 ### Scaling to Production
 
@@ -291,29 +252,28 @@ For those aiming to elevate this application to a production-ready status, consi
 
 3. **Manual installation of core packages**:
    ```bash
-   pip install chatterbox-tts langchain-ollama openai-whisper sounddevice rich nltk
+   pip install piper-tts langchain-ollama faster-whisper sounddevice rich
    ```
 
 #### Runtime Issues
 
 - **CUDA out of memory**: Use CPU mode or reduce model precision
 - **Microphone not working**: Check system permissions and device settings
-- **Slow inference**: Ensure you're using GPU if available, consider using smaller models
-- **Voice cloning quality**: Use higher quality audio samples with clear speech
+- **Slow inference**: Ensure you're using GPU if available, consider using smaller Whisper models
+- **Piper voice not found**: Make sure you ran `python -m piper.download_voices <voice-name> --download-dir tts_models` first (see the Usage section above)
 - **Import errors**: Make sure you activated the virtual environment before running the app
 
 ### Conclusion
 
-With the integration of ChatterBox, we've significantly enhanced our local voice assistant. The addition of voice cloning and emotion control opens up new possibilities for creating personalized and expressive AI assistants. Whether you're building a personal Jarvis, creating content, or developing voice-enabled applications, this updated stack provides a powerful foundation.
-
-The combination of Whisper's robust speech recognition, Ollama's flexible LLM serving, and ChatterBox's advanced TTS capabilities creates a fully-featured voice assistant that runs entirely offline. No cloud services, no API keys, just pure local AI power!
+With Whisper for listening, Ollama (or MiniMax) for the conversational core, and Piper for natural German speech, this is a fully-featured voice assistant that runs entirely offline. No cloud services, no API keys, just local AI — now shaped into a modular research platform (see the project plan for the full roadmap).
 
 ### Resources
 
-- [ChatterBox GitHub](https://github.com/resemble-ai/chatterbox)
+- [Piper GitHub](https://github.com/OHF-Voice/piper1-gpl)
+- [Piper voice samples](https://rhasspy.github.io/piper-samples/)
 - [Ollama](https://ollama.ai)
 - [MiniMax Platform](https://www.minimaxi.com)
-- [Whisper](https://github.com/openai/whisper)
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
 - [Original Blog Post](https://blog.duy-huynh.com/build-your-own-voice-assistant-and-run-it-locally/)
 
 ---

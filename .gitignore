@@ -9,6 +9,11 @@ nitro/
 .ruff_cache/
 *.gguf
 
+# Downloaded Piper TTS voice model files (large binaries, fetched per
+# machine — see backend/tts.py) and saved voice samples (--save-voice).
+tts_models/
+voices/
+
 # C extensions
 *.so
 *.wav

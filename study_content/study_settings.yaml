@@ -13,3 +13,9 @@ language: de
 # Which interview guide file (from study_content/interviews/) is currently
 # active. Just the file name, not the full path.
 interview_guide: depression_scid_example.yaml
+
+# Which Piper voice to use for spoken output (voice condition only). Must
+# be downloaded once per machine first — see backend/tts.py's module
+# docstring, or the project README, for the download command and other
+# available German voices.
+tts_voice: de_DE-thorsten-high
