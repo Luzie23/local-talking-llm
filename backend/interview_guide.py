@@ -78,6 +78,14 @@ class InterviewGuide:
                     # "strict_clinical"/"flexible_conversational" behavior
                     # profiles). Defaults to False if not set.
                     "allow_followup": bool(question.get("allow_followup", False)),
+                    # Optional, checklist-based follow-up context (see e.g.
+                    # study_content/interviews/nba_modul6_alltag_sozial.yaml
+                    # and the nba_conversational behavior profile). None for
+                    # guides that don't set these — see
+                    # llm_provider.format_aspects_context(), which is the
+                    # only place these are read.
+                    "aspects": question.get("aspects"),
+                    "example_if_unclear": question.get("example_if_unclear"),
                 })
 
         # Index of the question that comes next. A single fixed value is
@@ -91,6 +99,15 @@ class InterviewGuide:
         self._awaiting_followup_answer = False
         self._followup_used_for_current = False
         self.pending_followup_text: str | None = None
+
+        # How many times the participant has asked a clarification question
+        # about the current item (fixed question OR its follow-up, if any)
+        # instead of answering it — see register_clarification_request()
+        # and behavior profiles that define a "[REPEAT_QUESTION]"-style
+        # marker (e.g. nba_conversational). Shared across the fixed
+        # question and its follow-up (NOT reset by start_followup()) since
+        # both are really the same guide item; only reset by advance().
+        self._clarification_count_for_current = 0
 
     def current_question(self) -> dict | None:
         """Return the question that should be asked right now, or None if the guide is finished."""
@@ -110,6 +127,7 @@ class InterviewGuide:
         self._awaiting_followup_answer = False
         self._followup_used_for_current = False
         self.pending_followup_text = None
+        self._clarification_count_for_current = 0
         return self.current_question()
 
     def is_finished(self) -> bool:
@@ -138,9 +156,28 @@ class InterviewGuide:
         """
         return self._followup_used_for_current
 
+    def register_clarification_request(self) -> int:
+        """
+        Record that the participant asked a clarification question about
+        the current item instead of answering it (see e.g.
+        study_content/prompts/nba_conversational.txt's "Handling
+        clarification questions" section and its "[REPEAT_QUESTION]"
+        marker). Does NOT advance the guide or touch follow-up state — the
+        same fixed question or follow-up is simply asked again.
+
+        Returns:
+            The new clarification count for the current item (reset only
+            by advance(), so it's shared across the fixed question and any
+            follow-up derived from it) — callers use this to cap repeated
+            clarifications before handing off to a human.
+        """
+        self._clarification_count_for_current += 1
+        return self._clarification_count_for_current
+
     def reset(self) -> None:
         """Start the guide over from the first question (e.g. for a new participant)."""
         self._current_index = 0
         self._awaiting_followup_answer = False
         self._followup_used_for_current = False
         self.pending_followup_text = None
+        self._clarification_count_for_current = 0

@@ -12,6 +12,14 @@
 #   natural_transition - the model smoothly rewords the transition into the
 #                        next question, without changing its meaning. Use
 #                        this for more conversational, exploratory guides.
+#
+# transition_phrases (optional, "verbatim" delivery only):
+#   A list of short lead-in phrases. One is picked at random and prepended
+#   before each next fixed question, so feedback and question don't just
+#   get stitched together with no transition — the question's own wording
+#   is never touched, only bridged into (see backend/app.py's
+#   _response_pieces()). Omit entirely for exact strict_clinical-style
+#   delivery with no lead-in at all.
 
 strict_clinical:
   instructions_file: strict_clinical.txt
@@ -20,3 +28,13 @@ strict_clinical:
 flexible_conversational:
   instructions_file: flexible_conversational.txt
   question_delivery: natural_transition
+
+nba_conversational:
+  instructions_file: nba_conversational.txt
+  question_delivery: verbatim
+  transition_phrases:
+    - "Kommen wir zur nächsten Frage."
+    - "Lassen Sie uns weitermachen."
+    - "Machen wir weiter."
+    - "Als Nächstes würde mich Folgendes interessieren."
+    - "Das führt mich gleich zur nächsten Frage."

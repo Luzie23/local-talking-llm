@@ -24,6 +24,7 @@ below).
 
 Used by: backend/app.py (the Flask web routes) and the terminal mode.
 """
+import difflib
 import os
 import re
 
@@ -101,6 +102,8 @@ prompt_template = ChatPromptTemplate.from_messages([
     MessagesPlaceholder(variable_name="history"),
     ("human", (
         "I was asked: \"{question}\"\n"
+        "{aspects_context}"
+        "{required_style_context}"
         "I answered: \"{answer}\"\n"
         "(Follow-up for this item: {followup_status}.)"
     )),
@@ -237,6 +240,191 @@ def parse_feedback_and_followup(raw_response: str) -> tuple[str, str | None]:
     return feedback, followup
 
 
+def format_aspects_context(question: dict) -> str:
+    """
+    Build an optional extra context block for behavior profiles that expect
+    per-question "aspects" — content points a question is trying to
+    capture, each with covered_if/maintenance_questions/followups (see e.g.
+    study_content/interviews/nba_modul6_alltag_sozial.yaml and
+    study_content/prompts/nba_conversational.txt).
+
+    Returns "" for questions without an "aspects" field, so guides like
+    depression_scid_example.yaml (which don't set it) get exactly the same
+    prompt as before this was added. This is only ever extra CONTEXT for
+    get_feedback_and_followup() below — the participant only ever sees or
+    hears question["text"] itself, verbatim (see backend/app.py).
+
+    Args:
+        question: A question dict as built by InterviewGuide (may or may
+            not have "aspects"/"example_if_unclear" set).
+
+    Returns:
+        A text block (with a leading newline) to insert into the prompt,
+        or "" if the question has no aspects.
+    """
+    aspects = question.get("aspects")
+    if not aspects:
+        return ""
+
+    lines = ["Aspects this question is trying to capture:"]
+    for aspect in aspects:
+        lines.append(f"- {aspect['name']} (covered_if: {aspect['covered_if']})")
+        for maintenance_question in aspect.get("maintenance_questions") or []:
+            lines.append(f'  maintenance_question: "{maintenance_question}"')
+        for followup in aspect.get("followups") or []:
+            lines.append(f'  followup: "{followup}"')
+
+    example_if_unclear = question.get("example_if_unclear")
+    if example_if_unclear:
+        lines.append(f'example_if_unclear: "{example_if_unclear}"')
+
+    return "\n" + "\n".join(lines) + "\n"
+
+
+def _normalize_for_comparison(text: str) -> str:
+    return re.sub(r'\s+', ' ', text.strip().lower()).rstrip('?.!,;: ')
+
+
+# Below this similarity ratio (difflib's SequenceMatcher, on normalized
+# text), a model-generated followup is considered too different from
+# anything in the question's own checklist to trust — see
+# constrain_followup_to_checklist() below.
+CHECKLIST_SIMILARITY_THRESHOLD = 0.6
+
+
+def constrain_followup_to_checklist(question: dict, followup_text: str) -> str:
+    """
+    For questions with an "aspects" checklist, only ever let a followup
+    reach the participant if it's (close to) one of the researcher-written
+    maintenance_questions/followups for this question — never text the
+    model invented itself. This extends the project's core principle "the
+    LLM presents, it does not invent" (see interview_guide.py's module
+    docstring, which states this for fixed questions) to checklist-based
+    followups too, now that a fixed checklist exists to check against.
+
+    Why this exists: smaller local models don't always follow "use one of
+    the followups below" reliably — observed failure mode was the model
+    inventing its own question that closely echoed back the participant's
+    own words (e.g. participant asks "Was meinen Sie mit Pause?" and the
+    model responds with a "followup" that just rephrases that same
+    question back at them, instead of answering it or picking a real
+    checklist item). That is jarring and must never reach the participant.
+
+    Guides without "aspects" (e.g. depression_scid_example.yaml) are
+    completely unaffected — this returns followup_text unchanged for them,
+    exactly as before this function existed.
+
+    Args:
+        question: The current question dict (may or may not have
+            "aspects" set).
+        followup_text: The model's raw followup text (already known to not
+            be None, SAFETY_CONCERN_MARKER, or REPEAT_QUESTION_MARKER —
+            those are handled separately in backend/app.py).
+
+    Returns:
+        followup_text unchanged if the question has no aspects; the
+        matching checklist item's exact wording if one is close enough
+        (ratio >= CHECKLIST_SIMILARITY_THRESHOLD); otherwise a safe,
+        generic fallback (the first aspect's first maintenance_question —
+        content-neutral by design, so it can never itself echo back
+        anything the participant said).
+    """
+    aspects = question.get("aspects")
+    if not aspects:
+        return followup_text
+
+    candidates = []
+    for aspect in aspects:
+        candidates.extend(aspect.get("maintenance_questions") or [])
+        candidates.extend(aspect.get("followups") or [])
+    if not candidates:
+        return followup_text
+
+    target = _normalize_for_comparison(followup_text)
+    best_candidate, best_ratio = None, 0.0
+    for candidate in candidates:
+        ratio = difflib.SequenceMatcher(None, _normalize_for_comparison(candidate), target).ratio()
+        if ratio > best_ratio:
+            best_candidate, best_ratio = candidate, ratio
+
+    if best_ratio >= CHECKLIST_SIMILARITY_THRESHOLD:
+        return best_candidate
+
+    fallback_candidates = aspects[0].get("maintenance_questions") or aspects[0].get("followups") or candidates
+    return fallback_candidates[0]
+
+
+def escalate_to_specific_followup(question: dict, current_followup_text: str) -> str:
+    """
+    If current_followup_text is one of the question's generic
+    maintenance_questions, switch to the first specific followup from the
+    SAME aspect instead — used when the participant asked for
+    clarification about a generic maintenance_question (e.g. "Was meinen
+    Sie mit 'sonst noch etwas'?"). Repeating the same generic phrasing
+    after explaining it doesn't actually help the participant: it was the
+    generic abstraction itself that confused them, not a one-off wording
+    issue, so a concrete, content-specific question is what should follow.
+
+    Returns current_followup_text unchanged if it's already a specific
+    followup (not a maintenance_question), or if the question has no
+    aspects / the matching aspect has no followups to escalate to.
+
+    Known limitation: if the SAME generic maintenance_question text is
+    shared by more than one aspect on this question (as generic prompts
+    like "Gibt es sonst noch etwas?" often are), this picks the first
+    matching aspect in guide order — which may not be the one the model
+    actually meant. Still strictly better than repeating the same generic
+    text a second time, but not guaranteed to pick the "right" aspect.
+
+    Args:
+        question: The current question dict.
+        current_followup_text: The pending followup text about to be
+            re-presented after a clarification request (see
+            backend/app.py's _handle_clarification_request()).
+    """
+    aspects = question.get("aspects")
+    if not aspects:
+        return current_followup_text
+
+    target = _normalize_for_comparison(current_followup_text)
+    for aspect in aspects:
+        maintenance_questions = aspect.get("maintenance_questions") or []
+        if any(_normalize_for_comparison(mq) == target for mq in maintenance_questions):
+            followups = aspect.get("followups") or []
+            if followups:
+                return followups[0]
+            break
+
+    return current_followup_text
+
+
+def format_required_style_context(style_index: int) -> str:
+    """
+    Build the REQUIRED_STYLE context line that tells the model exactly
+    which FEEDBACK style to use this turn (1 = Spiegeln, 2 = Kleine echte
+    Reaktion, 3 = Konkretes Aufgreifen — see
+    study_content/prompts/nba_conversational.txt's "FEEDBACK styles"
+    section).
+
+    Style ROTATION is computed here, driven by backend/app.py's
+    _style_turn_count, rather than left to the model to track itself.
+    Earlier versions asked the model to "rotate between 3 styles, never
+    twice in a row" — observed failure: the model ignored this and fell
+    into a single repeated template instead (e.g. always "Klingt nach
+    ..."), regardless of what was actually said. Telling it exactly which
+    style number to use each turn removes that judgment call (and that
+    failure mode) entirely — this is far more reliable than expecting an
+    8B-class local model to self-track rotation across many turns.
+
+    Args:
+        style_index: 1, 2, or 3.
+
+    Returns:
+        A text block (with a leading newline) to insert into the prompt.
+    """
+    return f"\nREQUIRED_STYLE: {style_index}\n"
+
+
 def get_feedback_and_followup(
     chain_with_history,
     profile,
@@ -244,6 +432,8 @@ def get_feedback_and_followup(
     answer_text: str,
     followup_allowed: bool,
     language_code: str = "de",
+    aspects_context: str = "",
+    required_style_context: str = "",
 ) -> tuple[str, str | None]:
     """
     Ask the model for a short, neutral acknowledgement of the participant's
@@ -269,6 +459,13 @@ def get_feedback_and_followup(
             explicitly required to be in this language — this is not left
             to the model to infer, since smaller local models are not
             reliable at that and can drift into English.
+        aspects_context: Optional extra context block from
+            format_aspects_context() above, for profiles that use
+            per-question "aspects" (e.g. nba_conversational). Defaults to
+            "" — guides without this field are unaffected.
+        required_style_context: Optional extra context block from
+            format_required_style_context() above, telling the model
+            exactly which FEEDBACK style to use this turn. Defaults to "".
 
     Returns:
         A tuple (feedback_text, followup_text_or_None). See
@@ -282,7 +479,11 @@ def get_feedback_and_followup(
         "permitted for this item — you may use at most one, only if it "
         "would meaningfully help"
         if followup_allowed else
-        "not permitted for this item — always write FOLLOWUP: NONE"
+        "not permitted for this item — always write FOLLOWUP: NONE, unless "
+        "your instructions define a separate marker for the participant "
+        "asking a clarification question instead of answering (e.g. "
+        "[REPEAT_QUESTION]) — that marker is about a different situation "
+        "and remains available regardless of this setting"
     )
 
     language_name = _language_name(language_code)
@@ -298,6 +499,8 @@ def get_feedback_and_followup(
         {
             "instructions": instructions,
             "question": question_text,
+            "aspects_context": aspects_context,
+            "required_style_context": required_style_context,
             "answer": answer_text,
             "followup_status": followup_status,
         },

@@ -1,0 +1,169 @@
+# INTERVIEW GUIDE — NBA MODUL 6
+# ================================
+# NBA-Modul 6: Gestaltung des Alltagslebens und sozialer Kontakte.
+# Basiert auf Anlage 4/5 des Ethikantrags "Nutzerzentrierte Entwicklung
+# und Evaluation eines LLM-gestützten digitalen Assessments in der Pflege".
+# behavior_profile: nba_conversational (siehe prompts/nba_conversational.txt)
+#
+# Schema-Erweiterung gegenüber dem Beispiel-Guide (depression_scid_example):
+#   aspects                - Liste der inhaltlichen Aspekte pro Frage.
+#     name                 - kurzer Name, nur zur eigenen Orientierung
+#     covered_if           - Hinweis, wann dieser Aspekt als "erwähnt" gilt
+#     maintenance_questions - generische, inhaltsneutrale Fragen, die
+#                             zuerst versucht werden (kein neuer Impuls,
+#                             halten nur die Erzählung in Gang)
+#     followups             - spezifische Nachfragen zum genauen Inhalt,
+#                             falls die generische Frage nicht reichte
+#   example_if_unclear     - Beispielhafte Umformulierung mit Alltagsbeispiel
+#                             bei ausbleibender Antwort/Unverständnis (Typ D)
+#   nba_reference           - offizielle NBA-Item-Referenz, nur zur Doku
+
+guide_id: nba_modul6_alltag_sozial
+title: "NBA Modul 6: Gestaltung des Alltagslebens und sozialer Kontakte"
+behavior_profile: nba_conversational
+
+framing_message: >
+  Hallo, ich werde heute mit Ihnen Modul 6 des NBA durchführen. Dabei geht
+  es um die Gestaltung Ihres Alltagslebens und Ihre sozialen Kontakte,
+  also zum Beispiel um Ihren Tagesablauf, Ihre Beschäftigungen und den
+  Kontakt zu anderen Menschen. Sie können mich jederzeit etwas
+  wiederholen lassen oder nachfragen. Fangen wir mit der ersten Frage an:
+
+closing_message: >
+  Das waren alle Fragen zu Modul 6. Vielen Dank für Ihre Geduld!
+
+sections:
+  - section_title: "Gestaltung des Alltagslebens und sozialer Kontakte"
+    questions:
+
+      - id: nba6_01
+        text: "Erzählen Sie mir doch mal, wie bei Ihnen so ein Tag abläuft. Entscheiden Sie dabei selbst, was Sie wann machen, oder bestimmt das eher jemand anderes?"
+        allow_followup: true
+        aspects:
+          - name: selbstbestimmung_tagesablauf
+            covered_if: "Aussage zu 'entscheide selbst' oder 'andere bestimmen mit'"
+            maintenance_questions:
+              - "Gibt es sonst noch etwas?"
+              - "Wie ist das für Sie im Alltag?"
+            followups:
+              - "Wer entscheidet denn, wann was gemacht wird?"
+          - name: umgang_veraenderungen
+            covered_if: "Beispiel für eine Anpassung/Störung genannt"
+            maintenance_questions:
+              - "Und wie geht es dann weiter?"
+              - "Können Sie das genauer beschreiben?"
+            followups:
+              - "Hatten Sie in letzter Zeit eine unerwartete Änderung? Was haben Sie dann gemacht?"
+        example_if_unclear: >
+          Damit meine ich zum Beispiel: Stehen Sie zu einer festen Uhrzeit
+          auf, oder ist das bei Ihnen unterschiedlich?
+        nba_reference: "F 4.6.1"
+
+      - id: nba6_02
+        text: "Wie geht es Ihnen zurzeit mit dem Schlafen, und gönnen Sie sich tagsüber auch mal eine Pause?"
+        allow_followup: true
+        aspects:
+          - name: schlafrhythmus
+            covered_if: "Aussage zu Schlafdauer/-qualität"
+            maintenance_questions:
+              - "Gibt es sonst noch etwas?"
+              - "Wie war das für Sie?"
+            followups:
+              - "Wachen Sie nachts öfter auf, oder schlafen Sie eher durch?"
+          - name: ruhephasen_tagsueber
+            covered_if: "Erwähnung von Nickerchen/Pausen"
+            maintenance_questions:
+              - "Und sonst?"
+            followups:
+              - "Machen Sie eher einen Mittagsschlaf oder kurze Pausen zwischendurch?"
+        example_if_unclear: >
+          Damit meine ich zum Beispiel: Schlafen Sie nachts gut durch, und
+          legen Sie sich tagsüber manchmal noch hin?
+        nba_reference: "F 4.6.2"
+
+      - id: nba6_03
+        text: "Womit vertreiben Sie sich denn am liebsten die Zeit?"
+        allow_followup: true
+        aspects:
+          - name: art_beschaeftigung
+            covered_if: "Konkrete Aktivität genannt"
+            maintenance_questions:
+              - "Gibt es sonst noch etwas?"
+            followups:
+              - "Was gefällt Ihnen daran besonders?"
+          - name: selbstaendigkeit_beschaeftigung
+            covered_if: "Aussage zu 'allein' vs. 'mit Hilfe'"
+            maintenance_questions:
+              - "Und wie geht es dann weiter?"
+            followups:
+              - "Können Sie dem allein nachgehen, oder brauchen Sie dabei Unterstützung?"
+        example_if_unclear: >
+          Damit meine ich zum Beispiel: Lesen Sie gerne, schauen Sie fern,
+          oder haben Sie ein Hobby, dem Sie nachgehen?
+        nba_reference: "F 4.6.3"
+
+      - id: nba6_04
+        text: "Gibt es schon was, worauf Sie sich in nächster Zeit freuen oder das Sie vorhaben?"
+        allow_followup: true
+        aspects:
+          - name: faehigkeit_vorausplanung
+            covered_if: "Konkretes Beispiel einer Planung genannt"
+            maintenance_questions:
+              - "Gibt es sonst noch etwas?"
+            followups:
+              - "Woran denken Sie dabei, wenn Sie etwas planen?"
+          - name: umgang_entfernte_termine
+            covered_if: "Aussage zu 'im Kalender' oder 'vergesse das eher'"
+            maintenance_questions:
+              - "Und sonst?"
+            followups:
+              - "Schreiben Sie sich das auf, oder merken Sie sich das im Kopf?"
+        example_if_unclear: >
+          Damit meine ich zum Beispiel: Planen Sie zum Beispiel schon, wen
+          Sie nächste Woche besuchen oder was Sie am Wochenende machen
+          möchten?
+        nba_reference: "F 4.6.4"
+
+      - id: nba6_05
+        text: "Jetzt würde mich interessieren, wie das ist, wenn Sie mit einer Bezugsperson zusammen sind, egal ob Familie, Pflegeperson oder jemand anderes. Wie läuft so ein Treffen für Sie ab? Was machen Sie da?"
+        allow_followup: true
+        aspects:
+          - name: aktive_beteiligung_kontakt
+            covered_if: "Konkrete Handlung oder Aktivität mit der anderen Person genannt (nicht nur Reden)"
+            maintenance_questions:
+              - "Gibt es sonst noch etwas?"
+            followups:
+              - "Wer schlägt normalerweise vor, was Sie zusammen machen?"
+          - name: eigeninitiative_kontakt
+            covered_if: "Aussage zu 'ich mache mit' vs. 'ich lasse es eher über mich ergehen'"
+            maintenance_questions:
+              - "Und wie geht es Ihnen dabei sonst?"
+            followups:
+              - "Machen Sie da von sich aus mit, oder ist das eher die andere Person, die etwas vorschlägt?"
+        example_if_unclear: >
+          Damit meine ich zum Beispiel: Wenn Ihre Pflegeperson bei Ihnen
+          ist — machen Sie dann etwas zusammen, oder unterhalten Sie
+          sich, oder sitzen Sie eher nur daneben?
+        nba_reference: "F 4.6.5"
+
+      - id: nba6_06
+        text: "Und wie halten Sie Kontakt zu Leuten, die Sie nicht so oft sehen, zum Beispiel weiter entfernte Familie oder alte Freunde? Suchen Sie da eher selbst das Gespräch, oder meldet sich eher die andere Person?"
+        allow_followup: true
+        aspects:
+          - name: haeufigkeit_art_kontakt
+            covered_if: "Konkrete Kontaktform genannt (Telefon, Besuch, Brief)"
+            maintenance_questions:
+              - "Gibt es sonst noch etwas?"
+            followups:
+              - "Ist das eher ein Anruf, ein Besuch, oder schreiben Sie sich?"
+          - name: eigenstaendigkeit_kontaktaufnahme
+            covered_if: "Aussage zu 'ich rufe an' vs. 'andere melden sich'"
+            maintenance_questions:
+              - "Und sonst?"
+            followups:
+              - "Melden Sie sich selbst bei anderen, oder warten Sie eher, dass man sich bei Ihnen meldet?"
+        example_if_unclear: >
+          Damit meine ich zum Beispiel: Rufen Sie zum Beispiel selbst
+          Familie oder Freunde an, oder schreiben Sie sich Briefe oder
+          Nachrichten?
+        nba_reference: "F 4.6.6"

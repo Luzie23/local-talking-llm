@@ -255,10 +255,14 @@ async function stopMicRecording() {
   window.CONVERSATION.userRecording = false;
   window.CONVERSATION.clinicianTyping = true;
   window.CONVERSATION.processingResponse = true;
-  const transcriptText = window.CONVERSATION.liveTranscript && window.CONVERSATION.liveTranscript !== "Aufnahme läuft…" && window.CONVERSATION.liveTranscript !== "Live-Transkript nicht verfügbar." ? window.CONVERSATION.liveTranscript.replace(/…$/, "") : "";
-  if (transcriptText) {
-    window.CONVERSATION.messages.push({ role: "user", text: transcriptText });
-  }
+
+  // Platzhalter-Sprechblase für die eigene Eingabe: der Browser-eigene
+  // Live-Mitschrieb (SpeechRecognition, siehe oben) ist nur eine grobe
+  // Echtzeit-Vorschau und in manchen Browsern gar nicht verfügbar — die
+  // Blase wird daher unten (siehe readStreamedReply's "transcript"-Zeile)
+  // durch das echte, serverseitige Whisper-Transkript ersetzt, sobald es da ist.
+  const userMsg = { role: "user", text: "…" };
+  window.CONVERSATION.messages.push(userMsg);
   window.CONVERSATION.liveTranscript = "Verarbeite Sprachaufzeichnung…";
 
   // Platzhalter für die kommende Antwort schon jetzt anlegen (noch leer) —
@@ -285,7 +289,7 @@ async function stopMicRecording() {
       throw new Error(body.error || `Server error ${response.status}`);
     }
 
-    await readStreamedReply(response, replyMsg);
+    await readStreamedReply(response, replyMsg, userMsg);
   } catch (error) {
     window.CONVERSATION.processingResponse = false;
     window.CONVERSATION.clinicianTyping = false;
@@ -307,7 +311,7 @@ async function stopMicRecording() {
    "sentence" (eine pro Satz, mit Text + Audio), "error" (bei einem Problem
    während der Vertonung — bereits gespielte Sätze bleiben davon unberührt).
 ============================================================================= */
-async function readStreamedReply(response, msg) {
+async function readStreamedReply(response, msg, userMsg) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -397,6 +401,10 @@ async function readStreamedReply(response, msg) {
       const data = JSON.parse(line);
       if (data.type === "transcript") {
         window.CONVERSATION.liveTranscript = data.transcript || "";
+        if (userMsg) {
+          userMsg.text = data.transcript && data.transcript.trim() ? data.transcript : "(Kein Text erkannt)";
+          render();
+        }
       } else if (data.type === "sentence") {
         audioQueue.push({ text: data.text, audio: data.audio });
         maybePlayNext();
@@ -435,6 +443,41 @@ async function readStreamedReply(response, msg) {
   window.CONVERSATION.liveTranscript = "";
   render();
 }
+
+/* =============================================================================
+   GESPROCHENE ERÖFFNUNGSNACHRICHT (Sprach-Modalität)
+   -----------------------------------------------------------------------------
+   Pendant zu playOpening() in index.html (die nur Wort-für-Wort Text zeigt,
+   ohne Ton). Ruft /api/interview/start/audio auf (Audio wird bewusst erst
+   NACH dem Klick auf "Interview starten" geholt/abgespielt, nicht schon beim
+   Laden der Seite, da Autoplay-Regeln der Browser einen echten Nutzer-Klick
+   verlangen) und spielt die Antwort über dieselbe readStreamedReply()-Logik
+   ab, die auch spätere Antworten abspielt und synchron als Text zeigt.
+============================================================================= */
+async function playOpeningSpeech() {
+  const replyMsg = { role: "clinician", text: "", turnId: ++replyTurnCounter };
+  window.CONVERSATION.messages = [replyMsg];
+  window.CONVERSATION.clinicianTyping = true;
+  window.CONVERSATION.processingResponse = true;
+  render();
+
+  try {
+    const response = await fetch("/api/interview/start/audio");
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error || `Server error ${response.status}`);
+    }
+    await readStreamedReply(response, replyMsg);
+  } catch (error) {
+    window.CONVERSATION.processingResponse = false;
+    window.CONVERSATION.clinicianTyping = false;
+    window.CONVERSATION.clinicianSpeaking = false;
+    window.CONVERSATION.spokenChars = null;
+    replyMsg.text = `Fehler: ${error.message}`;
+    render();
+  }
+}
+window.playOpeningSpeech = playOpeningSpeech;
 
 window.onMicToggle = function (isRecording) {
   if (isRecording) {

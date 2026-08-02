@@ -22,6 +22,7 @@ before running the voice condition for the first time.
 import argparse
 import json
 import os
+import random
 import re
 import threading
 import time
@@ -91,6 +92,92 @@ interview = InterviewGuide(_guide_filename)
 # the project plan and backend/behavior_profiles.py.
 profile = load_behavior_profile(interview.behavior_profile)
 
+# --- Safety-concern handling (see e.g. study_content/prompts/nba_conversational.txt) ---
+# Some behavior profiles instruct the model to reply with this exact marker,
+# instead of normal FEEDBACK/FOLLOWUP text, when the participant's answer
+# suggests acute psychological distress or a safety risk. It must never
+# reach the participant as text or speech, and must pause the interview
+# (no further advancing) instead — see the check right after every
+# get_feedback_and_followup() call in process_answer() below.
+SAFETY_CONCERN_MARKER = "[SAFETY_CONCERN]"
+SAFETY_ABORT_MESSAGE = {
+    "de": "Vielen Dank für Ihre Antworten. Wir beenden das Interview an dieser Stelle.",
+    "en": "Thank you for your answers. We are ending the interview at this point.",
+}
+# Module-level flag: once tripped, every further turn just repeats the
+# abort message below and never touches the interview guide's state again
+# (mirrors the "single fixed session, one participant at a time" design
+# already used for chat_sessions in llm_provider.py).
+_safety_concern_triggered = False
+
+
+def _safety_abort_message() -> str:
+    return SAFETY_ABORT_MESSAGE.get(args.language, SAFETY_ABORT_MESSAGE["de"])
+
+
+def _raise_safety_concern_alert() -> None:
+    """
+    Called the moment the model reports SAFETY_CONCERN_MARKER. Prints a
+    hard-to-miss console alert — the console is where every other
+    "[interview] ..." status line already goes (see process_answer()), and
+    the study lead is present at every session per the ethics approval.
+    """
+    global _safety_concern_triggered
+    _safety_concern_triggered = True
+    print("=" * 60)
+    print("[SAFETY ALERT] The model flagged a possible safety concern.")
+    print("The interview has been paused. Please check in with the participant.")
+    print("=" * 60)
+
+
+# --- FEEDBACK style rotation (computed here, not left to the model) -------
+# See study_content/prompts/nba_conversational.txt's "FEEDBACK styles"
+# section: style 1 (Spiegeln) / 2 (Kleine echte Reaktion) / 3 (Konkretes
+# Aufgreifen) rotation is driven entirely by this counter via
+# llm_provider.format_required_style_context(), not by asking the model to
+# track "never twice in a row" itself — a known reliability problem for
+# smaller local models over many turns; the earlier prompt-only version of
+# this rule was observed to be ignored, with the model settling into a
+# single repeated template (e.g. always "Klingt nach ...") regardless of
+# what was actually said.
+#
+# Only increments for genuine answering turns — a turn that turns into a
+# clarification request (REPEAT_QUESTION) doesn't count, so the same style
+# is simply tried again once the participant actually answers.
+_style_turn_count = 0
+
+
+def _next_required_style_context() -> str:
+    style_index = (_style_turn_count % 3) + 1
+    return llm_provider.format_required_style_context(style_index)
+
+
+# --- Clarification-question handling (see e.g. nba_conversational.txt) ----
+# Some behavior profiles let the model recognize that the participant asked
+# a comprehension question about the current item instead of answering it,
+# and signal that with this marker instead of a real follow-up. On match,
+# the item is re-presented unchanged (see process_answer() below) instead
+# of being scored against its aspects checklist or advanced past.
+REPEAT_QUESTION_MARKER = "[REPEAT_QUESTION]"
+
+# How many times the SAME item (fixed question, and/or its one follow-up —
+# see InterviewGuide.register_clarification_request()) may be re-presented
+# after a clarification question before giving up automated handling and
+# handing off to the study lead, who is present throughout the session per
+# the ethics approval. Prevents an unanswerable question from looping
+# forever.
+MAX_CLARIFICATIONS_PER_ITEM = 2
+
+CLARIFICATION_HANDOFF_MESSAGE = {
+    "de": "Diese Frage klären wir am besten gemeinsam mit der Studienleitung — sie hilft Ihnen gleich persönlich weiter.",
+    "en": "Let's clarify this question together with the study lead instead — they'll help you with it in person in a moment.",
+}
+
+
+def _clarification_handoff_message() -> str:
+    return CLARIFICATION_HANDOFF_MESSAGE.get(args.language, CLARIFICATION_HANDOFF_MESSAGE["de"])
+
+
 # --- Web server (used with --web) ------------------------------------------
 # The frontend/ folder (the web page the participant sees) lives one level up
 # from this file, so we point Flask there explicitly.
@@ -136,6 +223,13 @@ def _response_pieces(feedback: str, next_question: dict | None) -> list[str]:
     For "natural_transition" delivery, the model blends the feedback and
     the next question into one smoothly-worded message — there are no
     separately-known pieces in that case, only sentences within the result.
+
+    For "verbatim" delivery with profile.transition_phrases set (see
+    study_content/prompts/profiles.yaml), a randomly-picked lead-in phrase
+    is prepended before the next question — only when there IS a next
+    question (never before the closing message) — so feedback and question
+    don't just get stitched together with no transition. The question's
+    own wording is never touched, only bridged into.
     """
     following_text = next_question["text"] if next_question is not None else interview.closing_message
 
@@ -143,7 +237,54 @@ def _response_pieces(feedback: str, next_question: dict | None) -> list[str]:
         combined = llm_provider.get_natural_transition(llm, feedback, following_text, language_code=args.language)
         return _split_sentences(combined)
 
+    if next_question is not None and profile.transition_phrases:
+        following_text = f"{random.choice(profile.transition_phrases)} {following_text}"
+
     return _split_sentences(feedback) + _split_sentences(following_text)
+
+
+def _handle_clarification_request(feedback: str, repeated_text: str) -> list[str]:
+    """
+    Called when the model reports REPEAT_QUESTION_MARKER instead of a real
+    follow-up: the participant asked a comprehension question rather than
+    answering. Speaks the model's FEEDBACK (the clarification) as usual,
+    then either re-presents the same item unchanged (repeated_text — the
+    fixed question or the pending follow-up, whichever is currently
+    active) or, once MAX_CLARIFICATIONS_PER_ITEM is exceeded, hands off to
+    the study lead and moves the guide on instead of looping forever.
+
+    Does NOT call interview.start_followup() or otherwise touch follow-up
+    state — the caller's own state (awaiting-followup or not) is left
+    exactly as it was, so the next answer is still matched against the
+    same item.
+    """
+    count = interview.register_clarification_request()
+    print(f"[interview] clarification requested (count={count}/{MAX_CLARIFICATIONS_PER_ITEM}) — re-presenting current item")
+    if count > MAX_CLARIFICATIONS_PER_ITEM:
+        next_question = interview.advance()
+        return _response_pieces(_clarification_handoff_message(), next_question)
+    return _split_sentences(feedback) + _split_sentences(repeated_text)
+
+
+# Backstop for when the model recognizes a clarification request in its
+# FEEDBACK wording (e.g. explains what "Pause" means) but doesn't actually
+# use REPEAT_QUESTION_MARKER in FOLLOWUP as instructed — observed to happen
+# with this local model. Matched against the PARTICIPANT's own text, not
+# the model's response, so it fires regardless of what the model did.
+_CLARIFICATION_PATTERNS = [
+    r'was meinen sie',
+    r'wie meinen sie',
+    r'was verstehen sie unter',
+    r'was hei[ßs]t das',
+    r'was ist damit gemeint',
+    r'k[oö]nnen sie das (genauer )?erkl[aä]ren',
+    r'das (habe ich|verstehe ich)(?: jetzt| gerade)? nicht(?: verstanden)?',
+]
+
+
+def _looks_like_clarification_request(answer_text: str) -> bool:
+    normalized = answer_text.lower()
+    return any(re.search(pattern, normalized) for pattern in _CLARIFICATION_PATTERNS)
 
 
 def process_answer(answer_text: str) -> list[str]:
@@ -167,18 +308,57 @@ def process_answer(answer_text: str) -> list[str]:
          follow-up may be offered if this item allows it and none has been
          used for it yet.
 
+    A third, terminal case: if the model ever responds with
+    SAFETY_CONCERN_MARKER (see some behavior profiles' "Safety" section,
+    e.g. study_content/prompts/nba_conversational.txt), the interview is
+    paused for good — every call from that point on short-circuits at the
+    top of this function and just repeats _safety_abort_message().
+
+    A fourth case, in either of the two above: if the model responds with
+    REPEAT_QUESTION_MARKER instead of a real follow-up (the participant
+    asked a comprehension question about the item instead of answering
+    it), see _handle_clarification_request() — the same item is
+    re-presented unchanged, up to MAX_CLARIFICATIONS_PER_ITEM times, before
+    handing off to the study lead instead of looping forever. This also
+    fires if _looks_like_clarification_request(answer_text) matches, even
+    when the model didn't use the marker — this local model sometimes
+    writes a genuine clarification into FEEDBACK but forgets to set
+    REPEAT_QUESTION_MARKER, so the participant's own wording is checked too.
+
     Prints a short debug line to the console for every turn (visible only
     in the terminal running this app, never sent to the participant) — this
     is meant to make it easy to check whether the follow-up mechanism is
     actually engaging as expected while testing, instead of having to guess
     from the final combined text alone.
     """
+    global _style_turn_count
+
+    if _safety_concern_triggered:
+        return _split_sentences(_safety_abort_message())
+
     if interview.is_awaiting_followup_answer():
         print(f"[interview] answering follow-up: \"{interview.pending_followup_text}\"")
-        feedback, _ = llm_provider.get_feedback_and_followup(
+        feedback, followup = llm_provider.get_feedback_and_followup(
             chain_with_history, profile, interview.pending_followup_text, answer_text,
             followup_allowed=False, language_code=args.language,
+            aspects_context=llm_provider.format_aspects_context(interview.current_question()),
+            required_style_context=_next_required_style_context(),
         )
+        if feedback.strip() == SAFETY_CONCERN_MARKER:
+            _raise_safety_concern_alert()
+            return _split_sentences(_safety_abort_message())
+        if (followup and followup.strip() == REPEAT_QUESTION_MARKER) or _looks_like_clarification_request(answer_text):
+            # Repeating the SAME generic maintenance_question after
+            # explaining it doesn't help — escalate to a specific followup
+            # from the same aspect instead, and keep pending_followup_text
+            # in sync so the next turn is evaluated against what was
+            # actually just re-presented (see escalate_to_specific_followup()).
+            escalated = llm_provider.escalate_to_specific_followup(interview.current_question(), interview.pending_followup_text)
+            if escalated != interview.pending_followup_text:
+                print(f"[interview] escalating generic followup {interview.pending_followup_text!r} -> specific {escalated!r} after clarification")
+                interview.pending_followup_text = escalated
+            return _handle_clarification_request(feedback, interview.pending_followup_text)
+        _style_turn_count += 1
         print(f"[interview] feedback={feedback!r}")
         next_question = interview.advance()
         return _response_pieces(feedback, next_question)
@@ -197,7 +377,26 @@ def process_answer(answer_text: str) -> list[str]:
     feedback, followup = llm_provider.get_feedback_and_followup(
         chain_with_history, profile, question["text"], answer_text,
         followup_allowed=followup_allowed, language_code=args.language,
+        aspects_context=llm_provider.format_aspects_context(question),
+        required_style_context=_next_required_style_context(),
     )
+    if feedback.strip() == SAFETY_CONCERN_MARKER:
+        _raise_safety_concern_alert()
+        return _split_sentences(_safety_abort_message())
+    if (followup and followup.strip() == REPEAT_QUESTION_MARKER) or _looks_like_clarification_request(answer_text):
+        return _handle_clarification_request(feedback, question["text"])
+    _style_turn_count += 1
+
+    if followup:
+        # Never let the model's own invented wording reach the participant
+        # for a checklist-based question — only its own maintenance_questions/
+        # followups (or a safe generic fallback) are ever allowed through.
+        # No-op for guides without "aspects" (see constrain_followup_to_checklist()).
+        constrained_followup = llm_provider.constrain_followup_to_checklist(question, followup)
+        if constrained_followup != followup:
+            print(f"[interview] followup {followup!r} not in checklist — using {constrained_followup!r} instead")
+        followup = constrained_followup
+
     print(f"[interview] feedback={feedback!r} followup={followup!r}")
 
     if followup:
@@ -206,6 +405,22 @@ def process_answer(answer_text: str) -> list[str]:
 
     next_question = interview.advance()
     return _response_pieces(feedback, next_question)
+
+
+def _opening_message() -> str:
+    """
+    Resets the interview guide to its start and returns the framing message
+    plus the first fixed question, verbatim — shared by both
+    /api/interview/start (text) and /api/interview/start/audio (voice).
+    """
+    global _style_turn_count
+    interview.reset()
+    _style_turn_count = 0
+    first_question = interview.current_question()
+    if first_question is None:
+        # An empty guide (e.g. a guide file with no questions yet).
+        return interview.framing_message
+    return f"{interview.framing_message} {first_question['text']}".strip()
 
 
 @app.route("/api/interview/start", methods=["GET"])
@@ -217,14 +432,26 @@ def interview_start_endpoint():
     generate yet, only fixed text to present.
     Returns JSON: {"message": "..."}.
     """
-    interview.reset()
-    first_question = interview.current_question()
-    if first_question is None:
-        # An empty guide (e.g. a guide file with no questions yet).
-        message = interview.framing_message
-    else:
-        message = f"{interview.framing_message} {first_question['text']}".strip()
-    return jsonify({"message": message})
+    return jsonify({"message": _opening_message()})
+
+
+@app.route("/api/interview/start/audio", methods=["GET"])
+def interview_start_audio_endpoint():
+    """
+    Voice-condition companion to /api/interview/start: streams the framing
+    message + first question as synthesized audio, one NDJSON "sentence"
+    line at a time — same wire format as /api/chat/audio (see
+    _stream_synthesized_sentences() below), so the frontend's existing
+    readStreamedReply() can play it exactly like any other reply, instead
+    of only revealing the opening message as silent text.
+
+    Called once, right when the participant clicks "Interview starten" (see
+    playOpeningSpeech() in frontend/conversation.js) — not on page load,
+    since audio should only ever play after a user gesture.
+    """
+    message = _opening_message()
+    pieces = _split_sentences(message)
+    return Response(_stream_synthesized_sentences(pieces), mimetype="application/x-ndjson")
 
 
 @app.route("/api/chat", methods=["POST"])
@@ -247,25 +474,57 @@ def chat_endpoint():
     return jsonify({"response": response})
 
 
+def _stream_synthesized_sentences(pieces: list[str]):
+    """
+    Shared NDJSON sentence-audio generator, used by both /api/chat/audio and
+    /api/interview/start/audio. Synthesizes and yields one sentence at a
+    time instead of waiting for the whole reply — this is what Step 5b of
+    the project plan is for: the browser can start playing the first
+    sentence while later ones are still being synthesized. Line types:
+
+      {"type": "sentence", "text": "...", "audio": "...base64 wav...", "is_last": bool}
+        One per sentence, in speaking order.
+      {"type": "error", "message": "..."}
+        Sent instead of a "sentence" line if synthesizing one sentence
+        fails; playback of anything already sent is unaffected.
+    """
+    # Short pause appended after every sentence except the last, so
+    # consecutive audio pieces played back-to-back in the browser still
+    # sound like natural speech instead of running into each other — same
+    # reasoning as the pause between sentences in backend/tts.py.
+    gap_seconds = 0.3
+
+    for i, sentence_text in enumerate(pieces):
+        is_last = (i == len(pieces) - 1)
+        try:
+            sample_rate, audio_array = tts.synthesize(sentence_text)
+            if not is_last:
+                gap = np.zeros(int(sample_rate * gap_seconds), dtype=np.float32)
+                audio_array = np.concatenate([audio_array, gap])
+            audio_base64 = speech.encode_wav_base64(sample_rate, audio_array)
+            yield json.dumps({
+                "type": "sentence",
+                "text": sentence_text,
+                "audio": audio_base64,
+                "is_last": is_last,
+            }) + "\n"
+        except Exception as e:
+            yield json.dumps({"type": "error", "message": str(e)}) + "\n"
+            break
+
+
 @app.route("/api/chat/audio", methods=["POST"])
 def chat_audio_endpoint():
     """
     Voice-condition endpoint: the participant spoke into the browser's microphone.
     Expects multipart/form-data with an "audio" file and optional "language" field.
 
-    Streams the reply back as NDJSON (one JSON object per line), instead of
-    waiting for the whole reply to be synthesized before responding — this
-    is what Step 5b of the project plan is for: the browser can start
-    playing the first sentence while later ones are still being
-    synthesized. Line types:
+    Streams the reply back as NDJSON (one JSON object per line) — see
+    _stream_synthesized_sentences() above for the "sentence"/"error" lines.
+    Additionally sends, first:
 
       {"type": "transcript", "transcript": "..."}
         Sent first, as soon as speech-to-text is done.
-      {"type": "sentence", "text": "...", "audio": "...base64 wav...", "is_last": bool}
-        One per sentence, in speaking order.
-      {"type": "error", "message": "..."}
-        Sent instead of a "sentence" line if synthesizing one sentence
-        fails; playback of anything already sent is unaffected.
     """
     audio_file = request.files.get("audio")
     if not audio_file:
@@ -283,30 +542,7 @@ def chat_audio_endpoint():
 
     def generate():
         yield json.dumps({"type": "transcript", "transcript": transcript}) + "\n"
-
-        # Short pause appended after every sentence except the last, so
-        # consecutive audio pieces played back-to-back in the browser still
-        # sound like natural speech instead of running into each other —
-        # same reasoning as the pause between sentences in backend/tts.py.
-        gap_seconds = 0.3
-
-        for i, sentence_text in enumerate(pieces):
-            is_last = (i == len(pieces) - 1)
-            try:
-                sample_rate, audio_array = tts.synthesize(sentence_text)
-                if not is_last:
-                    gap = np.zeros(int(sample_rate * gap_seconds), dtype=np.float32)
-                    audio_array = np.concatenate([audio_array, gap])
-                audio_base64 = speech.encode_wav_base64(sample_rate, audio_array)
-                yield json.dumps({
-                    "type": "sentence",
-                    "text": sentence_text,
-                    "audio": audio_base64,
-                    "is_last": is_last,
-                }) + "\n"
-            except Exception as e:
-                yield json.dumps({"type": "error", "message": str(e)}) + "\n"
-                break
+        yield from _stream_synthesized_sentences(pieces)
 
     return Response(generate(), mimetype="application/x-ndjson")
 

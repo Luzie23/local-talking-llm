@@ -29,12 +29,22 @@ DEFAULT_PROFILE_NAME = "strict_clinical"
 class BehaviorProfile:
     """One named behavior profile: instructions text + question-delivery style."""
 
-    def __init__(self, name: str, instructions: str, question_delivery: str):
+    def __init__(self, name: str, instructions: str, question_delivery: str, transition_phrases: list[str] | None = None):
         self.name = name
         self.instructions = instructions
         # "verbatim" (attach the next question unchanged) or
         # "natural_transition" (reword the transition, keep the meaning).
         self.question_delivery = question_delivery
+        # Optional, only used for "verbatim" delivery: a fixed pool of
+        # short lead-in phrases (e.g. "Kommen wir zur nächsten Frage:"),
+        # one randomly prepended before each next fixed question — never
+        # rewording the question itself, just bridging into it, so exact
+        # question wording is preserved for comparability while the
+        # feedback -> question handoff still sounds natural instead of two
+        # sentences bluntly stitched together. Empty by default: profiles
+        # that don't set this (e.g. strict_clinical) behave exactly as
+        # before — see backend/app.py's _response_pieces().
+        self.transition_phrases = transition_phrases or []
 
 
 def _strip_comment_lines(text: str) -> str:
@@ -83,4 +93,5 @@ def load_behavior_profile(profile_name: str | None) -> BehaviorProfile:
 
     instructions = _strip_comment_lines(raw_instructions)
     question_delivery = entry.get("question_delivery", "verbatim")
-    return BehaviorProfile(profile_name, instructions, question_delivery)
+    transition_phrases = entry.get("transition_phrases")
+    return BehaviorProfile(profile_name, instructions, question_delivery, transition_phrases)

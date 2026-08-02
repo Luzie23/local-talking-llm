@@ -334,8 +334,21 @@
     render();
   });
 
-  /* --- Testton: reine Web-Audio-Erzeugung, kein Server/TTS nötig --------- */
-  function playTestTone() {
+  /* --- Testton: reine Web-Audio-Erzeugung, kein Server/TTS nötig ---------
+     Zeigt IMMER eine sichtbare Rückmeldung am Button (Text + "active"-Klasse),
+     unabhängig davon, ob tatsächlich Ton zu hören ist — sonst wirkt ein
+     Klick bei falsch eingestelltem Ausgabegerät/Lautstärke wie "nichts
+     passiert", obwohl der Ton technisch korrekt abgespielt wurde. -------- */
+  function playTestTone(event) {
+    const btn = (event && event.currentTarget) || document.getElementById("testSoundBtn");
+    const label = btn ? btn.querySelector("span") : null;
+    const originalLabel = label ? label.textContent : "";
+
+    function reset() {
+      if (btn) btn.classList.remove("active");
+      if (label) label.textContent = originalLabel;
+    }
+
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
       const osc = ctx.createOscillator();
@@ -350,9 +363,14 @@
       gain.connect(ctx.destination);
       osc.start();
       osc.stop(ctx.currentTime + 0.65);
-      osc.onended = function () { ctx.close(); };
+
+      if (btn) btn.classList.add("active");
+      if (label) label.textContent = "Ton spielt …";
+      osc.onended = function () { ctx.close(); reset(); };
     } catch (err) {
       console.warn("Testton konnte nicht abgespielt werden.", err);
+      if (label) label.textContent = "Ton nicht verfügbar";
+      setTimeout(reset, 1500);
     }
   }
 
@@ -481,7 +499,16 @@
       if (btn.disabled) return;
       stopMicTest(); // Mikrofon freigeben, falls der Test noch lief
       ov.classList.add("hidden");
-      playOpening(cfg.pendingOpeningMessage || "");
+      // Sprach-Modalität: Eröffnungsnachricht wird tatsächlich vertont
+      // (siehe playOpeningSpeech() in conversation.js) — Audio darf erst
+      // nach diesem Klick geholt/abgespielt werden (Autoplay-Regeln der
+      // Browser verlangen eine echte Nutzerinteraktion). Text-Modalität
+      // bleibt beim reinen Wort-für-Wort-Reveal ohne Ton.
+      if (cfg.modality === "speech" && typeof window.playOpeningSpeech === "function") {
+        window.playOpeningSpeech();
+      } else {
+        playOpening(cfg.pendingOpeningMessage || "");
+      }
     });
   }
 

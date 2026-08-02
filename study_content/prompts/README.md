@@ -4,13 +4,19 @@ This folder holds the plain-text behavior instructions given to the
 language model, plus `profiles.yaml`, which names each profile and links
 it to its instructions file.
 
-Two profiles exist so far:
+Profiles so far:
 - `strict_clinical.txt` — for standardized, validated instruments (e.g.
   SCID-style modules) where exact wording matters. The next fixed question
   is attached completely unchanged after the model's feedback.
 - `flexible_conversational.txt` — for more exploratory questionnaires,
   with a warmer tone. The model also smoothly rewords the transition into
   the next question (without changing its meaning).
+- `nba_conversational.txt` — for NBA-style guides with checklist-based
+  follow-up logic (per-question `aspects` with `covered_if`/
+  `maintenance_questions`/`followups`, see
+  `study_content/interviews/nba_modul6_alltag_sozial.yaml`) and a
+  `[SAFETY_CONCERN]` marker that pauses the interview (handled in
+  `backend/app.py`'s `process_answer()`).
 
 Which profile a given interview guide uses is set by that guide's
 `behavior_profile` field (see `study_content/interviews/*.yaml`).

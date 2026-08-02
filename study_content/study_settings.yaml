@@ -12,7 +12,7 @@ language: de
 
 # Which interview guide file (from study_content/interviews/) is currently
 # active. Just the file name, not the full path.
-interview_guide: depression_scid_example.yaml
+interview_guide: nba_modul6_alltag_sozial.yaml
 
 # Which Piper voice to use for spoken output (voice condition only). Must
 # be downloaded once per machine first — see backend/tts.py's module
