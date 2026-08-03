@@ -163,6 +163,18 @@ async function startMicRecording() {
     recorderNode.onaudioprocess = function (event) {
       const input = event.inputBuffer.getChannelData(0);
       recordedBuffers.push(new Float32Array(input));
+
+      // Echte Lautstärke fürs Balken-Feedback in renderSpeech() — dieselbe
+      // Berechnung wie beim Mikrofon-Test im Start-Overlay, hier aus dem
+      // ohnehin schon laufenden Aufnahme-Signal, ohne eigenen AnalyserNode.
+      let sumSquares = 0;
+      for (let i = 0; i < input.length; i++) {
+        sumSquares += input[i] * input[i];
+      }
+      const rms = Math.sqrt(sumSquares / input.length);
+      if (typeof window.updateListeningLevel === "function") {
+        window.updateListeningLevel(Math.min(1, rms * 4));
+      }
     };
 
     source.connect(recorderNode);
@@ -241,6 +253,124 @@ async function stopMicRecording() {
 }
 
 /* =============================================================================
+   GEMEINSAMER AUDIO-PLAYER MIT ECHTER AMPLITUDE
+   -----------------------------------------------------------------------------
+   Wird sowohl für gestreamte Antworten als auch für die gesprochene
+   Eröffnung genutzt. EIN AudioContext pro Antwort (nicht pro Satz!), ein
+   AnalyserNode liest die tatsächliche Lautstärke der gerade spielenden
+   Tonspur aus — window.updateSpeakingLevel() (siehe index.html) macht
+   daraus die "spricht gerade"-Bögen am Lautsprecher-Symbol. KEINE
+   vorgetäuschte Animation: Wenn kein Ton kommt, bewegt sich auch nichts.
+
+   Wichtig beim Verdrahten: createMediaElementSource() lenkt die Wiedergabe
+   eines <audio>-Elements exklusiv durch den Web-Audio-Graphen — vergisst
+   man, den AnalyserNode am Ende wieder mit audioContext.destination zu
+   verbinden, hört man plötzlich gar nichts mehr. Deshalb hier bewusst an
+   einer einzigen Stelle gebaut und getestet, statt an mehreren Stellen
+   dieselbe Verdrahtung zu wiederholen.
+
+   Fällt Web Audio aus (nicht verfügbar, Browser verweigert o. Ä.), wird
+   ganz normal ohne Amplituden-Anzeige weitergespielt — nie stiller Absturz.
+============================================================================= */
+function createSpokenAudioPlayer() {
+  let audioContext = null;
+  let analyser = null;
+  let dataArray = null;
+  let usingAnalyser = false;
+  let rafId = null;
+
+  try {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.connect(audioContext.destination); // <- ohne das: kein Ton mehr!
+    dataArray = new Uint8Array(analyser.frequencyBinCount);
+    usingAnalyser = true;
+  } catch (err) {
+    console.warn("Web Audio nicht verfügbar — Sprachausgabe ohne Amplituden-Anzeige.", err);
+  }
+
+  function startLevelLoop() {
+    if (!usingAnalyser) {
+      return;
+    }
+    function tick() {
+      analyser.getByteTimeDomainData(dataArray);
+      let sumSquares = 0;
+      for (let i = 0; i < dataArray.length; i++) {
+        const v = (dataArray[i] - 128) / 128;
+        sumSquares += v * v;
+      }
+      const rms = Math.sqrt(sumSquares / dataArray.length);
+      if (typeof window.updateSpeakingLevel === "function") {
+        window.updateSpeakingLevel(Math.min(1, rms * 4));
+      }
+      rafId = requestAnimationFrame(tick);
+    }
+    tick();
+  }
+
+  function stopLevelLoop() {
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+    if (typeof window.updateSpeakingLevel === "function") {
+      window.updateSpeakingLevel(0);
+    }
+  }
+
+  function playPiece(piece, onDone) {
+    const audioData = atob(piece.audio);
+    const bytes = new Uint8Array(audioData.length);
+    for (let i = 0; i < audioData.length; i++) {
+      bytes[i] = audioData.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: "audio/wav" });
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+
+    if (usingAnalyser) {
+      try {
+        const source = audioContext.createMediaElementSource(audio);
+        source.connect(analyser);
+      } catch (err) {
+        // Seltene Browser-Eigenheiten — Wiedergabe funktioniert trotzdem
+        // normal, nur ohne Amplituden-Anzeige für dieses eine Häppchen.
+        console.warn("Amplituden-Anbindung für dieses Audio-Stück fehlgeschlagen.", err);
+      }
+    }
+
+    audio.addEventListener("play", () => {
+      window.CONVERSATION.clinicianTyping = false;
+      window.CONVERSATION.processingResponse = false;
+      window.CONVERSATION.clinicianSpeaking = true;
+      render();
+      startLevelLoop();
+    });
+
+    const finish = () => {
+      stopLevelLoop();
+      URL.revokeObjectURL(url);
+      onDone();
+    };
+    audio.addEventListener("ended", finish);
+    audio.addEventListener("error", finish);
+    audio.play().catch(finish);
+  }
+
+  function close() {
+    stopLevelLoop();
+    if (audioContext) {
+      audioContext.close().catch(function () {});
+      audioContext = null;
+    }
+  }
+
+  return { playPiece: playPiece, close: close };
+}
+
+/* =============================================================================
    GESTREAMTE SPRACH-ANTWORT (Step 5b)
    -----------------------------------------------------------------------------
    /api/chat/audio schickt die Antwort nicht mehr als einen einzigen Block,
@@ -255,6 +385,7 @@ async function readStreamedReply(response, msg) {
   const decoder = new TextDecoder();
   let buffer = "";
 
+  const player = createSpokenAudioPlayer();
   const audioQueue = [];
   let playing = false;
   let assembledText = "";
@@ -265,41 +396,11 @@ async function readStreamedReply(response, msg) {
     }
     playing = true;
     const piece = audioQueue.shift();
-    playSentencePiece(piece, function () {
+    player.playPiece(piece, function () {
+      assembledText = assembledText ? assembledText + " " + piece.text : piece.text;
       playing = false;
       maybePlayNext();
     });
-  }
-
-  function playSentencePiece(piece, onDone) {
-    const audioData = atob(piece.audio);
-    const bytes = new Uint8Array(audioData.length);
-    for (let i = 0; i < audioData.length; i++) {
-      bytes[i] = audioData.charCodeAt(i);
-    }
-    const blob = new Blob([bytes], { type: "audio/wav" });
-    const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
-
-    audio.addEventListener("play", () => {
-      // Erster Ton dieser Antwort -> von "denkt nach" auf "spricht gerade"
-      // umschalten (siehe renderSpeech() in index.html). Es gibt keinen
-      // Text mehr zu enthüllen — nur der Gesprächszustand ändert sich.
-      window.CONVERSATION.clinicianTyping = false;
-      window.CONVERSATION.processingResponse = false;
-      window.CONVERSATION.clinicianSpeaking = true;
-      render();
-    });
-
-    const finish = () => {
-      assembledText = assembledText ? assembledText + " " + piece.text : piece.text;
-      URL.revokeObjectURL(url);
-      onDone();
-    };
-
-    audio.addEventListener("ended", finish);
-    audio.addEventListener("error", finish);
-    audio.play().catch(finish);
   }
 
   while (true) {
@@ -355,6 +456,7 @@ async function readStreamedReply(response, msg) {
   // Text wird erst jetzt, am Ende, ins Nachrichten-Objekt geschrieben — er
   // wurde ja nie live angezeigt, sondern nur fürs spätere Verlauf-Feature
   // mitgeschrieben ("Zurück zum Interview"-Ansicht).
+  player.close();
   msg.text = assembledText;
   window.CONVERSATION.clinicianSpeaking = false;
   window.CONVERSATION.clinicianTyping = false;
@@ -485,45 +587,11 @@ document.addEventListener("DOMContentLoaded", loadInterviewStart);
    werden, bevor die teilnehmende Person antworten kann — genau wie jede
    spätere Antwort auch. Die Tonspur dafür wurde schon im Hintergrund
    geladen (siehe loadInterviewStart() oben), während das Start-Overlay noch
-   sichtbar war, liegt hier also i. d. R. schon fertig vor.
+   sichtbar war, liegt hier also i. d. R. schon fertig vor. Nutzt denselben
+   Player wie die späteren Antworten, also auch dieselbe echte
+   Amplituden-Anzeige — keine zwei unterschiedlichen Verhalten für
+   "LLM spricht".
 ============================================================================= */
-function playAudioSequence(pieces, onAllDone) {
-  let index = 0;
-
-  function playNext() {
-    if (index >= pieces.length) {
-      onAllDone();
-      return;
-    }
-    const piece = pieces[index];
-    index += 1;
-
-    const audioData = atob(piece.audio);
-    const bytes = new Uint8Array(audioData.length);
-    for (let i = 0; i < audioData.length; i++) {
-      bytes[i] = audioData.charCodeAt(i);
-    }
-    const blob = new Blob([bytes], { type: "audio/wav" });
-    const url = URL.createObjectURL(blob);
-    const audio = new Audio(url);
-
-    audio.addEventListener("play", () => {
-      window.CONVERSATION.clinicianSpeaking = true;
-      render();
-    });
-
-    const finish = () => {
-      URL.revokeObjectURL(url);
-      playNext();
-    };
-    audio.addEventListener("ended", finish);
-    audio.addEventListener("error", finish);
-    audio.play().catch(finish);
-  }
-
-  playNext();
-}
-
 function playOpeningSpoken() {
   const pieces = window.CONVERSATION.pendingOpeningAudioPieces || [];
 
@@ -549,11 +617,23 @@ function playOpeningSpoken() {
     return;
   }
 
-  playAudioSequence(pieces, function () {
-    window.CONVERSATION.clinicianSpeaking = false;
-    window.CONVERSATION.processingResponse = false;
-    render();
-  });
+  const player = createSpokenAudioPlayer();
+  let index = 0;
+
+  function playNext() {
+    if (index >= pieces.length) {
+      player.close();
+      window.CONVERSATION.clinicianSpeaking = false;
+      window.CONVERSATION.processingResponse = false;
+      render();
+      return;
+    }
+    const piece = pieces[index];
+    index += 1;
+    player.playPiece(piece, playNext);
+  }
+
+  playNext();
 }
 
 window.playOpeningSpoken = playOpeningSpoken;
