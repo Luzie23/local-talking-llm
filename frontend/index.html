@@ -104,6 +104,14 @@
         </button>
       </div>
 
+      <!-- Leiste C: Interview fertig (beide Modalitäten) — ersetzt die
+           Antwort-Bedienung, sobald der Leitfaden komplett durchlaufen ist.
+           Chat/Gesprächszustand bleibt sichtbar (inkl. Abschlussnachricht);
+           erst ein Klick hier führt zur eigentlichen Exit-Seite. -->
+      <div class="endbar" id="endbar" style="display:none">
+        <button class="endbtn" id="endInterviewBtn" type="button">Interview beenden</button>
+      </div>
+
       <!-- Fußzeile: Verlauf (beide Modalitäten) + Frage wiederholen (nur
            Sprache). visibility:hidden statt display:none, damit die Zeile
            von Anfang an ihren Platz behält und das Layout nicht springt,
@@ -229,18 +237,20 @@
     // Embodiment
     document.getElementById("slot").innerHTML = embodimentHTML();
 
-    // Modalität: passende Bodenleiste zeigen (ausgeblendet, während der
-    // Verlauf offen ist ODER das Interview fertig ist — man tippt/spricht
-    // dann nicht mehr).
+    // Modalität: passende Bodenleiste zeigen. Beim Verlauf ODER nach dem
+    // formellen Beenden (Klick auf "Interview beenden") ausgeblendet — bis
+    // dahin bleibt der Chat/Zustand sichtbar (inkl. Abschlussnachricht),
+    // nur die Bedienleiste wechselt auf "Interview beenden" statt Antworten.
     const isSpeech = cfg.modality === "speech";
-    const hideControls = cfg.historyOpen || cfg.interviewFinished;
-    document.getElementById("inputbar").style.display = (!hideControls && !isSpeech) ? "flex" : "none";
-    document.getElementById("micbar").style.display   = (!hideControls && isSpeech) ? "flex" : "none";
+    const hideControls = cfg.historyOpen || cfg.interviewEnded;
+    document.getElementById("inputbar").style.display = (!hideControls && !isSpeech && !cfg.interviewFinished) ? "flex" : "none";
+    document.getElementById("micbar").style.display   = (!hideControls && isSpeech && !cfg.interviewFinished) ? "flex" : "none";
+    document.getElementById("endbar").style.display    = (!hideControls && cfg.interviewFinished) ? "flex" : "none";
 
     const chat = document.getElementById("chat");
     if (cfg.historyOpen) {
       renderHistory(chat);
-    } else if (cfg.interviewFinished) {
+    } else if (cfg.interviewEnded) {
       renderFinished(chat);
     } else if (isSpeech) {
       renderSpeech(chat);
@@ -325,33 +335,19 @@
     chat.scrollTop = chat.scrollHeight;
   }
 
-  /* --- Interview fertig: einfacher Abschluss-Bildschirm -------------------
-     Der Leitfaden ist komplett durchlaufen (siehe cfg.interviewFinished,
-     gesetzt anhand von "finished" aus dem Server). Absichtlich schlicht —
-     der richtige Abbruch-/Exit-Flow (Hilfsangebote, Studienentscheid) ist
-     ein eigener, noch folgender Schritt; das hier verhindert nur, dass man
-     weiter antworten kann und die Abschlussnachricht sich wiederholt. */
+  /* --- Nach Klick auf "Interview beenden": einfache Bestätigung -----------
+     Wird erst gezeigt, NACHDEM die teilnehmende Person aktiv auf "Interview
+     beenden" geklickt hat (cfg.interviewEnded) — bis dahin bleibt der Chat/
+     Gesprächszustand sichtbar (inkl. Abschlussnachricht), nur die
+     Bedienleiste zeigt "Interview beenden" statt Antworten (siehe .endbar).
+     Absichtlich schlicht — der richtige Abbruch-/Exit-Flow (Hilfsangebote,
+     Studienentscheid) ist ein eigener, noch folgender Schritt. */
   function renderFinished(chat) {
-    if (cfg.interviewEnded) {
-      chat.innerHTML =
-        '<div class="finishedscreen">' +
-          '<div class="finishedtitle">Vielen Dank!</div>' +
-          '<div class="finishedtext">Das Interview ist beendet. Sie können dieses Fenster jetzt schließen.</div>' +
-        '</div>';
-      return;
-    }
     chat.innerHTML =
       '<div class="finishedscreen">' +
-        '<div class="finishedtitle">Interview abgeschlossen</div>' +
-        '<div class="finishedtext">Vielen Dank für Ihre Teilnahme an diesem Interview.</div>' +
-        '<button class="finishedbtn" id="endInterviewBtn" type="button">Interview beenden</button>' +
+        '<div class="finishedtitle">Vielen Dank!</div>' +
+        '<div class="finishedtext">Das Interview ist beendet. Sie können dieses Fenster jetzt schließen.</div>' +
       '</div>';
-    const btn = document.getElementById("endInterviewBtn");
-    if (btn) {
-      btn.addEventListener("click", function () {
-        if (typeof window.endInterview === "function") window.endInterview();
-      });
-    }
   }
 
   /* --- Sprach-Modalität: KEIN Gesprächstext, nur Gesprächszustand --------
@@ -503,6 +499,12 @@
   if (replayBtn) replayBtn.addEventListener("click", function () {
     if (replayBtn.disabled) return;
     if (typeof window.replayLastQuestion === "function") window.replayLastQuestion();
+  });
+
+  /* --- Interview beenden: führt zur (aktuell noch einfachen) Exit-Seite --- */
+  var endInterviewBtn = document.getElementById("endInterviewBtn");
+  if (endInterviewBtn) endInterviewBtn.addEventListener("click", function () {
+    if (typeof window.endInterview === "function") window.endInterview();
   });
 
   /* --- Testton: reine Web-Audio-Erzeugung, kein Server/TTS nötig ---------
