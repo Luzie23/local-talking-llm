@@ -135,59 +135,51 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
    Wer prüfen möchte, wie deutlich er/sie sprechen muss, kann das vorab im
    Start-Overlay testen (siehe .mictesttranscript weiter unten).
 
-   EIN Objekt, drei Zustände (statt drei unverwandter Symbole — Übergänge
-   sind so Zustandsänderungen an einem Objekt, nicht Symbolwechsel):
-     - denkt nach: Lautsprecher, Bögen aus, ruhiges Atmen der Deckkraft
-     - spricht:    derselbe Lautsprecher, Bögen an — Höhe/Anzahl ECHT aus
-                   der Lautstärke der Tonspur (AnalyserNode, siehe
-                   conversation.js), NICHT vorgetäuscht
-     - hört zu:    anderes Objekt (andere "Sprecherin") — Mikrofon +
-                   Pegelbalken, ebenfalls ECHTE Lautstärke aus dem
-                   Mikrofonsignal. Eine vorgetäuschte Animation wäre hier
-                   nicht nur unschön, sondern irreführend: sie liefe weiter,
-                   auch wenn das Mikrofon gar nichts aufnimmt. */
+   Wessen Zug es ist, entscheidet, welches Bauteil erscheint — beide sind
+   IDENTISCH aufgebaut (Symbol + Wellenbalken nebeneinander, gleiche
+   Icon-Größe), nur das Symbol selbst unterscheidet sich:
+     - Nutzer dran (wartet auf/nimmt Antwort auf): Mikrofon + Balken
+     - LLM dran (verarbeitet/spricht): Lautsprecher + Balken
+   Wellenbalken statt Bögen — vertrauter aus Sprachnachrichten-Apps
+   (WhatsApp u. Ä.), und macht die Äquivalenz zwischen "wer spricht gerade"
+   auch optisch komplett gleich, nicht nur strukturell. Balkenhöhe/-farbe
+   immer aus ECHTER Lautstärke (AnalyserNode für Sprachausgabe bzw.
+   Mikrofonsignal, siehe conversation.js) — nie eine vorgetäuschte
+   Animation, sonst liefe die Anzeige weiter, auch wenn gar kein Ton kommt
+   bzw. das Mikro nichts aufnimmt. */
 .vstate{
   display:flex; flex-direction:column; align-items:center; justify-content:center;
   gap:18px; flex:1; padding:24px;
 }
-.vobj{ position:relative; width:64px; height:64px; display:flex; align-items:center; justify-content:center; }
+.vobj{ display:flex; align-items:center; justify-content:center; }
+.vobj.mode-mic .vunit-speaker{ display:none; }
+.vobj.mode-speaker .vunit-mic{ display:none; }
 
-/* --- Lautsprecher (verarbeitet / spricht) -------------------------------- */
-.vobj.mode-mic .vspeaker{ display:none; }
-.vobj.mode-speaker .vmicobj{ display:none; }
+.vunit{ display:flex; align-items:center; gap:10px; color:var(--muted); }
+.vicon{ transform-origin:center; }
+.vunit.thinking .vicon{ animation:vbreathe 2.2s ease-in-out infinite; }
+.vunit.speaking, .vunit.listening{ color:var(--accent); }
 
-.vspeaker{ color:var(--muted); transform-origin:center; }
-.vspeaker.thinking{ animation:vbreathe 2.2s ease-in-out infinite; }
-.vspeaker.speaking{ color:var(--accent); opacity:1; }
-
-/* Bögen — je mehr, desto lauter (wie ein Signalstärke-Symbol). Standardmäßig
-   unsichtbar, werden nur im Zustand "spricht" per window.updateSpeakingLevel()
-   stufenweise nach echter Amplitude eingeblendet (siehe conversation.js). */
-.varc{ opacity:0; transition:opacity .1s ease; }
-.varc.lit{ opacity:1; }
-
-/* Pulsieren beim Verarbeiten: Deckkraft UND Größe, deutlicher spürbar als
-   Deckkraft allein — ohne zu suggerieren, dass schon Ton kommt (siehe
-   .vspeaker.speaking für den davon klar unterscheidbaren "spricht"-Zustand). */
-@keyframes vbreathe{ 0%,100%{ opacity:.35; transform:scale(.92) } 50%{ opacity:.65; transform:scale(1.06) } }
-
-/* --- Mikrofon + Pegelbalken (wartet auf / hört Nutzer-Antwort) ----------- */
-.vmicobj{ display:flex; flex-direction:column; align-items:center; gap:10px; color:var(--muted); }
-.vmicobj.listening{ color:var(--accent); }
-.vmicbars{ display:inline-flex; align-items:flex-end; gap:4px; height:26px; }
-.vmicbars i{
+/* Wellenbalken — Höhe/Farbe werden per JS aus der echten Lautstärke gesetzt
+   (siehe window.updateSpeakingLevel()/updateListeningLevel()), NICHT per
+   CSS-Animation. */
+.vbars{ display:inline-flex; align-items:flex-end; gap:4px; height:26px; }
+.vbars i{
   width:4px; height:6px; border-radius:2px; background:#dcd6c8;
   transition:height .09s ease, background-color .09s ease;
 }
-.vmicbars i.live{ background:var(--accent); }
+.vbars i.live{ background:var(--accent); }
+
+/* Pulsieren beim Verarbeiten: Deckkraft UND Größe, deutlicher spürbar als
+   Deckkraft allein — ohne zu suggerieren, dass schon Ton kommt. */
+@keyframes vbreathe{ 0%,100%{ opacity:.35; transform:scale(.92) } 50%{ opacity:.65; transform:scale(1.06) } }
 
 /* Ruhige Bewegung statt ganz ohne Rückmeldung, wenn reduzierte Bewegung
    gewünscht ist — echte Lautstärke-Reaktion bleibt (das ist Information,
-   keine Dekoration), nur das "Atmen"/Pulsieren beim Verarbeiten entfällt. */
+   keine Dekoration), nur das Pulsieren beim Verarbeiten entfällt. */
 @media (prefers-reduced-motion: reduce){
-  .vspeaker.thinking{ animation:none; opacity:.55; transform:none; }
-  .varc{ transition:none; }
-  .vmicbars i{ transition:none; }
+  .vunit.thinking .vicon{ animation:none; opacity:.55; transform:none; }
+  .vbars i{ transition:none; }
 }
 
 .caret{ display:inline-block; width:2px; height:1em; background:var(--accent);
@@ -262,25 +254,12 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 }
 .testbtn:hover{ background:rgba(0,0,0,.09); }
 .testbtn.active{ background:color-mix(in srgb,var(--accent) 18%,transparent); border-color:var(--accent); }
-/* Lautsprecher-Symbol für den Testton — dieselbe Formsprache (und dieselben
-   .varc-Bögen) wie beim Lautsprecher im echten Interview: grau in Ruhe,
-   grün + Bögen an nach ECHTER Lautstärke, sobald der Ton wirklich läuft. */
-.tvspeaker{ color:var(--muted); opacity:.45; transition:color .15s ease, opacity .15s ease; }
-.tvspeaker.speaking{ color:var(--accent); opacity:1; }
-.tvmic{ color:var(--muted); opacity:.45; transition:color .15s ease, opacity .15s ease; }
-.tvmic.active{ color:var(--accent); opacity:1; }
-.miclevel{
-  display:none; align-items:flex-end; gap:3px; height:16px;
-}
-.miclevel.on{ display:flex; }
-.miclevel span{
-  width:4px; height:100%; border-radius:2px; background:#dcd6c8;
-  transform:scaleY(.25); transform-origin:bottom; transition:transform .09s ease, background-color .09s ease;
-}
-.miclevel span:nth-child(1){ height:40%; } .miclevel span:nth-child(2){ height:60%; }
-.miclevel span:nth-child(3){ height:100%; } .miclevel span:nth-child(4){ height:60%; }
-.miclevel span:nth-child(5){ height:40%; }
-.miclevel span.lit{ background:var(--accent); transform:scaleY(1); }
+/* Testton/Mikrofon-Test im Start-Overlay: dieselbe Symbol+Balken-Bauweise
+   wie im echten Interview (.vunit/.vicon/.vbars), gleiche Icon-Größe für
+   Lautsprecher und Mikrofon. */
+.testviz{ display:flex; align-items:center; gap:10px; color:var(--muted); }
+.tvicon{ transition:color .15s ease; }
+.tvicon.active{ color:var(--accent); }
 /* Live-Transkription im Mikrofon-Test — echter Verständlichkeits-Check
    ("wie deutlich muss ich sprechen"), nur im Start-Overlay, nicht während
    des echten Interviews. */

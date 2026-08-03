@@ -39,30 +39,28 @@
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>
             <span>Testton abspielen</span>
           </button>
-          <!-- Derselbe Lautsprecher+Bögen wie im echten Interview: grau in
-               Ruhe, grün + Bögen an, sobald der Testton tatsächlich zu hören
-               ist — echte Amplitude, keine vorgetäuschte Animation. -->
-          <svg class="tvspeaker" id="testSpeakerIcon" viewBox="-2 -2 28 28" width="34" height="34"
-               fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M11 5 6 9H2v6h4l5 4V5Z" fill="currentColor" stroke="none"/>
-            <path class="varc" d="M15 8.5a5 5 0 0 1 0 7"/>
-            <path class="varc" d="M18 6a9 9 0 0 1 0 12"/>
-            <path class="varc" d="M21 3.5a13 13 0 0 1 0 17"/>
-          </svg>
+          <!-- Dieselbe Bauweise wie im echten Interview: Symbol + Balken
+               nebeneinander, grau in Ruhe, grün nach ECHTER Lautstärke des
+               Testtons (eigener AnalyserNode), keine vorgetäuschte Animation. -->
+          <div class="testviz">
+            <svg class="tvicon" id="testSpeakerIcon" viewBox="0 0 24 24" width="24" height="24"
+                 fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M11 5 6 9H2v6h4l5 4V5Z" fill="currentColor" stroke="none"/>
+            </svg>
+            <div class="vbars" id="testSoundBars"><i></i><i></i><i></i><i></i></div>
+          </div>
         </div>
         <div class="testcol">
           <button class="testbtn" id="testMicBtn" type="button">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg>
             <span>Mikrofon testen</span>
           </button>
-          <!-- Äquivalent zum Lautsprecher-Symbol beim Testton: grau in Ruhe,
-               grün sobald tatsächlich Sprache erkannt wird. -->
-          <svg class="tvmic" id="testMicIcon" viewBox="0 0 24 24" width="28" height="28"
-               fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/>
-          </svg>
-          <div class="miclevel" id="micLevelMeter">
-            <span></span><span></span><span></span><span></span><span></span>
+          <div class="testviz">
+            <svg class="tvicon" id="testMicIcon" viewBox="0 0 24 24" width="24" height="24"
+                 fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/>
+            </svg>
+            <div class="vbars" id="micLevelMeter"><i></i><i></i><i></i><i></i></div>
           </div>
           <div class="mictesttranscript" id="micTestTranscript"></div>
         </div>
@@ -291,22 +289,26 @@
 
     let vstate = chat.querySelector("#vstate");
     if (!vstate) {
+      // Lautsprecher und Mikrofon als EIN einheitliches Bauteil: Symbol +
+      // Balken nebeneinander, gleiche Icon-Größe — Wellenbalken statt Bögen
+      // (vertrauter aus Sprachnachrichten-Apps, für beide "Sprecher" gleich
+      // aufgebaut, damit die Äquivalenz auch optisch stimmt).
       chat.innerHTML =
         '<div class="vstate" id="vstate">' +
           '<div class="vobj" id="vobj">' +
-            '<svg class="vspeaker" id="vspeakerIcon" viewBox="-2 -2 28 28" width="40" height="40" ' +
-                 'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-              '<path d="M11 5 6 9H2v6h4l5 4V5Z" fill="currentColor" stroke="none"/>' +
-              '<path class="varc" d="M15 8.5a5 5 0 0 1 0 7"/>' +
-              '<path class="varc" d="M18 6a9 9 0 0 1 0 12"/>' +
-              '<path class="varc" d="M21 3.5a13 13 0 0 1 0 17"/>' +
-            '</svg>' +
-            '<div class="vmicobj" id="vmicObj">' +
-              '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" ' +
-                   'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+            '<div class="vunit vunit-speaker" id="vUnitSpeaker">' +
+              '<svg class="vicon" viewBox="0 0 24 24" width="24" height="24" ' +
+                   'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+                '<path d="M11 5 6 9H2v6h4l5 4V5Z" fill="currentColor" stroke="none"/>' +
+              '</svg>' +
+              '<div class="vbars" id="vSpeakerBars"><i></i><i></i><i></i><i></i></div>' +
+            '</div>' +
+            '<div class="vunit vunit-mic" id="vUnitMic">' +
+              '<svg class="vicon" viewBox="0 0 24 24" width="24" height="24" ' +
+                   'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
                 '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/>' +
               '</svg>' +
-              '<div class="vmicbars" id="vmicBars"><i></i><i></i><i></i><i></i></div>' +
+              '<div class="vbars" id="vMicBars"><i></i><i></i><i></i><i></i></div>' +
             '</div>' +
           '</div>' +
         '</div>';
@@ -314,20 +316,22 @@
     }
 
     document.getElementById("vobj").className = "vobj mode-" + mode;
-    document.getElementById("vspeakerIcon").setAttribute("class", "vspeaker " + subState);
-    document.getElementById("vmicObj").className = "vmicobj" + (subState === "listening" ? " listening" : "");
+    document.getElementById("vUnitSpeaker").className = "vunit vunit-speaker" +
+      (subState === "thinking" ? " thinking" : "") + (subState === "speaking" ? " speaking" : "");
+    document.getElementById("vUnitMic").className = "vunit vunit-mic" + (subState === "listening" ? " listening" : "");
 
     // Aufräumen: Reste der jeweils anderen Anzeige zurücksetzen, damit
     // nichts von einem vorherigen Zustand sichtbar hängen bleibt.
     if (mode !== "mic") {
-      document.querySelectorAll("#vmicBars i").forEach(function (bar) {
+      document.querySelectorAll("#vMicBars i").forEach(function (bar) {
         bar.style.height = "";
         bar.classList.remove("live");
       });
     }
     if (!(mode === "speaker" && subState === "speaking")) {
-      document.querySelectorAll(".varc").forEach(function (arc) {
-        arc.classList.remove("lit");
+      document.querySelectorAll("#vSpeakerBars i").forEach(function (bar) {
+        bar.style.height = "";
+        bar.classList.remove("live");
       });
     }
 
@@ -384,22 +388,24 @@
   });
 
   /* --- Testton: reine Web-Audio-Erzeugung, kein Server/TTS nötig ---------
-     Der Lautsprecher färbt sich grün und die Bögen leuchten stufenweise,
-     exakt nach der ECHTEN Lautstärke des gerade gespielten Tons (über einen
+     Der Lautsprecher färbt sich grün und die Balken schlagen aus, exakt
+     nach der ECHTEN Lautstärke des gerade gespielten Tons (über einen
      eigenen AnalyserNode) — keine vorgetäuschte Animation, dieselbe Logik
-     wie beim Lautsprecher-Symbol im echten Interview (siehe
+     wie beim Lautsprecher im echten Interview (siehe
      window.updateSpeakingLevel() weiter unten und createSpokenAudioPlayer()
      in conversation.js). Fällt Web Audio aus, wird der Ton trotzdem normal
      abgespielt, nur ohne Anzeige. */
   function playTestTone() {
     const speakerIcon = document.getElementById("testSpeakerIcon");
-    const arcs = speakerIcon ? speakerIcon.querySelectorAll(".varc") : [];
-    const thresholds = [0.05, 0.18, 0.38];
+    const bars = document.querySelectorAll("#testSoundBars i");
+    const wobble = [0.85, 1, 1.15, 1];
     let rafId = null;
 
     function setLevel(level) {
-      arcs.forEach(function (arc, i) {
-        arc.classList.toggle("lit", level >= thresholds[i]);
+      bars.forEach(function (bar, i) {
+        const h = 6 + level * 26 * (wobble[i] || 1);
+        bar.style.height = Math.min(32, h) + "px";
+        bar.classList.toggle("live", level > 0.08);
       });
     }
 
@@ -424,7 +430,7 @@
       osc.start();
       osc.stop(ctx.currentTime + 0.65);
 
-      if (speakerIcon) speakerIcon.classList.add("speaking");
+      if (speakerIcon) speakerIcon.classList.add("active");
 
       (function tick() {
         analyser.getByteTimeDomainData(dataArray);
@@ -441,12 +447,12 @@
       osc.onended = function () {
         if (rafId) cancelAnimationFrame(rafId);
         setLevel(0);
-        if (speakerIcon) speakerIcon.classList.remove("speaking");
+        if (speakerIcon) speakerIcon.classList.remove("active");
         ctx.close();
       };
     } catch (err) {
       console.warn("Testton: Amplituden-Anzeige nicht verfügbar, Ton wird trotzdem versucht.", err);
-      if (speakerIcon) speakerIcon.classList.remove("speaking");
+      if (speakerIcon) speakerIcon.classList.remove("active");
     }
   }
 
@@ -519,10 +525,8 @@
         btn.classList.add("active");
         btn.querySelector("span").textContent = "Mikrofon-Test stoppen";
       }
-      if (meter) {
-        meter.classList.add("on");
-      }
-      const bars = meter ? meter.querySelectorAll("span") : [];
+      const bars = meter ? meter.querySelectorAll("i") : [];
+      const wobble = [0.85, 1, 1.15, 1];
 
       startMicTestTranscription();
 
@@ -535,9 +539,10 @@
         }
         const rms = Math.sqrt(sumSquares / data.length);
         const level = Math.min(1, rms * 4); // normale Sprechlautstärke sichtbar ausschlagen lassen
-        const litCount = Math.round(level * bars.length);
         bars.forEach(function (bar, i) {
-          bar.classList.toggle("lit", i < litCount);
+          const h = 6 + level * 26 * (wobble[i] || 1);
+          bar.style.height = Math.min(32, h) + "px";
+          bar.classList.toggle("live", level > 0.08);
         });
         if (micIcon) micIcon.classList.toggle("active", level > 0.08);
         micTestRafId = requestAnimationFrame(tick);
@@ -572,8 +577,10 @@
       btn.querySelector("span").textContent = "Mikrofon testen";
     }
     if (meter) {
-      meter.classList.remove("on");
-      meter.querySelectorAll("span").forEach(function (bar) { bar.classList.remove("lit"); });
+      meter.querySelectorAll("i").forEach(function (bar) {
+        bar.style.height = "";
+        bar.classList.remove("live");
+      });
     }
     if (micIcon) micIcon.classList.remove("active");
   }
@@ -671,7 +678,7 @@
   // tatsächlich auf die echte Lautstärke reagieren, statt ein starres
   // CSS-Muster abzuspielen — genau wie beim Mikrofon-Test im Start-Overlay.
   window.updateListeningLevel = function (level) {
-    const bars = document.querySelectorAll("#vmicBars i");
+    const bars = document.querySelectorAll("#vMicBars i");
     if (!bars.length) return;
     const wobble = [0.85, 1, 1.15, 1];
     bars.forEach(function (bar, i) {
@@ -682,15 +689,17 @@
   };
 
   // Von conversation.js aus dem AnalyserNode der laufenden Sprachausgabe
-  // aufgerufen (siehe createSpokenAudioPlayer()) — schaltet die Bögen am
-  // Lautsprecher-Symbol stufenweise nach ECHTER Lautstärke frei, keine
-  // vorgetäuschte Animation. Mehr Bögen = lauter, wie ein Signalstärke-Symbol.
+  // aufgerufen (siehe createSpokenAudioPlayer()) — dieselbe Balken-Logik wie
+  // beim Mikrofon, nach ECHTER Lautstärke der Tonspur, keine vorgetäuschte
+  // Animation.
   window.updateSpeakingLevel = function (level) {
-    const arcs = document.querySelectorAll(".varc");
-    if (!arcs.length) return;
-    const thresholds = [0.05, 0.18, 0.38];
-    arcs.forEach(function (arc, i) {
-      arc.classList.toggle("lit", level >= thresholds[i]);
+    const bars = document.querySelectorAll("#vSpeakerBars i");
+    if (!bars.length) return;
+    const wobble = [0.85, 1, 1.15, 1];
+    bars.forEach(function (bar, i) {
+      const h = 6 + level * 26 * (wobble[i] || 1);
+      bar.style.height = Math.min(32, h) + "px";
+      bar.classList.toggle("live", level > 0.08);
     });
   };
 
