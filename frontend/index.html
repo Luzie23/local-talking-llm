@@ -103,6 +103,28 @@
           <span id="micLabel">Zum Sprechen klicken</span>
         </button>
       </div>
+
+      <!-- Fußzeile: Verlauf (beide Modalitäten) + Frage wiederholen (nur
+           Sprache). visibility:hidden statt display:none, damit die Zeile
+           von Anfang an ihren Platz behält und das Layout nicht springt,
+           sobald die Buttons erscheinen. -->
+      <div class="convofoot" id="convofoot">
+        <button class="footbtn" id="replayBtn" type="button" style="visibility:hidden">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+          <span>Frage wiederholen</span>
+        </button>
+        <button class="footbtn" id="histBtn" type="button" style="visibility:hidden">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+          <span id="histBtnLabel">Verlauf ansehen</span>
+        </button>
+      </div>
+
+      <!-- Verlauf-Ansicht: reine Rückschau als Text, auch in der
+           Sprach-Bedingung (live bleibt dort textfrei) — siehe
+           historyMessages() in conversation.js. -->
+      <div class="historypanel hidden" id="historyPanel">
+        <div class="historylist" id="historyList"></div>
+      </div>
     </div>
   </div>
 
@@ -223,6 +245,43 @@
       renderSpeech(chat);
     } else {
       renderText(chat);
+    }
+
+    // Fußzeile: Verlauf (beide Modalitäten, erst nach der ersten
+    // abgeschlossenen Runde) + Frage wiederholen (nur Sprache, erst sobald
+    // es überhaupt etwas Gesprochenes zum Wiederholen gibt).
+    const replayBtn = document.getElementById("replayBtn");
+    if (replayBtn) {
+      const canReplay = isSpeech && !cfg.historyOpen &&
+        (typeof window.hasReplayableQuestion === "function" && window.hasReplayableQuestion());
+      replayBtn.style.visibility = canReplay ? "visible" : "hidden";
+      const turnInProgress = cfg.clinicianTyping || cfg.processingResponse || cfg.clinicianSpeaking || cfg.userRecording;
+      replayBtn.disabled = turnInProgress;
+      replayBtn.classList.toggle("disabled", turnInProgress);
+    }
+    const histBtn = document.getElementById("histBtn");
+    if (histBtn) {
+      histBtn.style.visibility = cfg.turnDone ? "visible" : "hidden";
+      document.getElementById("histBtnLabel").textContent = cfg.historyOpen ? "Zurück zum Interview" : "Verlauf ansehen";
+    }
+
+    // Verlauf-Ansicht: reine Text-Rückschau, auch in der Sprach-Bedingung.
+    const historyPanel = document.getElementById("historyPanel");
+    if (historyPanel) {
+      historyPanel.classList.toggle("hidden", !cfg.historyOpen);
+      if (cfg.historyOpen) {
+        const list = document.getElementById("historyList");
+        const msgs = (typeof window.historyMessages === "function") ? window.historyMessages() : cfg.messages;
+        list.innerHTML = msgs.map(function (m) {
+          const cls = m.role === "user" ? "hba" : "hbq";
+          return '<div class="' + cls + '"></div>';
+        }).join("");
+        // Text per textContent, nicht per Konkatenation — konsistent mit
+        // der Checkliste im Start-Overlay (kein Fremdinhalt als HTML).
+        list.querySelectorAll(".hba, .hbq").forEach(function (el, i) {
+          el.textContent = msgs[i].text;
+        });
+      }
     }
 
     // Transkript-Log (immer – auch in der Sprach-Bedingung, nur für Forschende)
@@ -385,6 +444,27 @@
     cfg.userRecording = !cfg.userRecording;
     if (typeof window.onMicToggle === "function") window.onMicToggle(cfg.userRecording);
     render();
+  });
+
+  /* --- Verlauf: reine Rückschau (beide Modalitäten). Stoppt eine laufende
+         Aufnahme automatisch, damit man nicht "gegen den Verlauf" spricht. */
+  var histBtn = document.getElementById("histBtn");
+  if (histBtn) histBtn.addEventListener("click", function () {
+    if (!cfg.historyOpen && cfg.userRecording) {
+      cfg.userRecording = false;
+      if (typeof window.onMicToggle === "function") window.onMicToggle(false);
+    }
+    cfg.historyOpen = !cfg.historyOpen;
+    render();
+  });
+
+  /* --- Frage wiederholen: nur Sprach-Modalität, spielt die zuletzt
+         gesprochenen Häppchen erneut ab (siehe replayLastQuestion() in
+         conversation.js). */
+  var replayBtn = document.getElementById("replayBtn");
+  if (replayBtn) replayBtn.addEventListener("click", function () {
+    if (replayBtn.disabled) return;
+    if (typeof window.replayLastQuestion === "function") window.replayLastQuestion();
   });
 
   /* --- Testton: reine Web-Audio-Erzeugung, kein Server/TTS nötig ---------

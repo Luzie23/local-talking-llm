@@ -106,7 +106,7 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 .wbar{ width:3px; background:rgba(255,255,255,.85); border-radius:2px; animation:wave 1s ease-in-out infinite; }
 
 /* 4) ==========================  TEXT-MODALITÄT  =========================== */
-.convo{ flex:1; display:flex; flex-direction:column; min-width:0; }
+.convo{ position:relative; flex:1; display:flex; flex-direction:column; min-width:0; }
 .chat{ flex:1; padding:22px 22px 8px; display:flex; flex-direction:column; gap:16px; overflow-y:auto; }
 /* Frage/Antwort des LLM (Klinikerin) */
 .bq{ align-self:flex-start; max-width:82%; color:#33302a;
@@ -269,6 +269,42 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
   min-height:1.4em;
 }
 .mictesttranscript.on{ display:block; }
+
+/* 6b) ===================  VERLAUF & FRAGE WIEDERHOLEN  ====================
+    Fußzeile mit zwei optionalen Aktionen — Plätze bleiben von Anfang an
+    reserviert (visibility statt display), damit nichts springt, sobald sie
+    erscheinen. */
+.convofoot{
+  display:flex; align-items:center; justify-content:center; gap:10px;
+  padding:0 16px 14px;
+}
+.footbtn{
+  display:inline-flex; align-items:center; gap:7px;
+  padding:8px 14px; border-radius:18px;
+  background:rgba(0,0,0,.04); border:1px solid rgba(0,0,0,.07);
+  font:500 12px 'Instrument Sans',sans-serif; color:var(--muted);
+  cursor:pointer;
+}
+.footbtn:hover:not(:disabled){ background:rgba(0,0,0,.08); color:var(--ink); }
+.footbtn:disabled, .footbtn.disabled{ opacity:.5; cursor:not-allowed; }
+
+/* Verlauf-Ansicht: reine Text-Rückschau, deckt die Konversationsfläche ab.
+   Auch in der Sprach-Bedingung als Text sichtbar (bewusste Ausnahme vom
+   "kein Text live"-Prinzip — das hier ist eine explizite Rückschau, kein
+   Mitlesen während des Gesprächs). */
+.historypanel{
+  position:absolute; inset:0; z-index:20;
+  background:var(--paper); display:flex; flex-direction:column;
+  padding:20px 22px; overflow-y:auto;
+}
+.historypanel.hidden{ display:none; }
+.historylist{ display:flex; flex-direction:column; gap:14px; }
+.hbq, .hba{
+  max-width:82%; padding:11px 15px; border-radius:16px;
+  font:400 14px/1.5 'Instrument Sans',sans-serif;
+}
+.hbq{ align-self:flex-start; background:rgba(0,0,0,.045); color:var(--ink); }
+.hba{ align-self:flex-end; background:var(--accent); color:#fff; }
 
 /* 7) =========================  FORSCHER-OVERLAY  =========================
    Ein-/ausblenden mit  Cmd/Strg + Shift + R  (siehe index.html).            */

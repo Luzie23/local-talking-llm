@@ -84,13 +84,24 @@ window.CONVERSATION = {
   /* LLM-Nachricht. Beim Abspielen hochzählen + render(). null = sofort ganz. */
   spokenChars: null,
   /* Sperrt die Aufnahme während der LLM-Verarbeitung. */
-  processingResponse: false
+  processingResponse: false,
+  /* Wird nach der ersten vollständig abgeschlossenen Runde true — schaltet
+     den Verlauf-Button frei (siehe .convofoot in index.html), bleibt dann
+     für den Rest der Sitzung true. */
+  turnDone: false,
+  /* Ist die Verlauf-Ansicht gerade geöffnet? (Reine Rückschau, kein Live-
+     Mitlesen — siehe historyMessages() unten.) */
+  historyOpen: false
 };
 
 let audioStream = null;
 let audioContext = null;
 let recorderNode = null;
 let recordedBuffers = [];
+// Die zuletzt tatsächlich gesprochenen Satz-Häppchen (Text+Audio) — genutzt
+// von "Frage wiederholen" (replayLastQuestion(), siehe weiter unten), damit
+// nichts neu synthetisiert werden muss, um die letzte Frage erneut zu hören.
+let lastReplyAudioPieces = [];
 
 function floatTo16BitPCM(output, offset, input) {
   for (let i = 0; i < input.length; i++, offset += 2) {
@@ -387,6 +398,7 @@ async function readStreamedReply(response, msg) {
 
   const player = createSpokenAudioPlayer();
   const audioQueue = [];
+  const playedPieces = [];
   let playing = false;
   let assembledText = "";
 
@@ -396,6 +408,7 @@ async function readStreamedReply(response, msg) {
     }
     playing = true;
     const piece = audioQueue.shift();
+    playedPieces.push(piece);
     player.playPiece(piece, function () {
       assembledText = assembledText ? assembledText + " " + piece.text : piece.text;
       playing = false;
@@ -458,11 +471,12 @@ async function readStreamedReply(response, msg) {
   // mitgeschrieben ("Zurück zum Interview"-Ansicht).
   player.close();
   msg.text = assembledText;
+  lastReplyAudioPieces = playedPieces;
   window.CONVERSATION.clinicianSpeaking = false;
   window.CONVERSATION.clinicianTyping = false;
   window.CONVERSATION.processingResponse = false;
   window.CONVERSATION.liveTranscript = "";
-  window.CONVERSATION.turnDone = true; // Verlauf-Button darf erscheinen (folgt als nächster Schritt)
+  window.CONVERSATION.turnDone = true; // Verlauf-Button darf erscheinen
   render();
 }
 
@@ -511,6 +525,7 @@ async function sendChatMessage(text) {
     });
   } finally {
     window.CONVERSATION.clinicianTyping = false;
+    window.CONVERSATION.turnDone = true; // Verlauf-Button darf ab jetzt erscheinen
     render();
   }
 }
@@ -617,6 +632,7 @@ function playOpeningSpoken() {
     return;
   }
 
+  lastReplyAudioPieces = pieces;
   const player = createSpokenAudioPlayer();
   let index = 0;
 
@@ -637,4 +653,69 @@ function playOpeningSpoken() {
 }
 
 window.playOpeningSpoken = playOpeningSpoken;
+
+/* =============================================================================
+   FRAGE WIEDERHOLEN (nur Sprach-Modalität)
+   -----------------------------------------------------------------------------
+   Da in der Sprach-Bedingung bewusst kein Text mitläuft, braucht es einen
+   Weg, die zuletzt gestellte Frage nochmal zu hören, falls sie akustisch
+   verpasst wurde. Spielt einfach die zuletzt tatsächlich gesprochenen
+   Audio-Häppchen erneut ab (siehe lastReplyAudioPieces oben) — keine neue
+   Synthese nötig. Nur die aktuellste Frage, keine älteren aus dem Verlauf
+   (bewusst einfach gehalten).
+============================================================================= */
+function replayLastQuestion() {
+  if (!lastReplyAudioPieces.length) {
+    return;
+  }
+  // Während einer laufenden Antwort/Aufnahme nicht gleichzeitig abspielen.
+  if (window.CONVERSATION.processingResponse || window.CONVERSATION.clinicianSpeaking || window.CONVERSATION.userRecording) {
+    return;
+  }
+
+  window.CONVERSATION.processingResponse = true;
+  render();
+
+  const player = createSpokenAudioPlayer();
+  let index = 0;
+
+  function playNext() {
+    if (index >= lastReplyAudioPieces.length) {
+      player.close();
+      window.CONVERSATION.clinicianSpeaking = false;
+      window.CONVERSATION.processingResponse = false;
+      render();
+      return;
+    }
+    const piece = lastReplyAudioPieces[index];
+    index += 1;
+    player.playPiece(piece, playNext);
+  }
+
+  playNext();
+}
+
+window.replayLastQuestion = replayLastQuestion;
+window.hasReplayableQuestion = function () {
+  return lastReplyAudioPieces.length > 0;
+};
+
+/* =============================================================================
+   VERLAUF (beide Modalitäten)
+   -----------------------------------------------------------------------------
+   Zeigt vergangene Fragen/Antworten als Text — auch in der Sprach-Bedingung,
+   wo live bewusst kein Text mitläuft (das hier ist reine Rückschau, kein
+   Live-Mitlesen, siehe Absprache im Projektplan). Schneidet die gerade
+   laufende, noch unbeantwortete Kliniker-Nachricht ab, damit im Verlauf nur
+   wirklich abgeschlossene Runden auftauchen.
+============================================================================= */
+function historyMessages() {
+  const msgs = window.CONVERSATION.messages;
+  if (msgs.length && msgs[msgs.length - 1].role === "clinician" && !msgs[msgs.length - 1].text) {
+    return msgs.slice(0, -1);
+  }
+  return msgs;
+}
+
+window.historyMessages = historyMessages;
 
