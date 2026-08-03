@@ -172,7 +172,7 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 
 /* Pulsieren beim Verarbeiten: Deckkraft UND Größe, deutlicher spürbar als
    Deckkraft allein — ohne zu suggerieren, dass schon Ton kommt. */
-@keyframes vbreathe{ 0%,100%{ opacity:.35; transform:scale(.92) } 50%{ opacity:.65; transform:scale(1.06) } }
+@keyframes vbreathe{ 0%,100%{ opacity:.3; transform:scale(.7) } 50%{ opacity:.75; transform:scale(1.25) } }
 
 /* Ruhige Bewegung statt ganz ohne Rückmeldung, wenn reduzierte Bewegung
    gewünscht ist — echte Lautstärke-Reaktion bleibt (das ist Information,

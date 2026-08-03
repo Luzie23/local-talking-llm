@@ -109,7 +109,7 @@
            von Anfang an ihren Platz behält und das Layout nicht springt,
            sobald die Buttons erscheinen. -->
       <div class="convofoot" id="convofoot">
-        <button class="footbtn" id="histBtn" type="button" style="visibility:hidden">
+        <button class="footbtn disabled" id="histBtn" type="button" disabled>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
           <span id="histBtnLabel">Verlauf ansehen</span>
         </button>
@@ -249,17 +249,24 @@
     // im normalen Fluss sichtbar (kein Overlay legt sich darüber) — sonst
     // wäre der Zurück-Button aus dem Verlauf nicht mehr erreichbar.
     const replayBtn = document.getElementById("replayBtn");
+    const turnInProgress = cfg.clinicianTyping || cfg.processingResponse || cfg.clinicianSpeaking || cfg.userRecording;
     if (replayBtn) {
       const canReplay = isSpeech && !cfg.historyOpen &&
         (typeof window.hasReplayableQuestion === "function" && window.hasReplayableQuestion());
       replayBtn.style.visibility = canReplay ? "visible" : "hidden";
-      const turnInProgress = cfg.clinicianTyping || cfg.processingResponse || cfg.clinicianSpeaking || cfg.userRecording;
       replayBtn.disabled = turnInProgress;
       replayBtn.classList.toggle("disabled", turnInProgress);
     }
     const histBtn = document.getElementById("histBtn");
     if (histBtn) {
-      histBtn.style.visibility = cfg.turnDone ? "visible" : "hidden";
+      // Immer sichtbar (nicht erst nach der ersten Runde) — aber gesperrt,
+      // bis es überhaupt etwas zu zeigen gibt (turnDone) UND während eine
+      // Aufnahme/Verarbeitung/Ausgabe läuft. Sonst könnte man mitten in der
+      // eigenen Antwort in den Verlauf wechseln — beim Zurückkommen würde
+      // dann eine halbfertige Aufnahme ans LLM geschickt.
+      const histDisabled = !cfg.turnDone || (turnInProgress && !cfg.historyOpen);
+      histBtn.disabled = histDisabled;
+      histBtn.classList.toggle("disabled", histDisabled);
       document.getElementById("histBtnLabel").textContent = cfg.historyOpen ? "Zurück zum Interview" : "Verlauf ansehen";
     }
 
