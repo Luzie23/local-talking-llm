@@ -194,98 +194,17 @@
     // Embodiment
     document.getElementById("slot").innerHTML = embodimentHTML();
 
-    // Modalität: passende Bodenleiste zeigen (Chat ist in BEIDEN sichtbar)
+    // Modalität: passende Bodenleiste zeigen
     const isSpeech = cfg.modality === "speech";
     document.getElementById("inputbar").style.display = isSpeech ? "none" : "flex";
     document.getElementById("micbar").style.display   = isSpeech ? "flex" : "none";
 
-    // Chat-Blasen (in BEIDEN Modalitäten). In der Sprach-Modalität wird die
-    // Sprachausgabe des LLM ebenso als Text gezeigt wie die transkribierte
-    // (auch live mitgeschriebene) Eingabe der teilnehmenden Person.
     const chat = document.getElementById("chat");
-
-    // Ein durchgehender Zustand "Antwort ist gerade in Arbeit" — deckt sowohl
-    // "denkt nach" (noch kein Ton) als auch "spricht gerade" ab. Das ist die
-    // Grundlage dafür, dass die Balken-Anzeige EIN einziges DOM-Element
-    // bleibt, egal ob gerade nachgedacht oder gesprochen wird oder zwischen
-    // Sätzen gewechselt wird — nur Farbe/Tempo wechseln per CSS-Klasse.
-    const turnInProgress = cfg.clinicianTyping || cfg.processingResponse || cfg.clinicianSpeaking;
-
-    // Schnellpfad während einer laufenden Antwort: NICHT das Chat-DOM neu
-    // aufbauen, sonst startet die Balken-CSS-Animation bei jedem
-    // render()-Tick (alle 50 ms) bzw. bei jedem Satzwechsel neu und wirkt
-    // dadurch eingefroren/springend. Erkennung "ist das noch dieselbe
-    // Blase?" läuft bewusst über eine STABILE Kennung (turnId), NICHT über
-    // den Text — der Text ändert sich hier laufend (das ist ja der Sinn),
-    // ein Vergleich über Textgleichheit würde also ständig fälschlich
-    // "nein, neu bauen" ergeben.
-    const lastMsg = cfg.messages[cfg.messages.length - 1];
-    const spk = chat.querySelector(".bqspk:last-child");
-    if (isSpeech && turnInProgress && spk && lastMsg && lastMsg.role === "clinician"
-        && lastMsg.turnId != null && spk.dataset.turnId === String(lastMsg.turnId)) {
-      const el = spk.querySelector(".bq");
-      const shown = (cfg.spokenChars == null) ? lastMsg.text : lastMsg.text.slice(0, cfg.spokenChars);
-      el.textContent = shown;
-      spk.querySelector(".speakbars").classList.toggle("thinking", !cfg.clinicianSpeaking);
-      chat.scrollTop = chat.scrollHeight;
-      return;
-    }
-
-    chat.innerHTML = "";
-    cfg.messages.forEach(function (m, i) {
-      const isLast = i === cfg.messages.length - 1;
-      if (isSpeech && m.role === "clinician" && isLast && turnInProgress) {
-        // Antwort läuft noch (Nachdenken ODER Sprechen) -> Blase mit
-        // Balken-Anzeige statt fertigem Text. ".thinking" macht die Balken
-        // grau/langsam (nachdenken, noch kein Ton — vermeidet den Eindruck,
-        // man müsste bereits etwas hören); ohne die Klasse sind sie grün/
-        // schneller (spricht gerade). Text erscheint SYNCHRON zum Ton
-        // (nur bereits gesprochene Zeichen), während des Nachdenkens leer.
-        const thinkingClass = cfg.clinicianSpeaking ? "" : " thinking";
-        chat.insertAdjacentHTML("beforeend",
-          '<div class="bqspk">' +
-          '<span class="speakbars' + thinkingClass + '"><i></i><i></i><i></i><i></i></span>' +
-          '<span class="bq" style="font-size:16px"></span></div>');
-        chat.querySelector(".bqspk:last-child").dataset.turnId = m.turnId != null ? String(m.turnId) : "";
-        var shown = (cfg.spokenChars == null) ? m.text : m.text.slice(0, cfg.spokenChars);
-        var el = chat.querySelector(".bqspk:last-child .bq");
-        el.textContent = shown;
-        // Kein Tipp-Cursor: im Sprachmodus wird gesprochen, nicht getippt.
-        // Das Sprechen zeigen allein die Balken links der Blase an.
-      } else {
-        const b = document.createElement("div");
-        b.className = m.role === "user" ? "ba" : "bq";
-        b.textContent = m.text;
-        chat.appendChild(b);
-      }
-    });
-
     if (isSpeech) {
-      // Live mitgeschriebene Eingabe während der Aufnahme
-      if (cfg.userRecording && cfg.liveTranscript) {
-        const lb = document.createElement("div");
-        lb.className = "livebubble";
-        lb.textContent = cfg.liveTranscript;
-        lb.insertAdjacentHTML("beforeend", '<span class="caret"></span>');
-        chat.appendChild(lb);
-      }
-      // Mikro-Button-Zustand
-      const btn = document.getElementById("micBtn");
-      if (btn) {
-        btn.classList.toggle("rec", !!cfg.userRecording);
-        const disabled = cfg.processingResponse;
-        btn.disabled = disabled;
-        btn.classList.toggle("disabled", disabled);
-        btn.style.pointerEvents = disabled ? "none" : "auto";
-        document.getElementById("micLabel").textContent =
-          cfg.processingResponse ? "Bitte warten…" : (cfg.userRecording ? "Aufnahme … zum Stoppen klicken" : "Zum Sprechen klicken");
-      }
-    } else if (cfg.clinicianTyping) {
-      // Text-Modalität: "tippt …"-Punkte
-      chat.insertAdjacentHTML("beforeend",
-        '<div class="typing"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>');
+      renderSpeech(chat);
+    } else {
+      renderText(chat);
     }
-    chat.scrollTop = chat.scrollHeight;
 
     // Transkript-Log (immer – auch in der Sprach-Bedingung, nur für Forschende)
     const log = document.getElementById("log");
@@ -301,6 +220,84 @@
     document.querySelectorAll("#modTog .togbtn").forEach(function (btn) {
       btn.classList.toggle("on", btn.dataset.mod === cfg.modality);
     });
+  }
+
+  /* --- Text-Modalität: normale Chat-Blasen ------------------------------- */
+  function renderText(chat) {
+    chat.innerHTML = "";
+    cfg.messages.forEach(function (m) {
+      const b = document.createElement("div");
+      b.className = m.role === "user" ? "ba" : "bq";
+      b.textContent = m.text;
+      chat.appendChild(b);
+    });
+    if (cfg.clinicianTyping) {
+      chat.insertAdjacentHTML("beforeend",
+        '<div class="typing"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>');
+    }
+    chat.scrollTop = chat.scrollHeight;
+  }
+
+  /* --- Sprach-Modalität: KEIN Gesprächstext, nur Gesprächszustand --------
+     Absichtlich kein Mitlesen mehr (Entscheidung nach Rücksprache) — die
+     Sprach-Bedingung ist damit wirklich "nur Sprache", nicht "Sprache +
+     versteckter Text". Was die teilnehmende Person sagt, bleibt als eigenes
+     Live-Transkript sichtbar (.vtranscript) — das sind ihre eigenen Worte,
+     nicht die des LLM, und es macht STT-Fehler direkt sichtbar.
+
+     Nur EIN Zustands-Element wird je erzeugt und danach nur noch per Klasse
+     umgeschaltet (nie neu aufgebaut) — dieselbe Lehre wie beim vorherigen
+     turnId-Fix, nur diesmal von Anfang an richtig: weil hier nichts mehr
+     live Zeichen für Zeichen mitgeschrieben wird, gibt es auch keinen
+     Grund mehr, das Element je auszutauschen. */
+  function renderSpeech(chat) {
+    let state, label;
+    if (cfg.userRecording) {
+      state = "listening"; label = "Ich höre zu";
+    } else if (cfg.clinicianSpeaking) {
+      state = "speaking"; label = "… spricht";
+    } else if (cfg.clinicianTyping || cfg.processingResponse) {
+      state = "preparing"; label = "Antwort wird vorbereitet";
+    } else {
+      state = "ready"; label = "Sie können jetzt antworten.";
+    }
+
+    let vstate = chat.querySelector("#vstate");
+    if (!vstate) {
+      chat.innerHTML =
+        '<div class="vstate" id="vstate">' +
+          '<div class="vbars" id="vstateBars"><i></i><i></i><i></i><i></i></div>' +
+          '<div class="vlabel" id="vstateLabel"></div>' +
+        '</div>' +
+        '<div class="vtranscript" id="vtranscript"></div>';
+      vstate = chat.querySelector("#vstate");
+    }
+    document.getElementById("vstateBars").className = "vbars " + state;
+    document.getElementById("vstateLabel").textContent = label;
+
+    const transcriptEl = document.getElementById("vtranscript");
+    if (cfg.userRecording && cfg.liveTranscript) {
+      transcriptEl.classList.add("on");
+      transcriptEl.textContent = cfg.liveTranscript;
+      transcriptEl.insertAdjacentHTML("beforeend", '<span class="caret"></span>');
+    } else {
+      transcriptEl.classList.remove("on");
+      transcriptEl.textContent = "";
+    }
+
+    // Mikro-Button-Zustand (Klick-Bedienung bleibt vorerst bestehen — das
+    // automatische Öffnen ist ein eigener, noch folgender Schritt).
+    const btn = document.getElementById("micBtn");
+    if (btn) {
+      btn.classList.toggle("rec", !!cfg.userRecording);
+      const disabled = cfg.processingResponse || cfg.clinicianSpeaking;
+      btn.disabled = disabled;
+      btn.classList.toggle("disabled", disabled);
+      btn.style.pointerEvents = disabled ? "none" : "auto";
+      document.getElementById("micLabel").textContent = label;
+    }
+
+    chat.scrollTop = chat.scrollHeight;
   }
 
   /* --- Overlay-Bedienung (Forscher) ------------------------------------- */

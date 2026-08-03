@@ -86,7 +86,6 @@ let audioContext = null;
 let recorderNode = null;
 let recordedBuffers = [];
 let speechRecognition = null;
-let replyTurnCounter = 0;
 
 function floatTo16BitPCM(output, offset, input) {
   for (let i = 0; i < input.length; i++, offset += 2) {
@@ -259,14 +258,13 @@ async function stopMicRecording() {
   if (transcriptText) {
     window.CONVERSATION.messages.push({ role: "user", text: transcriptText });
   }
-  window.CONVERSATION.liveTranscript = "Verarbeite Sprachaufzeichnung…";
+  window.CONVERSATION.liveTranscript = "";
 
-  // Platzhalter für die kommende Antwort schon jetzt anlegen (noch leer) —
-  // damit die "denkt nach"/"spricht gerade"-Anzeige in render() ein
-  // einziges, durchgehendes Element bleibt, von hier bis zum letzten
-  // gesprochenen Satz. turnId identifiziert diese eine Blase eindeutig,
-  // unabhängig davon, wie oft sich ihr Text noch ändert.
-  const replyMsg = { role: "clinician", text: "", turnId: ++replyTurnCounter };
+  // Platzhalter für die kommende Antwort — der Text wird NICHT live
+  // angezeigt (Sprach-Modalität zeigt nur den Gesprächszustand, siehe
+  // renderSpeech() in index.html), aber trotzdem mitgeschrieben, für den
+  // späteren Verlauf ("Zurück zum Interview"-Ansicht).
+  const replyMsg = { role: "clinician", text: "" };
   window.CONVERSATION.messages.push(replyMsg);
   render();
 
@@ -290,7 +288,6 @@ async function stopMicRecording() {
     window.CONVERSATION.processingResponse = false;
     window.CONVERSATION.clinicianTyping = false;
     window.CONVERSATION.clinicianSpeaking = false;
-    window.CONVERSATION.spokenChars = null;
     window.CONVERSATION.liveTranscript = "";
     replyMsg.text = `Fehler: ${error.message}`;
     render();
@@ -312,11 +309,9 @@ async function readStreamedReply(response, msg) {
   const decoder = new TextDecoder();
   let buffer = "";
 
-  window.CONVERSATION.spokenChars = null; // volle Kontrolle über msg.text, kein Slicing in render()
-
   const audioQueue = [];
   let playing = false;
-  let completedText = "";
+  let assembledText = "";
 
   function maybePlayNext() {
     if (playing || audioQueue.length === 0) {
@@ -339,38 +334,19 @@ async function readStreamedReply(response, msg) {
     const blob = new Blob([bytes], { type: "audio/wav" });
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
-    let timer = null;
 
     audio.addEventListener("play", () => {
-      // Erster Ton dieser Antwort -> von "denkt nach" (grau) auf "spricht
-      // gerade" (grün) umschalten. Das Balken-Element selbst bleibt
-      // dasselbe (siehe turnId-Erkennung in render()) — nur die CSS-Klasse
-      // wechselt, keine Animation wird neu gestartet.
+      // Erster Ton dieser Antwort -> von "denkt nach" auf "spricht gerade"
+      // umschalten (siehe renderSpeech() in index.html). Es gibt keinen
+      // Text mehr zu enthüllen — nur der Gesprächszustand ändert sich.
       window.CONVERSATION.clinicianTyping = false;
       window.CONVERSATION.processingResponse = false;
       window.CONVERSATION.clinicianSpeaking = true;
-
-      const revealBaseText = completedText ? completedText + " " + piece.text : piece.text;
-      const revealBaseLength = completedText ? completedText.length + 1 : 0;
-      msg.text = revealBaseText;
-      window.CONVERSATION.spokenChars = revealBaseLength;
-
-      timer = setInterval(() => {
-        const ratio = Math.min(1, audio.currentTime / Math.max(audio.duration, 0.001));
-        window.CONVERSATION.spokenChars = revealBaseLength + Math.floor(piece.text.length * ratio);
-        render();
-      }, 50);
+      render();
     });
 
     const finish = () => {
-      if (timer) {
-        clearInterval(timer);
-        timer = null;
-      }
-      completedText = completedText ? completedText + " " + piece.text : piece.text;
-      msg.text = completedText;
-      window.CONVERSATION.spokenChars = null; // dieses Häppchen ist fertig -> voll anzeigen
-      render();
+      assembledText = assembledText ? assembledText + " " + piece.text : piece.text;
       URL.revokeObjectURL(url);
       onDone();
     };
@@ -403,13 +379,8 @@ async function readStreamedReply(response, msg) {
       } else if (data.type === "error") {
         window.CONVERSATION.clinicianTyping = false;
         window.CONVERSATION.processingResponse = false;
-        if (!completedText) {
-          // Noch kein Satz wurde gesprochen — die "denkt nach"-Blase selbst
-          // wird zur Fehlermeldung, statt eine hängende leere Blase plus
-          // eine zweite Nachricht darunter zu hinterlassen.
-          msg.text = `Fehler: ${data.message}`;
-        } else {
-          pushClinicianMessage(`Fehler: ${data.message}`);
+        if (!assembledText) {
+          assembledText = `Fehler: ${data.message}`;
         }
         render();
       }
@@ -429,10 +400,15 @@ async function readStreamedReply(response, msg) {
     check();
   });
 
+  // Text wird erst jetzt, am Ende, ins Nachrichten-Objekt geschrieben — er
+  // wurde ja nie live angezeigt, sondern nur fürs spätere Verlauf-Feature
+  // mitgeschrieben ("Zurück zum Interview"-Ansicht).
+  msg.text = assembledText;
   window.CONVERSATION.clinicianSpeaking = false;
   window.CONVERSATION.clinicianTyping = false;
   window.CONVERSATION.processingResponse = false;
   window.CONVERSATION.liveTranscript = "";
+  window.CONVERSATION.turnDone = true; // Verlauf-Button darf erscheinen (folgt als nächster Schritt)
   render();
 }
 
