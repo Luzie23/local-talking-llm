@@ -39,6 +39,12 @@ window.CONVERSATION = {
   startSubtitle: "Bitte prüfen Sie kurz, ob die folgenden Voraussetzungen erfüllt sind. Sobald Sie starten, beginnt das Gespräch mit einer ersten Frage.",
   startButton:   "Interview starten",
 
+  /* Steht auf dem Start-Button, solange er noch deaktiviert ist — das
+     System lädt im Hintergrund das Sprachmodell und vertont die
+     Eröffnungsnachricht schon einmal vorab. Das kann besonders beim ALLERERSTEN
+     Aufruf (Modell noch nicht "warmgelaufen") einen Moment dauern. */
+  startLoadingLabel: "Bereitet sich vor – einen Moment bitte …",
+
   /* Beschriftungen für den optionalen Ton-/Mikrofon-Test im Start-Overlay.
      Der Test selbst blockiert "Interview starten" nicht — reines Angebot. */
   startSoundTestLabel: "Testton abspielen",
