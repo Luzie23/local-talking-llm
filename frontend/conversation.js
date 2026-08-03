@@ -101,11 +101,86 @@ window.CONVERSATION = {
   /* Wird true, sobald der Leitfaden vollständig durchlaufen ist (die
      Abschlussnachricht war gerade dran oder schon vorher) — sperrt weitere
      Antwortversuche, statt die Abschlussnachricht endlos zu wiederholen.
-     Zeigt einen einfachen Abschluss-Bildschirm; der richtige Abbruch-/
-     Exit-Flow (Hilfsangebote, Studienentscheid) folgt als eigener Schritt. */
+     Zeigt "Interview beenden" statt der normalen Antwort-Bedienung (siehe
+     .endbar in index.html) — führt in denselben Exit-Flow wie ein
+     freiwilliger Abbruch, nur ohne Rückfrage und ohne Begründungs-Schritt. */
   interviewFinished: false,
-  /* Wird true, nachdem auf "Interview beenden" geklickt wurde. */
-  interviewEnded: false
+  /* Wird true, nachdem im Exit-Flow tatsächlich eine Entscheidung
+     (weiter/Studie beenden) getroffen wurde — zeigt die letzte, einfache
+     Bestätigungsseite. */
+  interviewEnded: false,
+
+  /* --- ABBRUCH & EXIT-FLOW -------------------------------------------------
+     Zustand für Rückfrage-Dialog + dreistufigen Exit-Flow. Die eigentlichen
+     Texte/Inhalte stehen weiter unten in cfg.exit. */
+  confirmOpen: false,   // Rückfrage-Dialog ("wirklich beenden?") sichtbar?
+  exitOpen: false,      // Exit-Flow (Unterstützung/Begründung/Entscheid) sichtbar?
+  exitStepIndex: 0,     // Index innerhalb des aktiven Schritt-Ablaufs (s. u.)
+  exitViaAbort: false,  // true = freiwilliger Abbruch (mit Begründungs-Schritt),
+                         // false = normaler Abschluss (Begründungs-Schritt entfällt)
+  exitReason: "",        // Freitext aus Schritt 2, falls ausgefüllt
+  exitFinalChoice: null, // "continue" oder "withdraw" — bestimmt den Text auf der allerletzten Seite
+
+  exit: {
+    /* Schritt 0 — Rückfrage bei freiwilligem Abbruch (entfällt beim
+       normalen Abschluss über .endbar). */
+    confirmTitle:   "Interview wirklich beenden?",
+    confirmText:    "Sie können jederzeit zum Gespräch zurückkehren. Wenn Sie beenden, wird das Interview geschlossen und nicht fortgesetzt.",
+    confirmCancel:  "Zurück zum Interview",
+    confirmConfirm: "Interview beenden",
+
+    /* Schritt 1 — Unterstützung. Sachlich halten; die meisten Abbrüche haben
+       keinen krisenhaften Grund, ein dramatischer Ton wirkt fehlplatziert. */
+    supportTitle: "Danke, dass Sie bis hierher mitgemacht haben",
+    supportText:  "Interviews zu psychischem Befinden können nachwirken. Falls Sie darüber sprechen möchten, sind die folgenden Stellen kostenlos und unabhängig von dieser Studie erreichbar.",
+    supportResources: [
+      { name: "Telefonseelsorge",              detail: "0800 111 0 111 · rund um die Uhr, kostenlos und anonym" },
+      { name: "Info-Telefon Depression",       detail: "0800 33 44 533 · zu festen Sprechzeiten" },
+      { name: "Ärztlicher Bereitschaftsdienst", detail: "116 117 · bei akutem Bedarf" }
+    ],
+    supportNext: "Weiter",
+
+    /* Schritt 2 — optionale Begründung. NUR beim freiwilligen Abbruch,
+       nie verpflichtend. */
+    reasonTitle: "Möchten Sie uns den Grund nennen?",
+    reasonText:  "Sie können optional angeben, warum Sie das Interview beendet haben. Das ist freiwillig und hat keine Auswirkung auf Ihre Vergütung.",
+    reasonPlaceholder: "Grund (optional) …",
+    reasonSkip: "Überspringen",
+    reasonNext: "Weiter",
+
+    /* Schritt 3 — Studienentscheid. Die Datenlage MUSS eindeutig benannt
+       werden, sonst ist die Wahl nicht informiert. Beide Optionen bewusst
+       gleich gewichtet. */
+    decisionTitle: "Wie möchten Sie weitermachen?",
+    decisionText:  "Ihre bisherigen Interviewantworten bleiben in beiden Fällen pseudonymisiert gespeichert und werden ausgewertet. Wie Sie deren Löschung beantragen können, steht unten.",
+    continueLabel: "Nur das Interview beenden",
+    continueDesc:  "Sie füllen die restlichen Fragebögen aus und schließen die Studie regulär ab.",
+    withdrawLabel: "Die Studie vollständig beenden",
+    withdrawDesc:  "Es werden keine weiteren Daten erhoben. Sie kehren ohne Abschluss zu Prolific zurück.",
+    deletionNote:  "Löschung Ihrer Daten: Schreiben Sie mit Ihrem Prolific-Code an studie@example.org. Wir löschen Ihren Datensatz dann vollständig, ohne Angabe von Gründen.",
+
+    /* Letzte Seite — unterschiedlich je nachdem, wie man hier ankam.
+       Normaler Abschluss UND "nur Interview beenden" (nach Abbruch) zeigen
+       denselben Dank; "Studie vollständig beenden" zeigt eine eigene,
+       nüchterne Bestätigung ohne Dank (das wäre hier fehl am Platz). Bei
+       gesetzter completionUrl/withdrawUrl (Prolific) wird automatisch
+       dorthin weitergeleitet; ohne URL (Vor-Ort-Nutzung) bleibt nur der
+       Text stehen. */
+    finalThanksTitle:   "Vielen Dank!",
+    finalThanksText:    "Das Interview ist beendet. Sie können dieses Fenster jetzt schließen.",
+    finalWithdrawTitle: "Studie beendet",
+    finalWithdrawText:  "Es werden keine weiteren Daten von Ihnen erhoben. Sie können dieses Fenster jetzt schließen.",
+
+    /* NOCH NICHT VERDRAHTET — soll später bestimmen, ob Prolific-spezifische
+       Texte ("zurück zu Prolific" o. Ä.) oder Vor-Ort-Texte gezeigt werden.
+       Bis dahin: Prolific-Formulierungen als Standard, manuell anpassen. */
+    deploymentMode: "prolific",
+
+    /* Weiterleitungen zu Prolific. Leer lassen -> es wird nicht weitergeleitet
+       (praktisch beim Testen der Seite, oder bei Vor-Ort-Nutzung). */
+    completionUrl: "",
+    withdrawUrl:   ""
+  }
 };
 
 let audioStream = null;
@@ -748,18 +823,125 @@ function historyMessages() {
 window.historyMessages = historyMessages;
 
 /* =============================================================================
-   INTERVIEW BEENDEN (einfacher Platzhalter)
+   ABBRUCH + EXIT-FLOW
    -----------------------------------------------------------------------------
-   Absichtlich schlicht gehalten: zeigt nur eine Abschluss-Bestätigung. Der
-   eigentliche Abbruch-/Exit-Flow (Hilfsangebote, optionale Begründung,
-   Studienentscheid — siehe cfg.exit im geplanten Projektaufbau) ist ein
-   eigener, noch folgender Schritt. Diese Funktion ist bewusst so simpel,
-   dass sie später leicht durch den echten Flow ersetzt werden kann.
+   Zwei Wege führen zum selben Exit-Flow (Unterstützung -> [Begründung] ->
+   Studienentscheid), unterscheiden sich nur am Anfang:
+     - Freiwilliger Abbruch (jederzeit, "Interview beenden" oben rechts):
+       erst Rückfrage ("wirklich beenden?"), dann Begründungs-Schritt dabei.
+     - Normaler Abschluss (Leitfaden fertig, siehe .endbar): keine Rückfrage
+       nötig (es gibt nichts "abzubrechen"), Begründungs-Schritt entfällt.
+   Die eigentlichen Hooks (onAbortIntent usw.) sind bewusst einfache
+   Konsolen-Logs — echtes Speichern kommt erst mit der Datenspeicherung
+   (siehe Projektplan). Sie lassen sich hier direkt überschreiben, falls dein
+   System eigene Logging-Funktionen mitbringt.
 ============================================================================= */
-function endInterview() {
-  window.CONVERSATION.interviewEnded = true;
+window.onAbortIntent    = window.onAbortIntent    || function () { console.log("[exit] Abbruch-Absicht (Beenden-Button geklickt)"); };
+window.onAbortCancelled = window.onAbortCancelled || function () { console.log("[exit] Abbruch abgebrochen — zurück zum Interview"); };
+window.onAbortConfirmed = window.onAbortConfirmed || function () { console.log("[exit] Abbruch bestätigt"); };
+window.onAbortReason    = window.onAbortReason    || function (reason) { console.log("[exit] Begründung:", reason || "(keine angegeben)"); };
+window.onExitChoice     = window.onExitChoice     || function (choice) { console.log("[exit] Studienentscheid:", choice); };
+
+function activeExitSteps() {
+  // 1 = Unterstützung, 2 = Begründung, 3 = Studienentscheid.
+  // Beim normalen Abschluss nur Schritt 1 — die Studienentscheid-Frage
+  // ("weitermachen oder Studie abbrechen?") betrifft nur den vorzeitigen
+  // Abbruch; wer regulär fertig ist, hat ja nichts mehr zu entscheiden.
+  return window.CONVERSATION.exitViaAbort ? [1, 2, 3] : [1];
+}
+
+function currentExitStep() {
+  const steps = activeExitSteps();
+  return steps[window.CONVERSATION.exitStepIndex] ?? steps[steps.length - 1];
+}
+
+function advanceExitStep() {
+  const steps = activeExitSteps();
+  if (window.CONVERSATION.exitStepIndex < steps.length - 1) {
+    window.CONVERSATION.exitStepIndex += 1;
+    render();
+  } else {
+    // Letzter Schritt im aktiven Ablauf erreicht. Beim normalen Abschluss
+    // ist das bereits Schritt 1 (Unterstützung) — es gibt keine
+    // Studienentscheid-Frage, also direkt abschließen ("continue" ist hier
+    // nur ein interner Wert, entspricht "ganz normal fertig").
+    finishExit("continue");
+  }
+}
+
+// Vom Abbruch-Button (oben rechts, jederzeit während des Interviews) —
+// öffnet erst die Rückfrage, noch keine endgültige Entscheidung.
+function startAbortFlow() {
+  window.onAbortIntent();
+  window.CONVERSATION.confirmOpen = true;
   render();
 }
 
-window.endInterview = endInterview;
+function cancelAbort() {
+  window.CONVERSATION.confirmOpen = false;
+  window.onAbortCancelled();
+  render();
+}
+
+function confirmAbort() {
+  window.CONVERSATION.confirmOpen = false;
+  window.CONVERSATION.exitViaAbort = true;
+  window.CONVERSATION.exitStepIndex = 0;
+  window.CONVERSATION.exitOpen = true;
+  window.onAbortConfirmed();
+  render();
+}
+
+// Vom .endbar-Button nach normalem Abschluss — direkt in den Exit-Flow,
+// keine Rückfrage, kein Begründungs- oder Studienentscheid-Schritt.
+function startNaturalExit() {
+  window.CONVERSATION.exitViaAbort = false;
+  window.CONVERSATION.exitStepIndex = 0;
+  window.CONVERSATION.exitOpen = true;
+  render();
+}
+
+function submitExitReason(reasonText) {
+  window.CONVERSATION.exitReason = (reasonText || "").trim();
+  window.onAbortReason(window.CONVERSATION.exitReason);
+  advanceExitStep();
+}
+
+function skipExitReason() {
+  window.CONVERSATION.exitReason = "";
+  window.onAbortReason("");
+  advanceExitStep();
+}
+
+// choice: "continue" (Studie regulär fortsetzen — auch der Normalfall nach
+// vollständigem Abschluss) oder "withdraw" (Studie vollständig beenden,
+// keine weiteren Daten). Wird sowohl vom Studienentscheid-Schritt (Abbruch)
+// als auch automatisch nach dem normalen Abschluss aufgerufen.
+function finishExit(choice) {
+  window.onExitChoice(choice);
+  window.CONVERSATION.exitOpen = false;
+  window.CONVERSATION.exitFinalChoice = choice;
+  window.CONVERSATION.interviewEnded = true;
+  const url = choice === "withdraw" ? window.CONVERSATION.exit.withdrawUrl : window.CONVERSATION.exit.completionUrl;
+  render();
+  if (url) {
+    window.location.href = url;
+  }
+}
+
+// Beibehalten als Alias, falls index.html noch den alten Namen aufruft.
+function chooseExitDecision(choice) {
+  finishExit(choice);
+}
+
+window.startAbortFlow = startAbortFlow;
+window.cancelAbort = cancelAbort;
+window.confirmAbort = confirmAbort;
+window.startNaturalExit = startNaturalExit;
+window.currentExitStep = currentExitStep;
+window.activeExitSteps = activeExitSteps;
+window.advanceExitStep = advanceExitStep;
+window.submitExitReason = submitExitReason;
+window.skipExitReason = skipExitReason;
+window.chooseExitDecision = chooseExitDecision;
 
