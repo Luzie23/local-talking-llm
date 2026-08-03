@@ -307,7 +307,7 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 /* 7) =========================  FORSCHER-OVERLAY  =========================
    Ein-/ausblenden mit  Cmd/Strg + Shift + R  (siehe index.html).            */
 .ovpanel{
-  position:absolute; right:18px; bottom:18px; width:304px;
+  position:absolute; right:18px; bottom:18px; width:304px; z-index:60;
   background:rgba(24,22,19,.94); backdrop-filter:blur(10px);
   border:1px solid rgba(255,255,255,.09); border-radius:18px;
   padding:18px 18px 20px; color:#efe9df;
