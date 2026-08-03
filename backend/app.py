@@ -280,9 +280,13 @@ def chat_endpoint():
     """
     Text-condition endpoint: the participant typed an answer in the browser.
     Expects JSON: {"text": "..."}.
-    Returns JSON: {"response": "..."} — see process_answer() for what this
-    might contain (feedback + next question, feedback + a follow-up, or the
-    closing message).
+    Returns JSON: {"response": "...", "finished": bool} — see process_answer()
+    for what "response" might contain (feedback + next question, feedback +
+    a follow-up, or the closing message). "finished" is true once the
+    entire guide has been completed (the closing message was just given,
+    or already had been before this call) — the frontend uses this to stop
+    offering further answers instead of silently repeating the closing
+    message.
     """
     data = request.get_json(silent=True) or {}
     answer_text = (data.get("text") or "").strip()
@@ -292,7 +296,7 @@ def chat_endpoint():
     pieces = process_answer(answer_text)
     response = " ".join(p["text"] for p in pieces).strip()
     print(f"[interview] final response sent to browser: {response!r}")
-    return jsonify({"response": response})
+    return jsonify({"response": response, "finished": interview.is_finished()})
 
 
 @app.route("/api/chat/audio", methods=["POST"])
@@ -309,10 +313,13 @@ def chat_audio_endpoint():
 
       {"type": "transcript", "transcript": "..."}
         Sent first, as soon as speech-to-text is done.
-      {"type": "sentence", "text": "...", "audio": "...base64 wav...", "kind": "...", "is_last": bool}
+      {"type": "sentence", "text": "...", "audio": "...base64 wav...", "kind": "...", "is_last": bool, "finished": bool}
         One per sentence, in speaking order. "kind" is "feedback",
         "question", or "closing" — see process_answer() — and is what lets
         the browser's "Frage wiederholen" replay only the question later.
+        "finished" is true once the entire guide has been completed —
+        the frontend uses this to stop offering further answers instead
+        of silently repeating the closing message.
       {"type": "error", "message": "..."}
         Sent instead of a "sentence" line if synthesizing one sentence
         fails; playback of anything already sent is unaffected.
@@ -329,6 +336,7 @@ def chat_audio_endpoint():
 
     transcript = stt.transcribe(audio_np, language=language)
     pieces = process_answer(transcript)
+    finished = interview.is_finished()
     print(f"[interview] final response sent to browser: {' '.join(p['text'] for p in pieces)!r}")
 
     def generate():
@@ -362,6 +370,7 @@ def chat_audio_endpoint():
                     "audio": audio_base64,
                     "kind": piece["kind"],
                     "is_last": is_last,
+                    "finished": finished,
                 }) + "\n"
             except Exception as e:
                 print(f"[stream] error at +{elapsed()}: {e}")

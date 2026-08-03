@@ -228,15 +228,19 @@
     // Embodiment
     document.getElementById("slot").innerHTML = embodimentHTML();
 
-    // Modalität: passende Bodenleiste zeigen (beide ausgeblendet, während
-    // der Verlauf offen ist — man tippt/spricht ja nicht "in den Verlauf").
+    // Modalität: passende Bodenleiste zeigen (ausgeblendet, während der
+    // Verlauf offen ist ODER das Interview fertig ist — man tippt/spricht
+    // dann nicht mehr).
     const isSpeech = cfg.modality === "speech";
-    document.getElementById("inputbar").style.display = (!cfg.historyOpen && !isSpeech) ? "flex" : "none";
-    document.getElementById("micbar").style.display   = (!cfg.historyOpen && isSpeech) ? "flex" : "none";
+    const hideControls = cfg.historyOpen || cfg.interviewFinished;
+    document.getElementById("inputbar").style.display = (!hideControls && !isSpeech) ? "flex" : "none";
+    document.getElementById("micbar").style.display   = (!hideControls && isSpeech) ? "flex" : "none";
 
     const chat = document.getElementById("chat");
     if (cfg.historyOpen) {
       renderHistory(chat);
+    } else if (cfg.interviewFinished) {
+      renderFinished(chat);
     } else if (isSpeech) {
       renderSpeech(chat);
     } else {
@@ -318,6 +322,35 @@
       chat.appendChild(b);
     });
     chat.scrollTop = chat.scrollHeight;
+  }
+
+  /* --- Interview fertig: einfacher Abschluss-Bildschirm -------------------
+     Der Leitfaden ist komplett durchlaufen (siehe cfg.interviewFinished,
+     gesetzt anhand von "finished" aus dem Server). Absichtlich schlicht —
+     der richtige Abbruch-/Exit-Flow (Hilfsangebote, Studienentscheid) ist
+     ein eigener, noch folgender Schritt; das hier verhindert nur, dass man
+     weiter antworten kann und die Abschlussnachricht sich wiederholt. */
+  function renderFinished(chat) {
+    if (cfg.interviewEnded) {
+      chat.innerHTML =
+        '<div class="finishedscreen">' +
+          '<div class="finishedtitle">Vielen Dank!</div>' +
+          '<div class="finishedtext">Das Interview ist beendet. Sie können dieses Fenster jetzt schließen.</div>' +
+        '</div>';
+      return;
+    }
+    chat.innerHTML =
+      '<div class="finishedscreen">' +
+        '<div class="finishedtitle">Interview abgeschlossen</div>' +
+        '<div class="finishedtext">Vielen Dank für Ihre Teilnahme an diesem Interview.</div>' +
+        '<button class="finishedbtn" id="endInterviewBtn" type="button">Interview beenden</button>' +
+      '</div>';
+    const btn = document.getElementById("endInterviewBtn");
+    if (btn) {
+      btn.addEventListener("click", function () {
+        if (typeof window.endInterview === "function") window.endInterview();
+      });
+    }
   }
 
   /* --- Sprach-Modalität: KEIN Gesprächstext, nur Gesprächszustand --------

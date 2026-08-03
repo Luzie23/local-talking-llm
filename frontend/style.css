@@ -270,6 +270,21 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 }
 .mictesttranscript.on{ display:block; }
 
+/* 6c) ==========================  ABSCHLUSS  ================================
+    Einfacher Platzhalter, bis der richtige Abbruch-/Exit-Flow gebaut ist. */
+.finishedscreen{
+  flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  text-align:center; gap:14px; padding:24px;
+}
+.finishedtitle{ font:600 20px 'Instrument Sans',sans-serif; color:var(--ink); }
+.finishedtext{ font:400 14px/1.5 'Instrument Sans',sans-serif; color:var(--muted); max-width:40ch; }
+.finishedbtn{
+  margin-top:10px; padding:12px 26px; border:none; border-radius:24px;
+  background:var(--accent); color:#fff; font:600 13.5px 'Instrument Sans',sans-serif;
+  cursor:pointer;
+}
+.finishedbtn:hover{ background:var(--accent-ink); }
+
 /* 6b) ===================  VERLAUF & FRAGE WIEDERHOLEN  ====================
     Fußzeile mit zwei optionalen Aktionen — Plätze bleiben von Anfang an
     reserviert (visibility statt display), damit nichts springt, sobald sie

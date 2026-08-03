@@ -91,7 +91,15 @@ window.CONVERSATION = {
   turnDone: false,
   /* Ist die Verlauf-Ansicht gerade geöffnet? (Reine Rückschau, kein Live-
      Mitlesen — siehe historyMessages() unten.) */
-  historyOpen: false
+  historyOpen: false,
+  /* Wird true, sobald der Leitfaden vollständig durchlaufen ist (die
+     Abschlussnachricht war gerade dran oder schon vorher) — sperrt weitere
+     Antwortversuche, statt die Abschlussnachricht endlos zu wiederholen.
+     Zeigt einen einfachen Abschluss-Bildschirm; der richtige Abbruch-/
+     Exit-Flow (Hilfsangebote, Studienentscheid) folgt als eigener Schritt. */
+  interviewFinished: false,
+  /* Wird true, nachdem auf "Interview beenden" geklickt wurde. */
+  interviewEnded: false
 };
 
 let audioStream = null;
@@ -160,7 +168,7 @@ function pushClinicianMessage(text) {
 }
 
 async function startMicRecording() {
-  if (audioStream || window.CONVERSATION.processingResponse) {
+  if (audioStream || window.CONVERSATION.processingResponse || window.CONVERSATION.interviewFinished) {
     return;
   }
 
@@ -401,6 +409,7 @@ async function readStreamedReply(response, msg) {
   const playedPieces = [];
   let playing = false;
   let assembledText = "";
+  let interviewFinished = false;
 
   function maybePlayNext() {
     if (playing || audioQueue.length === 0) {
@@ -441,6 +450,9 @@ async function readStreamedReply(response, msg) {
         messages.splice(insertIndex, 0, { role: "user", text: data.transcript || "" });
       } else if (data.type === "sentence") {
         audioQueue.push({ text: data.text, audio: data.audio, kind: data.kind });
+        if (data.finished) {
+          interviewFinished = true;
+        }
         maybePlayNext();
       } else if (data.type === "error") {
         window.CONVERSATION.clinicianTyping = false;
@@ -479,6 +491,9 @@ async function readStreamedReply(response, msg) {
   window.CONVERSATION.processingResponse = false;
   window.CONVERSATION.liveTranscript = "";
   window.CONVERSATION.turnDone = true; // Verlauf-Button darf erscheinen
+  if (interviewFinished) {
+    window.CONVERSATION.interviewFinished = true;
+  }
   render();
 }
 
@@ -492,7 +507,7 @@ window.onMicToggle = function (isRecording) {
 
 async function sendChatMessage(text) {
   const trimmed = (text || "").trim();
-  if (!trimmed) {
+  if (!trimmed || window.CONVERSATION.interviewFinished) {
     return;
   }
 
@@ -519,6 +534,9 @@ async function sendChatMessage(text) {
         role: "clinician",
         text: result.response || "No response from server.",
       });
+      if (result.finished) {
+        window.CONVERSATION.interviewFinished = true;
+      }
     }
   } catch (error) {
     window.CONVERSATION.messages.push({
@@ -722,4 +740,20 @@ function historyMessages() {
 }
 
 window.historyMessages = historyMessages;
+
+/* =============================================================================
+   INTERVIEW BEENDEN (einfacher Platzhalter)
+   -----------------------------------------------------------------------------
+   Absichtlich schlicht gehalten: zeigt nur eine Abschluss-Bestätigung. Der
+   eigentliche Abbruch-/Exit-Flow (Hilfsangebote, optionale Begründung,
+   Studienentscheid — siehe cfg.exit im geplanten Projektaufbau) ist ein
+   eigener, noch folgender Schritt. Diese Funktion ist bewusst so simpel,
+   dass sie später leicht durch den echten Flow ersetzt werden kann.
+============================================================================= */
+function endInterview() {
+  window.CONVERSATION.interviewEnded = true;
+  render();
+}
+
+window.endInterview = endInterview;
 
