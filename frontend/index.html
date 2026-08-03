@@ -34,20 +34,33 @@
       <ul class="startlist" id="startList"></ul>
 
       <div class="starttest">
-        <button class="testbtn" id="testSoundBtn" type="button">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>
-          <span class="testwave" id="testSoundWave"><i></i><i></i><i></i></span>
-          <span>Testton abspielen</span>
-        </button>
-        <button class="testbtn" id="testMicBtn" type="button">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg>
-          <span>Mikrofon testen</span>
-        </button>
-        <div class="miclevel" id="micLevelMeter">
-          <span></span><span></span><span></span><span></span><span></span>
+        <div class="testcol">
+          <button class="testbtn" id="testSoundBtn" type="button">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>
+            <span>Testton abspielen</span>
+          </button>
+          <!-- Derselbe Lautsprecher+Bögen wie im echten Interview: grau in
+               Ruhe, grün + Bögen an, sobald der Testton tatsächlich zu hören
+               ist — echte Amplitude, keine vorgetäuschte Animation. -->
+          <svg class="tvspeaker" id="testSpeakerIcon" viewBox="0 0 24 24" width="34" height="34"
+               fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M11 5 6 9H2v6h4l5 4V5Z" fill="currentColor" stroke="none"/>
+            <path class="varc" d="M15 8.5a5 5 0 0 1 0 7"/>
+            <path class="varc" d="M18 6a9 9 0 0 1 0 12"/>
+            <path class="varc" d="M21 3.5a13 13 0 0 1 0 17"/>
+          </svg>
+        </div>
+        <div class="testcol">
+          <button class="testbtn" id="testMicBtn" type="button">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg>
+            <span>Mikrofon testen</span>
+          </button>
+          <div class="miclevel" id="micLevelMeter">
+            <span></span><span></span><span></span><span></span><span></span>
+          </div>
+          <div class="mictesttranscript" id="micTestTranscript"></div>
         </div>
       </div>
-      <div class="mictesttranscript" id="micTestTranscript"></div>
 
       <button class="startbtn" id="startBtn" disabled>Wird vorbereitet …</button>
     </div>
@@ -370,35 +383,69 @@
   });
 
   /* --- Testton: reine Web-Audio-Erzeugung, kein Server/TTS nötig ---------
-     Die Welle neben dem Lautsprecher-Symbol läuft exakt so lange, wie der
-     Ton tatsächlich zu hören ist — visuelle Bestätigung, WANN etwas hätte
-     ankommen müssen (nützlich, um z. B. eine falsch eingestellte
-     Lautstärke von einem echten Technikproblem zu unterscheiden). */
+     Der Lautsprecher färbt sich grün und die Bögen leuchten stufenweise,
+     exakt nach der ECHTEN Lautstärke des gerade gespielten Tons (über einen
+     eigenen AnalyserNode) — keine vorgetäuschte Animation, dieselbe Logik
+     wie beim Lautsprecher-Symbol im echten Interview (siehe
+     window.updateSpeakingLevel() weiter unten und createSpokenAudioPlayer()
+     in conversation.js). Fällt Web Audio aus, wird der Ton trotzdem normal
+     abgespielt, nur ohne Anzeige. */
   function playTestTone() {
-    const wave = document.getElementById("testSoundWave");
+    const speakerIcon = document.getElementById("testSpeakerIcon");
+    const arcs = speakerIcon ? speakerIcon.querySelectorAll(".varc") : [];
+    const thresholds = [0.05, 0.18, 0.38];
+    let rafId = null;
+
+    function setLevel(level) {
+      arcs.forEach(function (arc, i) {
+        arc.classList.toggle("lit", level >= thresholds[i]);
+      });
+    }
+
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
       osc.type = "sine";
       osc.frequency.value = 440;
       gain.gain.setValueAtTime(0, ctx.currentTime);
       gain.gain.linearRampToValueAtTime(0.25, ctx.currentTime + 0.06);
       gain.gain.linearRampToValueAtTime(0.25, ctx.currentTime + 0.5);
       gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.6);
+
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(analyser);
+      analyser.connect(ctx.destination); // <- ohne das: kein Ton mehr!
       osc.start();
       osc.stop(ctx.currentTime + 0.65);
 
-      if (wave) wave.classList.add("on");
+      if (speakerIcon) speakerIcon.classList.add("speaking");
+
+      (function tick() {
+        analyser.getByteTimeDomainData(dataArray);
+        let sumSquares = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          const v = (dataArray[i] - 128) / 128;
+          sumSquares += v * v;
+        }
+        const rms = Math.sqrt(sumSquares / dataArray.length);
+        setLevel(Math.min(1, rms * 4));
+        rafId = requestAnimationFrame(tick);
+      })();
+
       osc.onended = function () {
+        if (rafId) cancelAnimationFrame(rafId);
+        setLevel(0);
+        if (speakerIcon) speakerIcon.classList.remove("speaking");
         ctx.close();
-        if (wave) wave.classList.remove("on");
       };
     } catch (err) {
-      console.warn("Testton konnte nicht abgespielt werden.", err);
-      if (wave) wave.classList.remove("on");
+      console.warn("Testton: Amplituden-Anzeige nicht verfügbar, Ton wird trotzdem versucht.", err);
+      if (speakerIcon) speakerIcon.classList.remove("speaking");
     }
   }
 
@@ -568,3 +615,87 @@
     // dieses Skript hier, ist sie es unter Umständen schon jetzt.
     btn.disabled = !cfg.pendingOpeningMessage;
 
+    btn.addEventListener("click", function () {
+      if (btn.disabled) return;
+      stopMicTest(); // Mikrofon freigeben, falls der Test noch lief
+      ov.classList.add("hidden");
+      if (cfg.modality === "speech") {
+        window.playOpeningSpoken();
+      } else {
+        playOpening(cfg.pendingOpeningMessage || "");
+      }
+    });
+  }
+
+  /* --- Gibt die Eröffnungsnachricht Wort für Wort aus, so als würde das
+         LLM sie gerade live generieren (gilt nur für DIESE eine Nachricht,
+         nicht für spätere Antworten). --------------------------------- */
+  function playOpening(text) {
+    const words = text.split(" ").filter(function (w) { return w.length > 0; });
+    cfg.messages = [{ role: "clinician", text: "" }];
+    render();
+
+    if (words.length === 0) {
+      return;
+    }
+
+    let shown = 0;
+    const timer = setInterval(function () {
+      shown += 1;
+      cfg.messages[0].text = words.slice(0, shown).join(" ");
+      render();
+      if (shown >= words.length) {
+        clearInterval(timer);
+      }
+    }, 150);
+  }
+
+  // Vom Hintergrund-Fetch in conversation.js aufgerufen, sobald die
+  // Eröffnungsnachricht angekommen ist (auch wenn das Overlay schon
+  // sichtbar ist und noch auf den Klick gewartet wird).
+  window.onOpeningMessageReady = function () {
+    const btn = document.getElementById("startBtn");
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = cfg.startButton || "Interview starten";
+    }
+  };
+
+  // Von conversation.js aus dem laufenden Mikrofonsignal aufgerufen (siehe
+  // startMicRecording()), damit die Balken im "Ich höre zu"-Zustand
+  // tatsächlich auf die echte Lautstärke reagieren, statt ein starres
+  // CSS-Muster abzuspielen — genau wie beim Mikrofon-Test im Start-Overlay.
+  window.updateListeningLevel = function (level) {
+    const bars = document.querySelectorAll("#vmicBars i");
+    if (!bars.length) return;
+    const wobble = [0.85, 1, 1.15, 1];
+    bars.forEach(function (bar, i) {
+      const h = 6 + level * 26 * (wobble[i] || 1);
+      bar.style.height = Math.min(32, h) + "px";
+      bar.classList.toggle("live", level > 0.08);
+    });
+  };
+
+  // Von conversation.js aus dem AnalyserNode der laufenden Sprachausgabe
+  // aufgerufen (siehe createSpokenAudioPlayer()) — schaltet die Bögen am
+  // Lautsprecher-Symbol stufenweise nach ECHTER Lautstärke frei, keine
+  // vorgetäuschte Animation. Mehr Bögen = lauter, wie ein Signalstärke-Symbol.
+  window.updateSpeakingLevel = function (level) {
+    const arcs = document.querySelectorAll(".varc");
+    if (!arcs.length) return;
+    const thresholds = [0.05, 0.18, 0.38];
+    arcs.forEach(function (arc, i) {
+      arc.classList.toggle("lit", level >= thresholds[i]);
+    });
+  };
+
+  window.render = render;
+  window.setupTextInput = setupTextInput;
+
+  setupTextInput();
+  initStart();
+  render();
+})();
+</script>
+</body>
+</html>

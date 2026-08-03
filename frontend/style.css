@@ -244,11 +244,13 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 .startbtn:hover:not(:disabled){ background:var(--accent-ink); }
 .startbtn:disabled{ opacity:.55; cursor:not-allowed; }
 
-/* Ton- und Mikrofon-Test (freiwillig, blockiert den Start-Button nicht) */
+/* Ton- und Mikrofon-Test (freiwillig, blockiert den Start-Button nicht) —
+   zwei Spalten nebeneinander, jeweils Button + eigener Rückmeldung darunter. */
 .starttest{
-  display:flex; align-items:center; justify-content:center; gap:10px;
+  display:flex; justify-content:center; align-items:flex-start; gap:32px;
   flex-wrap:wrap; margin:20px 0 4px;
 }
+.testcol{ display:flex; flex-direction:column; align-items:center; gap:12px; min-width:160px; }
 .testbtn{
   display:inline-flex; align-items:center; gap:7px;
   padding:9px 15px; border-radius:20px;
@@ -258,16 +260,13 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 }
 .testbtn:hover{ background:rgba(0,0,0,.09); }
 .testbtn.active{ background:color-mix(in srgb,var(--accent) 18%,transparent); border-color:var(--accent); }
-/* Welle neben dem Lautsprecher-Symbol, sichtbar genau während der Testton
-   tatsächlich zu hören ist. */
-.testwave{ display:inline-flex; align-items:flex-end; gap:2px; height:12px;
-  opacity:0; transition:opacity .12s ease; }
-.testwave.on{ opacity:1; }
-.testwave i{ width:2.5px; background:var(--accent); border-radius:2px; animation:veq .5s ease-in-out infinite; }
-.testwave i:nth-child(2){ animation-delay:.12s; }
-.testwave i:nth-child(3){ animation-delay:.24s; }
+/* Lautsprecher-Symbol für den Testton — dieselbe Formsprache (und dieselben
+   .varc-Bögen) wie beim Lautsprecher im echten Interview: grau in Ruhe,
+   grün + Bögen an nach ECHTER Lautstärke, sobald der Ton wirklich läuft. */
+.tvspeaker{ color:var(--muted); opacity:.45; transition:color .15s ease, opacity .15s ease; }
+.tvspeaker.speaking{ color:var(--accent); opacity:1; }
 .miclevel{
-  display:none; align-items:flex-end; gap:3px; height:16px; margin-left:2px;
+  display:none; align-items:flex-end; gap:3px; height:16px;
 }
 .miclevel.on{ display:flex; }
 .miclevel span{
@@ -282,7 +281,7 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
    ("wie deutlich muss ich sprechen"), nur im Start-Overlay, nicht während
    des echten Interviews. */
 .mictesttranscript{
-  display:none; max-width:44ch; margin:2px auto 0; text-align:center;
+  display:none; max-width:22ch; margin:0 auto; text-align:center;
   font:400 13.5px/1.5 'Instrument Sans',sans-serif; color:var(--muted);
   min-height:1.4em;
 }
