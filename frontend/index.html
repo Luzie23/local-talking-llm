@@ -109,21 +109,14 @@
            von Anfang an ihren Platz behält und das Layout nicht springt,
            sobald die Buttons erscheinen. -->
       <div class="convofoot" id="convofoot">
-        <button class="footbtn" id="replayBtn" type="button" style="visibility:hidden">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
-          <span>Frage wiederholen</span>
-        </button>
         <button class="footbtn" id="histBtn" type="button" style="visibility:hidden">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
           <span id="histBtnLabel">Verlauf ansehen</span>
         </button>
-      </div>
-
-      <!-- Verlauf-Ansicht: reine Rückschau als Text, auch in der
-           Sprach-Bedingung (live bleibt dort textfrei) — siehe
-           historyMessages() in conversation.js. -->
-      <div class="historypanel hidden" id="historyPanel">
-        <div class="historylist" id="historyList"></div>
+        <button class="footbtn" id="replayBtn" type="button" style="visibility:hidden">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+          <span>Frage wiederholen</span>
+        </button>
       </div>
     </div>
   </div>
@@ -235,13 +228,16 @@
     // Embodiment
     document.getElementById("slot").innerHTML = embodimentHTML();
 
-    // Modalität: passende Bodenleiste zeigen
+    // Modalität: passende Bodenleiste zeigen (beide ausgeblendet, während
+    // der Verlauf offen ist — man tippt/spricht ja nicht "in den Verlauf").
     const isSpeech = cfg.modality === "speech";
-    document.getElementById("inputbar").style.display = isSpeech ? "none" : "flex";
-    document.getElementById("micbar").style.display   = isSpeech ? "flex" : "none";
+    document.getElementById("inputbar").style.display = (!cfg.historyOpen && !isSpeech) ? "flex" : "none";
+    document.getElementById("micbar").style.display   = (!cfg.historyOpen && isSpeech) ? "flex" : "none";
 
     const chat = document.getElementById("chat");
-    if (isSpeech) {
+    if (cfg.historyOpen) {
+      renderHistory(chat);
+    } else if (isSpeech) {
       renderSpeech(chat);
     } else {
       renderText(chat);
@@ -249,7 +245,9 @@
 
     // Fußzeile: Verlauf (beide Modalitäten, erst nach der ersten
     // abgeschlossenen Runde) + Frage wiederholen (nur Sprache, erst sobald
-    // es überhaupt etwas Gesprochenes zum Wiederholen gibt).
+    // es überhaupt etwas Gesprochenes zum Wiederholen gibt). Bleibt IMMER
+    // im normalen Fluss sichtbar (kein Overlay legt sich darüber) — sonst
+    // wäre der Zurück-Button aus dem Verlauf nicht mehr erreichbar.
     const replayBtn = document.getElementById("replayBtn");
     if (replayBtn) {
       const canReplay = isSpeech && !cfg.historyOpen &&
@@ -263,25 +261,6 @@
     if (histBtn) {
       histBtn.style.visibility = cfg.turnDone ? "visible" : "hidden";
       document.getElementById("histBtnLabel").textContent = cfg.historyOpen ? "Zurück zum Interview" : "Verlauf ansehen";
-    }
-
-    // Verlauf-Ansicht: reine Text-Rückschau, auch in der Sprach-Bedingung.
-    const historyPanel = document.getElementById("historyPanel");
-    if (historyPanel) {
-      historyPanel.classList.toggle("hidden", !cfg.historyOpen);
-      if (cfg.historyOpen) {
-        const list = document.getElementById("historyList");
-        const msgs = (typeof window.historyMessages === "function") ? window.historyMessages() : cfg.messages;
-        list.innerHTML = msgs.map(function (m) {
-          const cls = m.role === "user" ? "hba" : "hbq";
-          return '<div class="' + cls + '"></div>';
-        }).join("");
-        // Text per textContent, nicht per Konkatenation — konsistent mit
-        // der Checkliste im Start-Overlay (kein Fremdinhalt als HTML).
-        list.querySelectorAll(".hba, .hbq").forEach(function (el, i) {
-          el.textContent = msgs[i].text;
-        });
-      }
     }
 
     // Transkript-Log (immer – auch in der Sprach-Bedingung, nur für Forschende)
@@ -313,6 +292,24 @@
       chat.insertAdjacentHTML("beforeend",
         '<div class="typing"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>');
     }
+    chat.scrollTop = chat.scrollHeight;
+  }
+
+  /* --- Verlauf: reine Text-Rückschau, auch in der Sprach-Bedingung -------
+     Rendert INS #chat hinein (nicht als eigenes Overlay darüber) — sonst
+     würde die Verlauf-Fläche die Fußzeile mit dem Zurück-Button gleich mit
+     verdecken, und man käme nicht mehr heraus. Wiederverwendet dieselben
+     Blasen-Klassen wie die Text-Modalität, damit es nicht wie eine
+     komplett andere Ansicht wirkt. */
+  function renderHistory(chat) {
+    chat.innerHTML = "";
+    const msgs = (typeof window.historyMessages === "function") ? window.historyMessages() : cfg.messages;
+    msgs.forEach(function (m) {
+      const b = document.createElement("div");
+      b.className = m.role === "user" ? "ba" : "bq";
+      b.textContent = m.text;
+      chat.appendChild(b);
+    });
     chat.scrollTop = chat.scrollHeight;
   }
 

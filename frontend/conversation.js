@@ -440,7 +440,7 @@ async function readStreamedReply(response, msg) {
         const insertIndex = messages.indexOf(msg);
         messages.splice(insertIndex, 0, { role: "user", text: data.transcript || "" });
       } else if (data.type === "sentence") {
-        audioQueue.push({ text: data.text, audio: data.audio });
+        audioQueue.push({ text: data.text, audio: data.audio, kind: data.kind });
         maybePlayNext();
       } else if (data.type === "error") {
         window.CONVERSATION.clinicianTyping = false;
@@ -471,7 +471,9 @@ async function readStreamedReply(response, msg) {
   // mitgeschrieben ("Zurück zum Interview"-Ansicht).
   player.close();
   msg.text = assembledText;
-  lastReplyAudioPieces = playedPieces;
+  // "Frage wiederholen" soll nur die Frage nochmal abspielen, nicht die
+  // Rückmeldung davor — deshalb hier auf die passenden "kind"s filtern.
+  lastReplyAudioPieces = playedPieces.filter(function (p) { return p.kind !== "feedback"; });
   window.CONVERSATION.clinicianSpeaking = false;
   window.CONVERSATION.clinicianTyping = false;
   window.CONVERSATION.processingResponse = false;
@@ -632,7 +634,9 @@ function playOpeningSpoken() {
     return;
   }
 
-  lastReplyAudioPieces = pieces;
+  // "Frage wiederholen" soll nur die erste Frage abspielen, nicht die
+  // Begrüßung/Framing-Nachricht davor.
+  lastReplyAudioPieces = pieces.filter(function (p) { return p.kind !== "framing"; });
   const player = createSpokenAudioPlayer();
   let index = 0;
 

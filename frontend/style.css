@@ -273,9 +273,10 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 /* 6b) ===================  VERLAUF & FRAGE WIEDERHOLEN  ====================
     Fußzeile mit zwei optionalen Aktionen — Plätze bleiben von Anfang an
     reserviert (visibility statt display), damit nichts springt, sobald sie
-    erscheinen. */
+    erscheinen. Verlauf-Button links, Frage-wiederholen rechtsbündig
+    (eigene Zeile, klar getrennte Position statt beide mittig zusammen). */
 .convofoot{
-  display:flex; align-items:center; justify-content:center; gap:10px;
+  display:flex; align-items:center; justify-content:space-between; gap:10px;
   padding:0 16px 14px;
 }
 .footbtn{
@@ -287,24 +288,6 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 }
 .footbtn:hover:not(:disabled){ background:rgba(0,0,0,.08); color:var(--ink); }
 .footbtn:disabled, .footbtn.disabled{ opacity:.5; cursor:not-allowed; }
-
-/* Verlauf-Ansicht: reine Text-Rückschau, deckt die Konversationsfläche ab.
-   Auch in der Sprach-Bedingung als Text sichtbar (bewusste Ausnahme vom
-   "kein Text live"-Prinzip — das hier ist eine explizite Rückschau, kein
-   Mitlesen während des Gesprächs). */
-.historypanel{
-  position:absolute; inset:0; z-index:20;
-  background:var(--paper); display:flex; flex-direction:column;
-  padding:20px 22px; overflow-y:auto;
-}
-.historypanel.hidden{ display:none; }
-.historylist{ display:flex; flex-direction:column; gap:14px; }
-.hbq, .hba{
-  max-width:82%; padding:11px 15px; border-radius:16px;
-  font:400 14px/1.5 'Instrument Sans',sans-serif;
-}
-.hbq{ align-self:flex-start; background:rgba(0,0,0,.045); color:var(--ink); }
-.hba{ align-self:flex-end; background:var(--accent); color:#fff; }
 
 /* 7) =========================  FORSCHER-OVERLAY  =========================
    Ein-/ausblenden mit  Cmd/Strg + Shift + R  (siehe index.html).            */

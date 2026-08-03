@@ -120,38 +120,56 @@ def _split_sentences(text: str) -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
-def _response_pieces(feedback: str, next_question: dict | None) -> list[str]:
+def _tag_sentences(text: str, kind: str) -> list[dict]:
+    """
+    Like _split_sentences(), but each sentence is paired with a "kind"
+    label ("feedback", "question", or "closing"). This is what lets the
+    browser's "Frage wiederholen" (repeat question) feature replay only
+    the actual question, not the feedback that came before it — see
+    frontend/conversation.js's replayLastQuestion() and readStreamedReply().
+    """
+    return [{"text": s, "kind": kind} for s in _split_sentences(text)]
+
+
+def _response_pieces(feedback: str, next_question: dict | None) -> list[dict]:
     """
     Break the reply that follows a piece of feedback into the individual
     sentences it's made of, in speaking order — this is what lets the voice
     condition start speaking the first sentence while later ones are still
-    being synthesized (see Step 5b of the project plan).
+    being synthesized (see Step 5b of the project plan). Each piece is
+    tagged with its "kind" (see _tag_sentences()).
 
     For "natural_transition" delivery, the model blends the feedback and
     the next question into one smoothly-worded message — there are no
-    separately-known pieces in that case, only sentences within the result.
+    separately-known pieces in that case, so the whole blended result is
+    tagged "question" (the closest available approximation; "Frage
+    wiederholen" will replay the blended feedback+question together for
+    this delivery style, since they can no longer be told apart).
     """
     following_text = next_question["text"] if next_question is not None else interview.closing_message
+    following_kind = "question" if next_question is not None else "closing"
 
     if profile.question_delivery == "natural_transition":
         combined = llm_provider.get_natural_transition(llm, feedback, following_text, language_code=args.language)
-        return _split_sentences(combined)
+        return _tag_sentences(combined, "question")
 
-    return _split_sentences(feedback) + _split_sentences(following_text)
+    return _tag_sentences(feedback, "feedback") + _tag_sentences(following_text, following_kind)
 
 
-def process_answer(answer_text: str) -> list[str]:
+def process_answer(answer_text: str) -> list[dict]:
     """
     The core interview turn: given what the participant just said, decide
     what the assistant says next, and advance the interview guide's state
     accordingly. Shared by both web routes and the terminal mode, so the
     behavior is identical regardless of modality.
 
-    Returns a list of individual sentences, in speaking order, rather than
-    one combined string — this is what backend/app.py's audio endpoint
-    streams to the browser one at a time (see Step 5b of the project plan).
+    Returns a list of {"text": ..., "kind": ...} dicts, in speaking order,
+    rather than one combined string — this is what backend/app.py's audio
+    endpoint streams to the browser one at a time (see Step 5b of the
+    project plan), and "kind" ("feedback" vs "question"/"closing") is what
+    lets the browser's "Frage wiederholen" replay only the question.
     Callers that just want the full text (text condition, terminal mode)
-    can simply join the list with spaces.
+    can join the "text" fields with spaces.
 
     Two cases:
       1. The participant is answering a follow-up that was asked last turn
@@ -180,7 +198,7 @@ def process_answer(answer_text: str) -> list[str]:
     question = interview.current_question()
     if question is None:
         # The guide was already finished; nothing left to ask.
-        return _split_sentences(interview.closing_message)
+        return _tag_sentences(interview.closing_message, "closing")
 
     followup_allowed = question["allow_followup"] and not interview.followup_already_used()
     print(
@@ -196,7 +214,7 @@ def process_answer(answer_text: str) -> list[str]:
 
     if followup:
         interview.start_followup(followup)
-        return _split_sentences(feedback) + _split_sentences(followup)
+        return _tag_sentences(feedback, "feedback") + _tag_sentences(followup, "question")
 
     next_question = interview.advance()
     return _response_pieces(feedback, next_question)
@@ -236,20 +254,23 @@ def interview_start_audio_endpoint():
     is ready and waiting well before it's actually needed, so there's no
     time-to-first-sound pressure here the way there is for a live reply.
 
-    Returns JSON: {"pieces": [{"text": "...", "audio": "...base64..."}, ...]}.
+    Returns JSON: {"pieces": [{"text": "...", "audio": "...base64...", "kind": "..."}, ...]}.
+    "kind" is "framing" or "question" — lets the browser's "Frage
+    wiederholen" repeat just the question, not the greeting, consistent
+    with how later turns are tagged (see process_answer()).
     """
     interview.reset()
     first_question = interview.current_question()
-    if first_question is None:
-        opening_text = interview.framing_message
-    else:
-        opening_text = f"{interview.framing_message} {first_question['text']}".strip()
+
+    tagged_sentences = _tag_sentences(interview.framing_message, "framing")
+    if first_question is not None:
+        tagged_sentences += _tag_sentences(first_question["text"], "question")
 
     pieces = []
-    for sentence_text in _split_sentences(opening_text):
-        sample_rate, audio_array = tts.synthesize(sentence_text)
+    for sentence in tagged_sentences:
+        sample_rate, audio_array = tts.synthesize(sentence["text"])
         audio_base64 = speech.encode_wav_base64(sample_rate, audio_array)
-        pieces.append({"text": sentence_text, "audio": audio_base64})
+        pieces.append({"text": sentence["text"], "audio": audio_base64, "kind": sentence["kind"]})
 
     return jsonify({"pieces": pieces})
 
@@ -269,7 +290,7 @@ def chat_endpoint():
         return jsonify({"error": "Kein Text eingegeben."}), 400
 
     pieces = process_answer(answer_text)
-    response = " ".join(pieces).strip()
+    response = " ".join(p["text"] for p in pieces).strip()
     print(f"[interview] final response sent to browser: {response!r}")
     return jsonify({"response": response})
 
@@ -288,8 +309,10 @@ def chat_audio_endpoint():
 
       {"type": "transcript", "transcript": "..."}
         Sent first, as soon as speech-to-text is done.
-      {"type": "sentence", "text": "...", "audio": "...base64 wav...", "is_last": bool}
-        One per sentence, in speaking order.
+      {"type": "sentence", "text": "...", "audio": "...base64 wav...", "kind": "...", "is_last": bool}
+        One per sentence, in speaking order. "kind" is "feedback",
+        "question", or "closing" — see process_answer() — and is what lets
+        the browser's "Frage wiederholen" replay only the question later.
       {"type": "error", "message": "..."}
         Sent instead of a "sentence" line if synthesizing one sentence
         fails; playback of anything already sent is unaffected.
@@ -306,7 +329,7 @@ def chat_audio_endpoint():
 
     transcript = stt.transcribe(audio_np, language=language)
     pieces = process_answer(transcript)
-    print(f"[interview] final response sent to browser: {' '.join(pieces)!r}")
+    print(f"[interview] final response sent to browser: {' '.join(p['text'] for p in pieces)!r}")
 
     def generate():
         turn_start = time.time()
@@ -323,19 +346,21 @@ def chat_audio_endpoint():
         # same reasoning as the pause between sentences in backend/tts.py.
         gap_seconds = 0.3
 
-        for i, sentence_text in enumerate(pieces):
+        for i, piece in enumerate(pieces):
             is_last = (i == len(pieces) - 1)
+            sentence_text = piece["text"]
             try:
                 sample_rate, audio_array = tts.synthesize(sentence_text)
                 if not is_last:
                     gap = np.zeros(int(sample_rate * gap_seconds), dtype=np.float32)
                     audio_array = np.concatenate([audio_array, gap])
                 audio_base64 = speech.encode_wav_base64(sample_rate, audio_array)
-                print(f"[stream] sentence {i + 1}/{len(pieces)} sent at +{elapsed()}: {sentence_text!r}")
+                print(f"[stream] sentence {i + 1}/{len(pieces)} ({piece['kind']}) sent at +{elapsed()}: {sentence_text!r}")
                 yield json.dumps({
                     "type": "sentence",
                     "text": sentence_text,
                     "audio": audio_base64,
+                    "kind": piece["kind"],
                     "is_last": is_last,
                 }) + "\n"
             except Exception as e:
@@ -438,7 +463,7 @@ def run_terminal_mode():
 
             print("Generating response...")
             pieces = process_answer(answer_text)
-            combined = " ".join(pieces).strip()
+            combined = " ".join(p["text"] for p in pieces).strip()
 
             print(f"Assistant: {combined}")
             speak(combined)
