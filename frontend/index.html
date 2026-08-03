@@ -42,7 +42,7 @@
           <!-- Derselbe Lautsprecher+Bögen wie im echten Interview: grau in
                Ruhe, grün + Bögen an, sobald der Testton tatsächlich zu hören
                ist — echte Amplitude, keine vorgetäuschte Animation. -->
-          <svg class="tvspeaker" id="testSpeakerIcon" viewBox="0 0 24 24" width="34" height="34"
+          <svg class="tvspeaker" id="testSpeakerIcon" viewBox="-2 -2 28 28" width="34" height="34"
                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M11 5 6 9H2v6h4l5 4V5Z" fill="currentColor" stroke="none"/>
             <path class="varc" d="M15 8.5a5 5 0 0 1 0 7"/>
@@ -55,6 +55,12 @@
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg>
             <span>Mikrofon testen</span>
           </button>
+          <!-- Äquivalent zum Lautsprecher-Symbol beim Testton: grau in Ruhe,
+               grün sobald tatsächlich Sprache erkannt wird. -->
+          <svg class="tvmic" id="testMicIcon" viewBox="0 0 24 24" width="28" height="28"
+               fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/>
+          </svg>
           <div class="miclevel" id="micLevelMeter">
             <span></span><span></span><span></span><span></span><span></span>
           </div>
@@ -260,31 +266,27 @@
      Start-Overlay testen (siehe toggleMicTest()) — dort inklusive
      Live-Transkription als echter Verständlichkeits-Check.
 
-     EIN Objekt, drei Zustände (nach Design-Feedback: Farbe allein trägt
-     keine Zustandsunterscheidung, v. a. nicht bei Rot-Grün-Schwäche):
-       - "denkt nach"  -> Lautsprecher, Bögen aus, ruhiges Atmen der Deckkraft
-       - "spricht"     -> derselbe Lautsprecher, Bögen an, ECHTE Amplitude
-       - "hört zu"     -> anderes Objekt (Mikrofon + Pegelbalken), weil ein
-                          anderer "Sprecher" gemeint ist — auch hier ECHTE
-                          Amplitude, nie eine vorgetäuschte Animation
-                          (sonst liefe die Anzeige weiter, obwohl das Mikro
-                          gar nichts aufnimmt — genau das Auto-Mikro später
-                          verhindern soll).
-     Text-Label bleibt immer sichtbar, nie nur das Symbol allein (heterogene
-     Zielgruppe). prefers-reduced-motion wird in style.css berücksichtigt. */
+     Wessen Zug es ist, entscheidet, welches Symbol erscheint (nicht mehr
+     "ist gerade irgendein Ton aktiv") — Mikrofon fürs Warten auf und
+     Aufnehmen der Nutzer-Antwort, Lautsprecher fürs Verarbeiten und
+     Sprechen des LLM. Kein Text mehr in der Mitte (.vlabel entfällt) — der
+     Button-Text darunter trägt die Information allein, redundanter Text an
+     zwei Stellen wirkte unruhig. Bögen/Wellen zeigen IMMER echte Amplitude,
+     nie eine vorgetäuschte Animation (sonst liefe die Anzeige weiter, auch
+     wenn kein Ton kommt bzw. das Mikro nichts aufnimmt). */
   const MIC_ICON_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><path d="M12 17v4"/></svg>';
   const SPEAKER_ICON_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>';
 
   function renderSpeech(chat) {
     let mode, subState, label;
-    if (cfg.userRecording) {
-      mode = "mic"; subState = "listening"; label = "Ich höre zu";
-    } else if (cfg.clinicianSpeaking) {
-      mode = "speaker"; subState = "speaking"; label = "… spricht";
+    if (cfg.clinicianSpeaking) {
+      mode = "speaker"; subState = "speaking"; label = "Frage abwarten";
     } else if (cfg.clinicianTyping || cfg.processingResponse) {
-      mode = "speaker"; subState = "thinking"; label = "Antwort wird vorbereitet";
+      mode = "speaker"; subState = "thinking"; label = "Auf Reaktion warten";
+    } else if (cfg.userRecording) {
+      mode = "mic"; subState = "listening"; label = "Antwort beenden";
     } else {
-      mode = "speaker"; subState = "ready"; label = "Sie können jetzt antworten.";
+      mode = "mic"; subState = "ready"; label = "Antworten";
     }
 
     let vstate = chat.querySelector("#vstate");
@@ -292,7 +294,7 @@
       chat.innerHTML =
         '<div class="vstate" id="vstate">' +
           '<div class="vobj" id="vobj">' +
-            '<svg class="vspeaker" id="vspeakerIcon" viewBox="0 0 24 24" width="40" height="40" ' +
+            '<svg class="vspeaker" id="vspeakerIcon" viewBox="-2 -2 28 28" width="40" height="40" ' +
                  'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
               '<path d="M11 5 6 9H2v6h4l5 4V5Z" fill="currentColor" stroke="none"/>' +
               '<path class="varc" d="M15 8.5a5 5 0 0 1 0 7"/>' +
@@ -307,14 +309,13 @@
               '<div class="vmicbars" id="vmicBars"><i></i><i></i><i></i><i></i></div>' +
             '</div>' +
           '</div>' +
-          '<div class="vlabel" id="vstateLabel"></div>' +
         '</div>';
       vstate = chat.querySelector("#vstate");
     }
 
     document.getElementById("vobj").className = "vobj mode-" + mode;
     document.getElementById("vspeakerIcon").setAttribute("class", "vspeaker " + subState);
-    document.getElementById("vstateLabel").textContent = label;
+    document.getElementById("vmicObj").className = "vmicobj" + (subState === "listening" ? " listening" : "");
 
     // Aufräumen: Reste der jeweils anderen Anzeige zurücksetzen, damit
     // nichts von einem vorherigen Zustand sichtbar hängen bleibt.
@@ -504,6 +505,7 @@
     }
     const btn = document.getElementById("testMicBtn");
     const meter = document.getElementById("micLevelMeter");
+    const micIcon = document.getElementById("testMicIcon");
     try {
       micTestStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       micTestContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -537,6 +539,7 @@
         bars.forEach(function (bar, i) {
           bar.classList.toggle("lit", i < litCount);
         });
+        if (micIcon) micIcon.classList.toggle("active", level > 0.08);
         micTestRafId = requestAnimationFrame(tick);
       })();
     } catch (err) {
@@ -563,6 +566,7 @@
     stopMicTestTranscription();
     const btn = document.getElementById("testMicBtn");
     const meter = document.getElementById("micLevelMeter");
+    const micIcon = document.getElementById("testMicIcon");
     if (btn) {
       btn.classList.remove("active");
       btn.querySelector("span").textContent = "Mikrofon testen";
@@ -571,6 +575,7 @@
       meter.classList.remove("on");
       meter.querySelectorAll("span").forEach(function (bar) { bar.classList.remove("lit"); });
     }
+    if (micIcon) micIcon.classList.remove("active");
   }
 
   /* --- Start-Overlay: Checkliste befüllen, Button erst aktiv, sobald die

@@ -151,14 +151,12 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
   gap:18px; flex:1; padding:24px;
 }
 .vobj{ position:relative; width:64px; height:64px; display:flex; align-items:center; justify-content:center; }
-.vlabel{ font:500 15px 'Instrument Sans',sans-serif; color:var(--muted); text-align:center; }
 
-/* --- Lautsprecher (denkt nach / spricht) -------------------------------- */
+/* --- Lautsprecher (verarbeitet / spricht) -------------------------------- */
 .vobj.mode-mic .vspeaker{ display:none; }
 .vobj.mode-speaker .vmicobj{ display:none; }
 
-.vspeaker{ color:var(--muted); }
-.vspeaker.ready{ opacity:.4; }
+.vspeaker{ color:var(--muted); transform-origin:center; }
 .vspeaker.thinking{ animation:vbreathe 2.2s ease-in-out infinite; }
 .vspeaker.speaking{ color:var(--accent); opacity:1; }
 
@@ -168,10 +166,14 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 .varc{ opacity:0; transition:opacity .1s ease; }
 .varc.lit{ opacity:1; }
 
-@keyframes vbreathe{ 0%,100%{ opacity:.35 } 50%{ opacity:.65 } }
+/* Pulsieren beim Verarbeiten: Deckkraft UND Größe, deutlicher spürbar als
+   Deckkraft allein — ohne zu suggerieren, dass schon Ton kommt (siehe
+   .vspeaker.speaking für den davon klar unterscheidbaren "spricht"-Zustand). */
+@keyframes vbreathe{ 0%,100%{ opacity:.35; transform:scale(.92) } 50%{ opacity:.65; transform:scale(1.06) } }
 
-/* --- Mikrofon + Pegelbalken (hört zu) ------------------------------------ */
+/* --- Mikrofon + Pegelbalken (wartet auf / hört Nutzer-Antwort) ----------- */
 .vmicobj{ display:flex; flex-direction:column; align-items:center; gap:10px; color:var(--muted); }
+.vmicobj.listening{ color:var(--accent); }
 .vmicbars{ display:inline-flex; align-items:flex-end; gap:4px; height:26px; }
 .vmicbars i{
   width:4px; height:6px; border-radius:2px; background:#dcd6c8;
@@ -181,9 +183,9 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 
 /* Ruhige Bewegung statt ganz ohne Rückmeldung, wenn reduzierte Bewegung
    gewünscht ist — echte Lautstärke-Reaktion bleibt (das ist Information,
-   keine Dekoration), nur das "Atmen" beim Nachdenken entfällt. */
+   keine Dekoration), nur das "Atmen"/Pulsieren beim Verarbeiten entfällt. */
 @media (prefers-reduced-motion: reduce){
-  .vspeaker.thinking{ animation:none; opacity:.55; }
+  .vspeaker.thinking{ animation:none; opacity:.55; transform:none; }
   .varc{ transition:none; }
   .vmicbars i{ transition:none; }
 }
@@ -265,6 +267,8 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
    grün + Bögen an nach ECHTER Lautstärke, sobald der Ton wirklich läuft. */
 .tvspeaker{ color:var(--muted); opacity:.45; transition:color .15s ease, opacity .15s ease; }
 .tvspeaker.speaking{ color:var(--accent); opacity:1; }
+.tvmic{ color:var(--muted); opacity:.45; transition:color .15s ease, opacity .15s ease; }
+.tvmic.active{ color:var(--accent); opacity:1; }
 .miclevel{
   display:none; align-items:flex-end; gap:3px; height:16px;
 }
