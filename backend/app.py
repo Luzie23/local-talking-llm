@@ -221,6 +221,39 @@ def interview_start_endpoint():
     return jsonify({"message": message})
 
 
+@app.route("/api/interview/start/audio", methods=["GET"])
+def interview_start_audio_endpoint():
+    """
+    Voice-condition only: pre-synthesizes the opening message (framing +
+    first question) as audio, sentence by sentence. Called in the
+    background while the start overlay is still showing (see
+    frontend/conversation.js), so spoken playback can begin immediately
+    once "Interview starten" is clicked, instead of only starting to
+    synthesize at that point.
+
+    Unlike /api/chat/audio, this is returned as one plain JSON object, not
+    a stream — the whole point of fetching it in the background is that it
+    is ready and waiting well before it's actually needed, so there's no
+    time-to-first-sound pressure here the way there is for a live reply.
+
+    Returns JSON: {"pieces": [{"text": "...", "audio": "...base64..."}, ...]}.
+    """
+    interview.reset()
+    first_question = interview.current_question()
+    if first_question is None:
+        opening_text = interview.framing_message
+    else:
+        opening_text = f"{interview.framing_message} {first_question['text']}".strip()
+
+    pieces = []
+    for sentence_text in _split_sentences(opening_text):
+        sample_rate, audio_array = tts.synthesize(sentence_text)
+        audio_base64 = speech.encode_wav_base64(sample_rate, audio_array)
+        pieces.append({"text": sentence_text, "audio": audio_base64})
+
+    return jsonify({"pieces": pieces})
+
+
 @app.route("/api/chat", methods=["POST"])
 def chat_endpoint():
     """
@@ -276,6 +309,12 @@ def chat_audio_endpoint():
     print(f"[interview] final response sent to browser: {' '.join(pieces)!r}")
 
     def generate():
+        turn_start = time.time()
+
+        def elapsed():
+            return f"{time.time() - turn_start:.2f}s"
+
+        print(f"[stream] transcript sent at +{elapsed()}")
         yield json.dumps({"type": "transcript", "transcript": transcript}) + "\n"
 
         # Short pause appended after every sentence except the last, so
@@ -292,6 +331,7 @@ def chat_audio_endpoint():
                     gap = np.zeros(int(sample_rate * gap_seconds), dtype=np.float32)
                     audio_array = np.concatenate([audio_array, gap])
                 audio_base64 = speech.encode_wav_base64(sample_rate, audio_array)
+                print(f"[stream] sentence {i + 1}/{len(pieces)} sent at +{elapsed()}: {sentence_text!r}")
                 yield json.dumps({
                     "type": "sentence",
                     "text": sentence_text,
@@ -299,6 +339,7 @@ def chat_audio_endpoint():
                     "is_last": is_last,
                 }) + "\n"
             except Exception as e:
+                print(f"[stream] error at +{elapsed()}: {e}")
                 yield json.dumps({"type": "error", "message": str(e)}) + "\n"
                 break
 
@@ -412,6 +453,9 @@ if __name__ == "__main__":
     if args.web:
         print("\U0001F916 Starting Flask web server for Local Voice Assistant")
         print("Open http://127.0.0.1:5000 in your browser to connect.")
-        app.run(host="127.0.0.1", port=5000)
+        # threaded=True so the streamed /api/chat/audio response (Step 5b)
+        # is served promptly rather than potentially waiting behind other
+        # requests (e.g. the browser's static-file polling).
+        app.run(host="127.0.0.1", port=5000, threaded=True)
     else:
         run_terminal_mode()

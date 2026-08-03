@@ -129,10 +129,12 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 
 /* 5) =========================  SPRACH-MODALITÄT  =========================
    Absichtlich KEIN Gesprächstext für die teilnehmende Person — weder die
-   Frage noch die Antwort des LLM erscheinen als Text. Nur der eigene
-   Redebeitrag der teilnehmenden Person wird live mitgeschrieben
-   (.vtranscript), damit STT-Fehler auffallen. Alles andere zeigt sich rein
-   über den Gesprächszustand (.vstate). */
+   Frage noch die Antwort des LLM erscheinen als Text, und auch die eigenen
+   Worte der Person werden während des echten Gesprächs nicht mehr live
+   mitgeschrieben (das gäbe es nur wieder wie "Sprache + versteckter Text").
+   Alles zeigt sich rein über den Gesprächszustand (.vstate). Wer prüfen
+   möchte, wie deutlich er/sie sprechen muss, kann das vorab im
+   Start-Overlay testen (siehe .mictesttranscript weiter unten). */
 .vstate{
   display:flex; flex-direction:column; align-items:center; justify-content:center;
   gap:16px; flex:1; padding:24px;
@@ -161,13 +163,6 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 .vbars.ready i{ animation-duration:2.2s; }
 .vbars.ready{ opacity:.35; }
 .vlabel{ font:500 15px 'Instrument Sans',sans-serif; color:var(--muted); text-align:center; }
-/* Eigene, live mitgeschriebene Worte der teilnehmenden Person */
-.vtranscript{
-  display:none; max-width:70ch; text-align:center;
-  font:400 15px/1.5 'Instrument Sans',sans-serif; color:var(--ink);
-  padding:0 24px;
-}
-.vtranscript.on{ display:block; }
 .caret{ display:inline-block; width:2px; height:1em; background:var(--accent);
   margin-left:1px; vertical-align:-2px; animation:blink 1s steps(1) infinite; }
 /* Mikro-Leiste + Umschalt-Button (Klick statt Halten – PC-tauglich) */
@@ -250,6 +245,15 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 .miclevel span:nth-child(3){ height:100%; } .miclevel span:nth-child(4){ height:60%; }
 .miclevel span:nth-child(5){ height:40%; }
 .miclevel span.lit{ background:var(--accent); transform:scaleY(1); }
+/* Live-Transkription im Mikrofon-Test — echter Verständlichkeits-Check
+   ("wie deutlich muss ich sprechen"), nur im Start-Overlay, nicht während
+   des echten Interviews. */
+.mictesttranscript{
+  display:none; max-width:44ch; margin:2px auto 0; text-align:center;
+  font:400 13.5px/1.5 'Instrument Sans',sans-serif; color:var(--muted);
+  min-height:1.4em;
+}
+.mictesttranscript.on{ display:block; }
 
 /* 7) =========================  FORSCHER-OVERLAY  =========================
    Ein-/ausblenden mit  Cmd/Strg + Shift + R  (siehe index.html).            */

@@ -58,6 +58,12 @@ window.CONVERSATION = {
      in dieser Datei. Angezeigt wird sie erst nach dem Klick, Wort für Wort. */
   pendingOpeningMessage: null,
 
+  /* Nur Sprach-Modalität: die Eröffnungsnachricht bereits als Ton, satzweise
+     vertont, im Hintergrund geladen (siehe loadInterviewStart() unten) —
+     damit sie sofort abgespielt werden kann, sobald "Interview starten"
+     geklickt wird, statt erst dann mit der Vertonung zu beginnen. */
+  pendingOpeningAudioPieces: null,
+
   /* --- GESPRÄCHSVERLAUF --------------------------------------------------- */
   /* role: "clinician" = Frage/Antwort des LLM, "user" = Antwort der Person   */
   /* Dein System hängt hier einfach neue Einträge an. Bleibt leer, bis das    */
@@ -85,7 +91,6 @@ let audioStream = null;
 let audioContext = null;
 let recorderNode = null;
 let recordedBuffers = [];
-let speechRecognition = null;
 
 function floatTo16BitPCM(output, offset, input) {
   for (let i = 0; i < input.length; i++, offset += 2) {
@@ -136,55 +141,6 @@ function mergeBuffers(buffers) {
   return result;
 }
 
-function startSpeechRecognition() {
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition || speechRecognition) {
-    if (!SpeechRecognition) {
-      window.CONVERSATION.liveTranscript = "Live-Transkript nicht verfügbar.";
-      render();
-    }
-    return;
-  }
-
-  speechRecognition = new SpeechRecognition();
-  speechRecognition.lang = "de-DE";
-  speechRecognition.interimResults = true;
-  speechRecognition.continuous = true;
-
-  speechRecognition.onresult = function (event) {
-    let transcript = "";
-    for (let i = 0; i < event.results.length; i++) {
-      const result = event.results[i];
-      transcript = result[0].transcript;
-      if (result.isFinal) {
-        window.CONVERSATION.liveTranscript = transcript;
-      } else {
-        window.CONVERSATION.liveTranscript = transcript + "…";
-      }
-    }
-    render();
-  };
-
-  speechRecognition.onerror = function (event) {
-    console.warn("SpeechRecognition error", event.error);
-  };
-
-  speechRecognition.start();
-}
-
-function stopSpeechRecognition() {
-  if (!speechRecognition) {
-    return;
-  }
-
-  try {
-    speechRecognition.stop();
-  } catch (err) {
-    console.warn("SpeechRecognition stop failed", err);
-  }
-  speechRecognition = null;
-}
-
 function pushClinicianMessage(text) {
   const last = window.CONVERSATION.messages[window.CONVERSATION.messages.length - 1];
   if (!last || last.role !== "clinician" || last.text !== text) {
@@ -213,19 +169,15 @@ async function startMicRecording() {
     recorderNode.connect(audioContext.destination);
 
     window.CONVERSATION.userRecording = true;
-    window.CONVERSATION.liveTranscript = "Aufnahme läuft…";
     window.CONVERSATION.clinicianSpeaking = false;
-    window.CONVERSATION.spokenChars = null;
     render();
-
-    startSpeechRecognition();
   } catch (err) {
     window.CONVERSATION.userRecording = false;
-    window.CONVERSATION.liveTranscript = "Mikrofon nicht verfügbar.";
     console.error("Microphone access failed", err);
     render();
   }
 }
+
 
 async function stopMicRecording() {
   if (!audioStream) {
@@ -249,21 +201,16 @@ async function stopMicRecording() {
   audioStream = null;
   recordedBuffers = [];
 
-  stopSpeechRecognition();
-
   window.CONVERSATION.userRecording = false;
   window.CONVERSATION.clinicianTyping = true;
   window.CONVERSATION.processingResponse = true;
-  const transcriptText = window.CONVERSATION.liveTranscript && window.CONVERSATION.liveTranscript !== "Aufnahme läuft…" && window.CONVERSATION.liveTranscript !== "Live-Transkript nicht verfügbar." ? window.CONVERSATION.liveTranscript.replace(/…$/, "") : "";
-  if (transcriptText) {
-    window.CONVERSATION.messages.push({ role: "user", text: transcriptText });
-  }
-  window.CONVERSATION.liveTranscript = "";
 
   // Platzhalter für die kommende Antwort — der Text wird NICHT live
   // angezeigt (Sprach-Modalität zeigt nur den Gesprächszustand, siehe
   // renderSpeech() in index.html), aber trotzdem mitgeschrieben, für den
-  // späteren Verlauf ("Zurück zum Interview"-Ansicht).
+  // späteren Verlauf ("Zurück zum Interview"-Ansicht). Die Nutzer-Antwort
+  // selbst wird erst in readStreamedReply() eingetragen, sobald das
+  // tatsächliche (server-seitige, verlässliche) Transkript da ist.
   const replyMsg = { role: "clinician", text: "" };
   window.CONVERSATION.messages.push(replyMsg);
   render();
@@ -288,7 +235,6 @@ async function stopMicRecording() {
     window.CONVERSATION.processingResponse = false;
     window.CONVERSATION.clinicianTyping = false;
     window.CONVERSATION.clinicianSpeaking = false;
-    window.CONVERSATION.liveTranscript = "";
     replyMsg.text = `Fehler: ${error.message}`;
     render();
   }
@@ -372,7 +318,13 @@ async function readStreamedReply(response, msg) {
       }
       const data = JSON.parse(line);
       if (data.type === "transcript") {
-        window.CONVERSATION.liveTranscript = data.transcript || "";
+        // Die Nutzer-Antwort wird jetzt erst eingetragen — mit dem echten,
+        // server-seitigen Transkript, nicht der groben Browser-Vorschau.
+        // Muss VOR der Kliniker-Platzhalter-Nachricht (msg) stehen, die
+        // schon vorher angelegt wurde, damit die Reihenfolge stimmt.
+        const messages = window.CONVERSATION.messages;
+        const insertIndex = messages.indexOf(msg);
+        messages.splice(insertIndex, 0, { role: "user", text: data.transcript || "" });
       } else if (data.type === "sentence") {
         audioQueue.push({ text: data.text, audio: data.audio });
         maybePlayNext();
@@ -490,10 +442,12 @@ function setupTextInput() {
    Beim Laden der Seite holt sich das Interface im Hintergrund schon einmal die
    Eröffnungsnachricht (Framing-Text + erste Frage) vom Server — noch BEVOR
    "Interview starten" geklickt wird, damit sie ohne Wartezeit bereitsteht,
-   sobald der Button gedrückt wird. Angezeigt wird sie erst danach, Wort für
-   Wort (siehe playOpening() in index.html). Diese kommt aus der aktiven
-   Leitfaden-Datei in study_content/interviews/ — hier im Frontend steht dazu
-   absichtlich kein Inhalt, nur die Abfrage.
+   sobald der Button gedrückt wird. In der Sprach-Modalität wird zusätzlich
+   die bereits vertonte Tonspur dazu geladen (siehe playOpeningSpoken() unten),
+   in der Text-Modalität die Wort-für-Wort-Anzeige (siehe playOpening() in
+   index.html). Beides kommt aus der aktiven Leitfaden-Datei in
+   study_content/interviews/ — hier im Frontend steht dazu absichtlich kein
+   Inhalt, nur die Abfrage.
 ============================================================================= */
 async function loadInterviewStart() {
   try {
@@ -503,6 +457,14 @@ async function loadInterviewStart() {
     }
     const data = await res.json();
     window.CONVERSATION.pendingOpeningMessage = data.message;
+
+    if (window.CONVERSATION.modality === "speech") {
+      const audioRes = await fetch("/api/interview/start/audio");
+      if (audioRes.ok) {
+        const audioData = await audioRes.json();
+        window.CONVERSATION.pendingOpeningAudioPieces = audioData.pieces || [];
+      }
+    }
   } catch (error) {
     window.CONVERSATION.pendingOpeningMessage = `Verbindung zum Server fehlgeschlagen: ${error.message}`;
   } finally {
@@ -515,4 +477,84 @@ async function loadInterviewStart() {
 // Wartet, bis die Seite (inkl. der Render-Logik in index.html) fertig geladen
 // ist, damit window.onOpeningMessageReady() beim Aufruf schon existiert.
 document.addEventListener("DOMContentLoaded", loadInterviewStart);
+
+/* =============================================================================
+   ERÖFFNUNGSNACHRICHT HÖRBAR MACHEN (Sprach-Modalität)
+   -----------------------------------------------------------------------------
+   Die erste Frage muss auch in der Sprach-Bedingung tatsächlich gesprochen
+   werden, bevor die teilnehmende Person antworten kann — genau wie jede
+   spätere Antwort auch. Die Tonspur dafür wurde schon im Hintergrund
+   geladen (siehe loadInterviewStart() oben), während das Start-Overlay noch
+   sichtbar war, liegt hier also i. d. R. schon fertig vor.
+============================================================================= */
+function playAudioSequence(pieces, onAllDone) {
+  let index = 0;
+
+  function playNext() {
+    if (index >= pieces.length) {
+      onAllDone();
+      return;
+    }
+    const piece = pieces[index];
+    index += 1;
+
+    const audioData = atob(piece.audio);
+    const bytes = new Uint8Array(audioData.length);
+    for (let i = 0; i < audioData.length; i++) {
+      bytes[i] = audioData.charCodeAt(i);
+    }
+    const blob = new Blob([bytes], { type: "audio/wav" });
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+
+    audio.addEventListener("play", () => {
+      window.CONVERSATION.clinicianSpeaking = true;
+      render();
+    });
+
+    const finish = () => {
+      URL.revokeObjectURL(url);
+      playNext();
+    };
+    audio.addEventListener("ended", finish);
+    audio.addEventListener("error", finish);
+    audio.play().catch(finish);
+  }
+
+  playNext();
+}
+
+function playOpeningSpoken() {
+  const pieces = window.CONVERSATION.pendingOpeningAudioPieces || [];
+
+  // Sperrt das Mikrofon, bis die Eröffnung fertig gesprochen ist — die
+  // teilnehmende Person soll erst antworten können, nachdem sie die erste
+  // Frage tatsächlich gehört hat.
+  window.CONVERSATION.clinicianTyping = false;
+  window.CONVERSATION.processingResponse = true;
+  render();
+
+  // Text wird nicht live gezeigt (Sprach-Modalität), aber fürs spätere
+  // Verlauf-Feature mitgeschrieben — genau wie bei jeder anderen Antwort.
+  const fullText = pieces.length
+    ? pieces.map(function (p) { return p.text; }).join(" ")
+    : (window.CONVERSATION.pendingOpeningMessage || "");
+  window.CONVERSATION.messages.push({ role: "clinician", text: fullText });
+
+  if (pieces.length === 0) {
+    // Kein Ton verfügbar (z. B. Server nicht erreichbar) — nicht ewig
+    // blockieren, einfach normal freigeben.
+    window.CONVERSATION.processingResponse = false;
+    render();
+    return;
+  }
+
+  playAudioSequence(pieces, function () {
+    window.CONVERSATION.clinicianSpeaking = false;
+    window.CONVERSATION.processingResponse = false;
+    render();
+  });
+}
+
+window.playOpeningSpoken = playOpeningSpoken;
 

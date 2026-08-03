@@ -46,6 +46,7 @@
           <span></span><span></span><span></span><span></span><span></span>
         </div>
       </div>
+      <div class="mictesttranscript" id="micTestTranscript"></div>
 
       <button class="startbtn" id="startBtn" disabled>Wird vorbereitet …</button>
     </div>
@@ -239,11 +240,14 @@
   }
 
   /* --- Sprach-Modalität: KEIN Gesprächstext, nur Gesprächszustand --------
-     Absichtlich kein Mitlesen mehr (Entscheidung nach Rücksprache) — die
-     Sprach-Bedingung ist damit wirklich "nur Sprache", nicht "Sprache +
-     versteckter Text". Was die teilnehmende Person sagt, bleibt als eigenes
-     Live-Transkript sichtbar (.vtranscript) — das sind ihre eigenen Worte,
-     nicht die des LLM, und es macht STT-Fehler direkt sichtbar.
+     Absichtlich kein Mitlesen mehr (Entscheidung nach Rücksprache) — weder
+     die Frage noch die Antwort des LLM erscheinen als Text, UND (nach
+     erneuter Rücksprache) auch nicht mehr die eigenen Worte der
+     teilnehmenden Person live während des echten Gesprächs — das würde
+     wieder wie "Sprache + versteckter Text" wirken. Wer prüfen möchte, wie
+     deutlich er/sie sprechen muss, kann das stattdessen VORAB im
+     Start-Overlay testen (siehe toggleMicTest() unten) — dort inklusive
+     Live-Transkription als echter Verständlichkeits-Check.
 
      Nur EIN Zustands-Element wird je erzeugt und danach nur noch per Klasse
      umgeschaltet (nie neu aufgebaut) — dieselbe Lehre wie beim vorherigen
@@ -268,22 +272,11 @@
         '<div class="vstate" id="vstate">' +
           '<div class="vbars" id="vstateBars"><i></i><i></i><i></i><i></i></div>' +
           '<div class="vlabel" id="vstateLabel"></div>' +
-        '</div>' +
-        '<div class="vtranscript" id="vtranscript"></div>';
+        '</div>';
       vstate = chat.querySelector("#vstate");
     }
     document.getElementById("vstateBars").className = "vbars " + state;
     document.getElementById("vstateLabel").textContent = label;
-
-    const transcriptEl = document.getElementById("vtranscript");
-    if (cfg.userRecording && cfg.liveTranscript) {
-      transcriptEl.classList.add("on");
-      transcriptEl.textContent = cfg.liveTranscript;
-      transcriptEl.insertAdjacentHTML("beforeend", '<span class="caret"></span>');
-    } else {
-      transcriptEl.classList.remove("on");
-      transcriptEl.textContent = "";
-    }
 
     // Mikro-Button-Zustand (Klick-Bedienung bleibt vorerst bestehen — das
     // automatische Öffnen ist ein eigener, noch folgender Schritt).
@@ -358,6 +351,48 @@
   let micTestStream = null;
   let micTestContext = null;
   let micTestRafId = null;
+  let micTestRecognition = null;
+
+  function startMicTestTranscription() {
+    const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const out = document.getElementById("micTestTranscript");
+    if (!out) return;
+    if (!SpeechRecognitionCtor) {
+      out.textContent = "Live-Transkription in diesem Browser nicht verfügbar.";
+      out.classList.add("on");
+      return;
+    }
+    micTestRecognition = new SpeechRecognitionCtor();
+    micTestRecognition.lang = "de-DE";
+    micTestRecognition.interimResults = true;
+    micTestRecognition.continuous = true;
+    micTestRecognition.onresult = function (event) {
+      let transcript = "";
+      for (let i = 0; i < event.results.length; i++) {
+        transcript = event.results[i][0].transcript;
+      }
+      out.textContent = transcript || "…";
+    };
+    micTestRecognition.onerror = function () {
+      // Bewusst still — der Pegelbalken zeigt weiterhin, dass das Mikrofon
+      // an sich funktioniert, auch wenn die Erkennung mal aussetzt.
+    };
+    out.textContent = "…";
+    out.classList.add("on");
+    micTestRecognition.start();
+  }
+
+  function stopMicTestTranscription() {
+    if (micTestRecognition) {
+      try { micTestRecognition.stop(); } catch (err) { /* bereits gestoppt */ }
+      micTestRecognition = null;
+    }
+    const out = document.getElementById("micTestTranscript");
+    if (out) {
+      out.classList.remove("on");
+      out.textContent = "";
+    }
+  }
 
   async function toggleMicTest() {
     if (micTestStream) {
@@ -383,6 +418,8 @@
         meter.classList.add("on");
       }
       const bars = meter ? meter.querySelectorAll("span") : [];
+
+      startMicTestTranscription();
 
       (function tick() {
         analyser.getByteTimeDomainData(data);
@@ -420,6 +457,7 @@
       micTestContext.close();
       micTestContext = null;
     }
+    stopMicTestTranscription();
     const btn = document.getElementById("testMicBtn");
     const meter = document.getElementById("micLevelMeter");
     if (btn) {
@@ -478,7 +516,11 @@
       if (btn.disabled) return;
       stopMicTest(); // Mikrofon freigeben, falls der Test noch lief
       ov.classList.add("hidden");
-      playOpening(cfg.pendingOpeningMessage || "");
+      if (cfg.modality === "speech") {
+        window.playOpeningSpoken();
+      } else {
+        playOpening(cfg.pendingOpeningMessage || "");
+      }
     });
   }
 
