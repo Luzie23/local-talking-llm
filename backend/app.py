@@ -28,7 +28,7 @@ import time
 from queue import Queue
 
 import numpy as np
-from flask import Flask, Response, jsonify, request
+from flask import Flask, Response, jsonify, request, send_from_directory
 
 import llm_provider
 import speech
@@ -91,11 +91,31 @@ profile = load_behavior_profile(interview.behavior_profile)
 FRONTEND_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend")
 app = Flask(__name__, static_folder=FRONTEND_DIR, static_url_path="")
 
+# study_content/assets/ — researcher-supplied images/videos (e.g. a logo for
+# the "logo" embodiment condition, or picture/video files). Deliberately only
+# this one subfolder is made reachable via URL, not all of study_content/ —
+# the interview guides and prompts in the other subfolders have no reason to
+# be linkable from the browser.
+STUDY_ASSETS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "study_content", "assets"
+)
+
 
 @app.route("/")
 def index():
     """Serve the web interface's main HTML page."""
     return app.send_static_file("index.html")
+
+
+@app.route("/study-assets/<path:filename>")
+def study_assets(filename):
+    """
+    Serves files from study_content/assets/ (logo, embodiment pictures/videos,
+    etc.) — set pictureSrc/videoSrc in frontend/conversation.js to
+    "/study-assets/<filename>" to use a file placed here. See
+    study_content/assets/SOURCES.md for documenting where each file came from.
+    """
+    return send_from_directory(STUDY_ASSETS_DIR, filename)
 
 
 def _split_sentences(text: str) -> list[str]:

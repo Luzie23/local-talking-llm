@@ -23,8 +23,16 @@ window.CONVERSATION = {
   /* Erlaubt: "logo" | "picture" | "video" | "avatar"                        */
   embodiment: "picture",
 
-  /* Quellen für Bild/Video (nur relevant bei "picture" bzw. "video").       */
-  /* Leer lassen -> es wird ein Platzhalter angezeigt.                        */
+  /* Bild-/Videodatei einfach in study_content/assets/ ablegen (dort auch die
+     Herkunft/Quelle in SOURCES.md eintragen — wichtig für KI-generierte
+     Bilder wie ein Logo, falls es später mal ersetzt werden soll), dann hier
+     den Pfad "/study-assets/<Dateiname>" eintragen, z. B.:
+       pictureSrc: "/study-assets/logo.png"
+     Leer lassen -> es wird ein Platzhalter angezeigt. Gilt auch für "logo"
+     als Embodiment (nutzt ebenfalls pictureSrc).
+     NOCH NICHT UMGESETZT: Dieses Feld selbst liegt noch hier im
+     Frontend-Code, nicht in study_content/ — das wäre ein größerer,
+     separat geplanter Umbau (siehe Projektplan, Abschnitt „Offene Punkte"). */
   pictureSrc: "",
   videoSrc:   "",
 
