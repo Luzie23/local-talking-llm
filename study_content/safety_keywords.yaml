@@ -19,6 +19,29 @@
 #     ist so gewollt — lieber einmal zu oft ein Hilfsangebot zeigen als es
 #     bei einem echten Fall zu verpassen.
 #
+# WICHTIGE LEKTION AUS DER PRAXIS (04.08., echter Testlauf): "nicht mehr da
+# sein" hat NICHT auf "nicht mehr da ZU sein" angeschlagen — schon ein
+# einzelnes eingeschobenes Wort reicht, um eine exakte Phrase zu verfehlen.
+# Faustregel beim Ergänzen: LIEBER KÜRZERE, KERNIGE BRUCHSTÜCKE als ganze
+# Sätze/Phrasen. Kürzere Fragmente überstehen eingeschobene Wörter, andere
+# Satzstellung und Konjugation viel robuster. Der Preis dafür sind mehr
+# harmlose Treffer — das ist hier ausdrücklich in Kauf genommen.
+#
+# GRAMMATIK PRO SPRACHE BEACHTEN: Die konkrete Bruchstelle unterscheidet sich
+# je nach Sprache. Im Deutschen reißt die "zu"-Infinitiv-Form manche Verben
+# auseinander ("mich umbringen" -> "umzubringen") — deshalb hier viele
+# "...zu ..."-Varianten. Im Englischen gibt es diese Bruchstelle nicht, dafür
+# eine andere: die Gerundium-Form ("hurt myself" matcht NICHT auf "hurting
+# myself", genau dasselbe Prinzip, nur andere Grammatik). Beim Ergänzen einer
+# neuen Sprache immer prüfen: An welcher Stelle bricht DORT eine exakte
+# Phrase durch Verbformen/Wortstellung?
+#
+# QUELLEN: Diese Liste wurde ausgehend von zwei Fachpublikationen erweitert
+# (s. study_content/safety_keywords_sources.md für vollständige Angaben und
+# Begründung) — u. a. sind indirekte Formulierungen wie "wäre tot" und
+# eng gefasste Methodik-Anfragen ("tödliche dosis" u. Ä.) direkt daraus
+# übernommen, nicht nur eigene Vermutungen.
+#
 # SPRACHE: Eine eigene Liste PRO SPRACHE, passend zum "language"-Feld in
 # study_settings.yaml (z. B. "de", "en"). Läuft die Studie z. B. auf
 # Englisch, wird automatisch die "en"-Liste genutzt — eine rein deutsche
@@ -36,28 +59,97 @@ de:
     - "suizid"
     - "selbstmord"
     - "mich umbringen"
-    - "mich das leben nehmen"
+    - "umzubringen"
+    - "zu töten"
     - "nicht mehr leben"
-    - "nicht mehr leben will"
+    - "nicht mehr zu leben"
     - "leben beenden"
+    - "leben zu beenden"
+    - "leben selbst zu beenden"
+    - "leben nehmen"
+    - "leben zu nehmen"
     - "selbstverletzung"
+    - "selbst zu verletzen"
     - "mich ritze"
+    - "zu ritzen"
+    - "mich schneiden"
+    - "zu schneiden"
     - "mir etwas antun"
-    - "mich verletze"
-    - "keinen sinn mehr"
+    - "mich verletzen"
+    - "zu verletzen"
+    - "sinn mehr"
     - "besser ohne mich"
+    - "nicht mehr existieren"
+    - "nicht mehr zu existieren"
+    - "nicht mehr da"
+    - "sich das leben noch lohnt"
+    - "lohnt sich noch"
+    - "mich töten"
+    - "wäre tot"
+    - "besser tot"
+    - "nicht mehr am leben"
+    - "will sterben"
+    - "sterben zu wollen"
+    - "möchte sterben"
+    - "todesgedanken"
+    - "alles zu viel"
+    # Eng gefasste Methodik-Anfragen (siehe safety_keywords_sources.md,
+    # Quelle 2) — Warnsignal ist hier nicht nur eine Aussage über sich
+    # selbst, sondern auch die Frage nach einer konkreten Methode.
+    - "tödliche dosis"
+    - "wie viele tabletten"
+    - "brücke springen"
+    - "brücke zu springen"
+    - "wie hoch muss"
+    - "fenster springen"
+    - "fenster zu springen"
+    - "pillen"
+    - "schlucken"
+    - "strick"
+    - "waffe"
 
 en:
   keywords:
     - "suicide"
     - "suicidal"
     - "kill myself"
+    - "killing myself"
+    - "kill me"
     - "end my life"
+    - "ending my life"
     - "take my own life"
+    - "taking my own life"
     - "don't want to live"
     - "no reason to live"
     - "self-harm"
     - "self harm"
     - "cutting myself"
+    - "cut myself"
     - "hurt myself"
+    - "hurting myself"
     - "better off without me"
+    - "better off dead"
+    - "wish i was dead"
+    - "wish i were dead"
+    - "want to die"
+    - "not be here anymore"
+    - "not here anymore"
+    - "no longer alive"
+    - "it's all too much"
+    - "everything is too much"
+    # Eng gefasste Methodik-Anfragen (siehe safety_keywords_sources.md,
+    # Quelle 2) — bewusst genauso breit gefasst wie die deutsche Liste,
+    # nicht wörtlich übersetzt (siehe Begründung im Chat-Verlauf:
+    # "to kill"/"rope" allein sind im Englischen zu generisch, deshalb
+    # "kill me"/"noose" statt wörtlicher Übersetzung).
+    - "lethal dose"
+    - "how many pills"
+    - "jump off a bridge"
+    - "jumping off a bridge"
+    - "how high must"
+    - "jump out a window"
+    - "jumping out a window"
+    - "pills"
+    - "swallow"
+    - "noose"
+    - "weapon"

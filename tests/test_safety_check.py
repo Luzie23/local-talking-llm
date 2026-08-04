@@ -49,6 +49,43 @@ class TestSafetyCheck(unittest.TestCase):
         self.assertTrue(safety_check.check_for_safety_concern("suizid", "de"))
         self.assertFalse(safety_check.check_for_safety_concern("ein ganz normaler Tag", "de"))
 
+    def test_grammatical_variation_still_matches(self):
+        """
+        Regression test for a real test run (04.08.): an earlier, overly
+        specific phrase ("nicht mehr da sein") missed the real utterance
+        "nicht mehr da ZU sein" — a single inserted word was enough to
+        break an exact-phrase match. The fix broadens to a shorter
+        fragment ("nicht mehr da"); this test guards against
+        re-narrowing it back to something equally brittle.
+        """
+        self.assertTrue(safety_check.check_for_safety_concern(
+            "Ich denke manchmal, wie es wohl wäre, nicht mehr da zu sein.", "de"
+        ))
+        self.assertTrue(safety_check.check_for_safety_concern(
+            "Manchmal weiß ich nicht, wofür sich das Leben noch lohnt.", "de"
+        ))
+
+    def test_german_zu_infinitive_variants_match(self):
+        """
+        German splits some verbs with an infixed "zu" ("umbringen" ->
+        "umzubringen"), which breaks a plain substring match on the base
+        form alone. The list carries explicit "zu"-variants for this.
+        """
+        self.assertTrue(safety_check.check_for_safety_concern("Ich habe versucht, mich umzubringen.", "de"))
+        self.assertTrue(safety_check.check_for_safety_concern("Ich habe aufgehört, nicht mehr zu leben.", "de"))
+
+    def test_english_gerund_variants_match(self):
+        """
+        English has no infixed "zu" construction, but the same underlying
+        problem shows up via the gerund form instead: "hurt myself" does
+        NOT match "hurting myself" as a substring. This is the English-
+        language equivalent of the German "zu"-infinitive lesson above —
+        same principle, different grammar.
+        """
+        self.assertTrue(safety_check.check_for_safety_concern("I have been hurting myself lately.", "en"))
+        self.assertTrue(safety_check.check_for_safety_concern("I keep thinking about killing myself.", "en"))
+        self.assertTrue(safety_check.check_for_safety_concern("I keep thinking about jumping off a bridge.", "en"))
+
 
 if __name__ == "__main__":
     unittest.main()

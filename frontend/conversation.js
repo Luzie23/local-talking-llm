@@ -21,7 +21,7 @@ window.CONVERSATION = {
 
   /* --- FAKTOR 1: EMBODIMENT ---------------------------------------------- */
   /* Erlaubt: "logo" | "picture" | "video" | "avatar"                        */
-  embodiment: "picture",
+  embodiment: "logo",
 
   /* Bild-/Videodatei einfach in study_content/assets/ ablegen (dort auch die
      Herkunft/Quelle in SOURCES.md eintragen — wichtig für KI-generierte
@@ -37,7 +37,7 @@ window.CONVERSATION = {
      separat geplanter Umbau (siehe Projektplan, Abschnitt „Offene Punkte"). */
   pictureSrc: "",
   videoSrc:   "",
-  logoSrc:    "",
+  logoSrc:    "/study-assets/2026-08-04_Logo_Claude_Design.png",
 
   /* --- FAKTOR 2: MODALITÄT ----------------------------------------------- */
   /* "text"   -> Chat-Blasen + Texteingabe                                   */
@@ -54,7 +54,7 @@ window.CONVERSATION = {
      System lädt im Hintergrund das Sprachmodell und vertont die
      Eröffnungsnachricht schon einmal vorab. Das kann besonders beim ALLERERSTEN
      Aufruf (Modell noch nicht "warmgelaufen") einen Moment dauern. */
-  startLoadingLabel: "Bereitet sich vor – einen Moment bitte …",
+  startLoadingLabel: "System bereitet sich vor – einen Moment bitte …",
 
   /* Beschriftungen für den optionalen Ton-/Mikrofon-Test im Start-Overlay.
      Der Test selbst blockiert "Interview starten" nicht — reines Angebot. */
@@ -142,7 +142,7 @@ window.CONVERSATION = {
   safetyHintVisible: false,
   safety: {
     bannerTitle: "Falls Sie gerade über Suizidgedanken oder Selbstverletzung sprechen",
-    bannerText: "Die folgenden Stellen sind kostenlos und unabhängig von dieser Studie erreichbar. Das Interview läuft in der Zwischenzeit ganz normal weiter.",
+    bannerText: "Ich habe in Ihrer Antwort ein Stichwort erkannt, das auf Suizidgedanken oder Selbstverletzung hinweisen könnte. Daher erhalten Sie aus Sicherheitsgründen diese Nachricht. Die folgenden Stellen sind kostenlos und unabhängig von dieser Studie erreichbar. Das Interview läuft in der Zwischenzeit ganz normal weiter. Sie können es jedoch jederzeit mit einem Klick oben rechts beenden.",
     dismissLabel: "Verstanden"
   },
 
