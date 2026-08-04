@@ -115,6 +115,19 @@
         <button class="abortbtn" id="abortBtn" type="button">Interview vorzeitig beenden</button>
       </div>
 
+      <!-- Sicherheits-Hinweis: bewusste, gezielte Ausnahme vom "kein Text
+           live"-Prinzip der Sprach-Modalität — Sicherheit geht hier vor
+           Bedingungsreinheit. Erscheint in BEIDEN Modalitäten gleich, blockt
+           nichts, das Gespräch läuft normal weiter. Siehe renderSafetyBanner()
+           weiter unten und cfg.safety/cfg.exit.supportResources in
+           conversation.js. -->
+      <div class="safetybanner hidden" id="safetyBanner">
+        <div class="safetybannertitle" id="safetyBannerTitle"></div>
+        <div class="safetybannertext" id="safetyBannerText"></div>
+        <ul class="safetybannerresources" id="safetyBannerResources"></ul>
+        <button class="safetybannerdismiss" id="safetyBannerDismiss" type="button"></button>
+      </div>
+
       <div class="chat" id="chat"><!-- Sprechblasen werden eingefügt --></div>
 
       <!-- Leiste A: TEXT-Modalität -->
@@ -334,6 +347,7 @@
 
     renderConfirmOverlay();
     renderExitFlow();
+    renderSafetyBanner();
 
     // aktive Buttons im Overlay markieren
     document.querySelectorAll("#embSeg .segbtn").forEach(function (btn) {
@@ -376,6 +390,35 @@
       chat.appendChild(b);
     });
     chat.scrollTop = chat.scrollHeight;
+  }
+
+  /* --- Sicherheits-Hinweis: ruhig, nicht blockierend, in BEIDEN Modalitäten
+     gleich. Nutzt dieselben Kontakte wie der Abbruch-Flow
+     (cfg.exit.supportResources), damit Hilfsangebote nicht doppelt gepflegt
+     werden müssen. Bleibt sichtbar, bis aktiv geschlossen — ein neuer
+     Treffer in einer späteren Antwort blendet ihn unabhängig davon wieder
+     ein (siehe dismissSafetyHint() in conversation.js). */
+  function renderSafetyBanner() {
+    const banner = document.getElementById("safetyBanner");
+    if (!banner) return;
+    banner.classList.toggle("hidden", !cfg.safetyHintVisible);
+    if (!cfg.safetyHintVisible) return;
+
+    const safety = cfg.safety || {};
+    document.getElementById("safetyBannerTitle").textContent = safety.bannerTitle || "";
+    document.getElementById("safetyBannerText").textContent = safety.bannerText || "";
+
+    const list = document.getElementById("safetyBannerResources");
+    const resources = (cfg.exit && cfg.exit.supportResources) || [];
+    list.innerHTML = resources.map(function () {
+      return "<li><strong></strong><span></span></li>";
+    }).join("");
+    list.querySelectorAll("li").forEach(function (li, i) {
+      li.querySelector("strong").textContent = resources[i].name;
+      li.querySelector("span").textContent = resources[i].detail;
+    });
+
+    document.getElementById("safetyBannerDismiss").textContent = safety.dismissLabel || "Verstanden";
   }
 
   /* --- Rückfrage vor dem freiwilligen Abbruch ------------------------------ */
@@ -668,6 +711,11 @@
       if (typeof window.startAbortFlow === "function") window.startAbortFlow();
     });
   }
+
+  var safetyBannerDismiss = document.getElementById("safetyBannerDismiss");
+  if (safetyBannerDismiss) safetyBannerDismiss.addEventListener("click", function () {
+    if (typeof window.dismissSafetyHint === "function") window.dismissSafetyHint();
+  });
 
   var confirmCancelBtn = document.getElementById("confirmCancelBtn");
   if (confirmCancelBtn) confirmCancelBtn.addEventListener("click", function () {

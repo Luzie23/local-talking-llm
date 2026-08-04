@@ -277,6 +277,31 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 }
 .mictesttranscript.on{ display:block; }
 
+/* 6a) ==========================  SICHERHEITS-HINWEIS  ======================
+   Bewusst RUHIG gehalten — kein Rot, keine Warnfarben, kein Ausrufezeichen.
+   Ein Hinweis mit Hilfsangeboten, keine Alarmmeldung. Erscheint gleich in
+   Text- und Sprach-Modalität (siehe Kommentar in index.html zur bewussten
+   Ausnahme vom "kein Text live"-Prinzip). */
+.safetybanner{
+  margin:14px 18px 0; padding:16px 18px;
+  background:color-mix(in srgb, var(--accent) 10%, var(--paper));
+  border:1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-radius:14px;
+}
+.safetybanner.hidden{ display:none; }
+.safetybannertitle{ font:600 14px 'Instrument Sans',sans-serif; color:var(--ink); margin-bottom:6px; }
+.safetybannertext{ font:400 13px/1.5 'Instrument Sans',sans-serif; color:var(--muted); margin-bottom:12px; }
+.safetybannerresources{ list-style:none; margin:0 0 12px; padding:0; display:flex; flex-direction:column; gap:8px; }
+.safetybannerresources li{ font:400 13px 'Instrument Sans',sans-serif; }
+.safetybannerresources li strong{ display:block; color:var(--ink); font-weight:600; }
+.safetybannerresources li span{ color:var(--muted); font-size:12px; }
+.safetybannerdismiss{
+  padding:8px 16px; border-radius:16px; border:1px solid rgba(0,0,0,.12);
+  background:transparent; color:var(--ink); font:600 12.5px 'Instrument Sans',sans-serif;
+  cursor:pointer;
+}
+.safetybannerdismiss:hover{ background:rgba(0,0,0,.04); }
+
 /* 6b) ===================  VERLAUF & FRAGE WIEDERHOLEN  ====================
     Fußzeile mit zwei optionalen Aktionen — Plätze bleiben von Anfang an
     reserviert (visibility statt display), damit nichts springt, sobald sie

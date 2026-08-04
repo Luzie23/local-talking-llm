@@ -31,6 +31,7 @@ import numpy as np
 from flask import Flask, Response, jsonify, request, send_from_directory
 
 import llm_provider
+import safety_check
 import speech
 import stt
 import study_settings
@@ -306,17 +307,24 @@ def chat_endpoint():
     entire guide has been completed (the closing message was just given,
     or already had been before this call) — the frontend uses this to stop
     offering further answers instead of silently repeating the closing
-    message.
+    message. "safety_flag" is true if the participant's own answer matched
+    a configured safety keyword (see backend/safety_check.py) — the
+    frontend shows a calm, non-blocking hint with support resources when
+    true; the interview is not interrupted.
     """
     data = request.get_json(silent=True) or {}
     answer_text = (data.get("text") or "").strip()
     if not answer_text:
         return jsonify({"error": "Kein Text eingegeben."}), 400
 
+    safety_flag = safety_check.check_for_safety_concern(answer_text, args.language)
+    if safety_flag:
+        print("[safety] Stichwort in der Antwort der teilnehmenden Person erkannt — Hinweis wird eingeblendet.")
+
     pieces = process_answer(answer_text)
     response = " ".join(p["text"] for p in pieces).strip()
     print(f"[interview] final response sent to browser: {response!r}")
-    return jsonify({"response": response, "finished": interview.is_finished()})
+    return jsonify({"response": response, "finished": interview.is_finished(), "safety_flag": safety_flag})
 
 
 @app.route("/api/chat/audio", methods=["POST"])
@@ -333,6 +341,12 @@ def chat_audio_endpoint():
 
       {"type": "transcript", "transcript": "..."}
         Sent first, as soon as speech-to-text is done.
+      {"type": "transcript", "transcript": "...", "safety_flag": bool}
+        Sent first, as soon as speech-to-text is done. "safety_flag" is
+        true if the participant's own words matched a configured safety
+        keyword (see backend/safety_check.py) — the frontend shows a
+        calm, non-blocking hint with support resources when true; the
+        interview is not interrupted.
       {"type": "sentence", "text": "...", "audio": "...base64 wav...", "kind": "...", "is_last": bool, "finished": bool}
         One per sentence, in speaking order. "kind" is "feedback",
         "question", or "closing" — see process_answer() — and is what lets
@@ -355,6 +369,10 @@ def chat_audio_endpoint():
         return jsonify({"error": f"Unable to decode audio: {e}"}), 400
 
     transcript = stt.transcribe(audio_np, language=language)
+    safety_flag = safety_check.check_for_safety_concern(transcript, language)
+    if safety_flag:
+        print("[safety] Stichwort in der Antwort der teilnehmenden Person erkannt — Hinweis wird eingeblendet.")
+
     pieces = process_answer(transcript)
     finished = interview.is_finished()
     print(f"[interview] final response sent to browser: {' '.join(p['text'] for p in pieces)!r}")
@@ -366,7 +384,7 @@ def chat_audio_endpoint():
             return f"{time.time() - turn_start:.2f}s"
 
         print(f"[stream] transcript sent at +{elapsed()}")
-        yield json.dumps({"type": "transcript", "transcript": transcript}) + "\n"
+        yield json.dumps({"type": "transcript", "transcript": transcript, "safety_flag": safety_flag}) + "\n"
 
         # Short pause appended after every sentence except the last, so
         # consecutive audio pieces played back-to-back in the browser still

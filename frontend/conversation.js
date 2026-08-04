@@ -132,6 +132,20 @@ window.CONVERSATION = {
   exitReason: "",        // Freitext aus Schritt 2, falls ausgefüllt
   exitFinalChoice: null, // "continue" oder "withdraw" — bestimmt den Text auf der allerletzten Seite
 
+  /* --- SICHERHEITS-HINWEIS -------------------------------------------------
+     Wird true, wenn der Server ein Stichwort aus study_content/
+     safety_keywords.yaml in der ANTWORT DER TEILNEHMENDEN PERSON erkannt hat
+     (siehe backend/safety_check.py). Zeigt einen ruhigen, nicht blockierenden
+     Hinweis mit Hilfsangeboten — das Interview läuft normal weiter. Bewusst
+     KEIN Gate/Interrupt. Nutzt dieselben Kontakte wie der Abbruch-Flow
+     (cfg.exit.supportResources), um Inhalte nicht doppelt pflegen zu müssen. */
+  safetyHintVisible: false,
+  safety: {
+    bannerTitle: "Falls Sie gerade über Suizidgedanken oder Selbstverletzung sprechen",
+    bannerText: "Die folgenden Stellen sind kostenlos und unabhängig von dieser Studie erreichbar. Das Interview läuft in der Zwischenzeit ganz normal weiter.",
+    dismissLabel: "Verstanden"
+  },
+
   exit: {
     /* Button oben rechts, jederzeit während des aktiven Interviews. */
     abortButton: "Interview vorzeitig beenden",
@@ -641,6 +655,12 @@ async function readStreamedReply(response, msg) {
         const messages = window.CONVERSATION.messages;
         const insertIndex = messages.indexOf(msg);
         messages.splice(insertIndex, 0, { role: "user", text: data.transcript || "" });
+        if (data.safety_flag) {
+          // Sofort anzeigen, nicht erst warten, bis die ganze Antwort da
+          // ist — je früher der Hinweis, desto besser.
+          window.CONVERSATION.safetyHintVisible = true;
+          render();
+        }
       } else if (data.type === "sentence") {
         audioQueue.push({ text: data.text, audio: data.audio, kind: data.kind });
         if (data.finished) {
@@ -738,6 +758,9 @@ async function sendChatMessage(text) {
       });
       if (result.finished) {
         window.CONVERSATION.interviewFinished = true;
+      }
+      if (result.safety_flag) {
+        window.CONVERSATION.safetyHintVisible = true;
       }
     }
   } catch (error) {
@@ -966,6 +989,19 @@ function historyMessages() {
 }
 
 window.historyMessages = historyMessages;
+
+/* =============================================================================
+   SICHERHEITS-HINWEIS SCHLIESSEN
+   -----------------------------------------------------------------------------
+   Schließt nur die aktuell sichtbare Anzeige — ein neuer Treffer in einer
+   späteren Antwort blendet den Hinweis unabhängig davon wieder ein.
+============================================================================= */
+function dismissSafetyHint() {
+  window.CONVERSATION.safetyHintVisible = false;
+  render();
+}
+
+window.dismissSafetyHint = dismissSafetyHint;
 
 /* =============================================================================
    ABBRUCH + EXIT-FLOW

@@ -1,0 +1,63 @@
+# =============================================================================
+# SICHERHEITS-STICHWÖRTER
+# -----------------------------------------------------------------------------
+# Einfache, bewusst simple Erkennung: Wenn eine der unten stehenden Phrasen in
+# der ANTWORT DER TEILNEHMENDEN PERSON vorkommt (nicht in der LLM-Ausgabe!),
+# wird ein ruhiger Hinweis mit Hilfsangeboten eingeblendet — das Interview
+# läuft dabei ganz normal weiter, es wird NICHT unterbrochen oder gestoppt.
+#
+# WARUM SO EINFACH (Kleinbuchstaben-Teilstring-Suche, kein LLM, kein
+# "Verstehen" von Kontext oder Verneinung)?
+#   - Durchsichtig und für eine Ethikkommission genau nachvollziehbar: man
+#     kann exakt sehen, was auslöst und was nicht — kein "Black Box"-Urteil.
+#   - Das LLM soll hier bewusst NICHT selbst beurteilen, ob etwas
+#     besorgniserregend ist — das wäre eine klinische Bewertung durch die KI,
+#     genau das, was dieses System an keiner anderen Stelle tut.
+#   - Nachteil, den man kennen sollte: erkennt keine Umschreibungen, schlägt
+#     manchmal auch bei harmloser Erwähnung an (z. B. "ich habe darüber einen
+#     Artikel gelesen") oder bei Verneinung ("früher, aber nicht mehr"). Das
+#     ist so gewollt — lieber einmal zu oft ein Hilfsangebot zeigen als es
+#     bei einem echten Fall zu verpassen.
+#
+# SPRACHE: Eine eigene Liste PRO SPRACHE, passend zum "language"-Feld in
+# study_settings.yaml (z. B. "de", "en"). Läuft die Studie z. B. auf
+# Englisch, wird automatisch die "en"-Liste genutzt — eine rein deutsche
+# Liste würde dort komplett wirkungslos bleiben. Fehlt eine Sprache hier
+# ganz, wird sicherheitshalber über ALLE Sprachen zusammen gesucht (siehe
+# backend/safety_check.py) — lieber zu breit suchen als gar nicht.
+#
+# Wörter/Phrasen pro Sprache frei ergänzen, entfernen oder anpassen.
+# Kleinschreibung spielt keine Rolle (die Suche ignoriert Groß-/
+# Kleinschreibung).
+# =============================================================================
+
+de:
+  keywords:
+    - "suizid"
+    - "selbstmord"
+    - "mich umbringen"
+    - "mich das leben nehmen"
+    - "nicht mehr leben"
+    - "nicht mehr leben will"
+    - "leben beenden"
+    - "selbstverletzung"
+    - "mich ritze"
+    - "mir etwas antun"
+    - "mich verletze"
+    - "keinen sinn mehr"
+    - "besser ohne mich"
+
+en:
+  keywords:
+    - "suicide"
+    - "suicidal"
+    - "kill myself"
+    - "end my life"
+    - "take my own life"
+    - "don't want to live"
+    - "no reason to live"
+    - "self-harm"
+    - "self harm"
+    - "cutting myself"
+    - "hurt myself"
+    - "better off without me"
