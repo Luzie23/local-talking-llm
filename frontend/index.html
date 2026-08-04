@@ -112,7 +112,7 @@
            Modalitäten. Öffnet nur die Rückfrage — window.onAbortIntent()
            feuert schon hier, noch vor jeder Bestätigung. -->
       <div class="convohd" id="convohd">
-        <button class="abortbtn" id="abortBtn" type="button">Interview beenden</button>
+        <button class="abortbtn" id="abortBtn" type="button">Interview vorzeitig beenden</button>
       </div>
 
       <div class="chat" id="chat"><!-- Sprechblasen werden eingefügt --></div>
@@ -268,12 +268,12 @@
     // Embodiment
     document.getElementById("slot").innerHTML = embodimentHTML();
 
-    // Modalität: passende Bodenleiste zeigen. Beim Verlauf ODER nach dem
-    // formellen Beenden (Klick auf "Interview beenden") ausgeblendet — bis
-    // dahin bleibt der Chat/Zustand sichtbar (inkl. Abschlussnachricht),
-    // nur die Bedienleiste wechselt auf "Interview beenden" statt Antworten.
+    // Modalität: passende Bodenleiste zeigen. Ausgeblendet, während der
+    // Verlauf oder die Exit-Seite offen ist — bis dahin bleibt der
+    // Chat/Zustand sichtbar (inkl. Abschlussnachricht), nur die Bedienleiste
+    // wechselt auf "Interview beenden" statt Antworten.
     const isSpeech = cfg.modality === "speech";
-    const hideControls = cfg.historyOpen || cfg.interviewEnded;
+    const hideControls = cfg.historyOpen || cfg.exitOpen;
     document.getElementById("inputbar").style.display = (!hideControls && !isSpeech && !cfg.interviewFinished) ? "flex" : "none";
     document.getElementById("micbar").style.display   = (!hideControls && isSpeech && !cfg.interviewFinished) ? "flex" : "none";
     document.getElementById("endbar").style.display    = (!hideControls && cfg.interviewFinished) ? "flex" : "none";
@@ -281,8 +281,6 @@
     const chat = document.getElementById("chat");
     if (cfg.historyOpen) {
       renderHistory(chat);
-    } else if (cfg.interviewEnded) {
-      renderFinished(chat);
     } else if (isSpeech) {
       renderSpeech(chat);
     } else {
@@ -378,23 +376,6 @@
     chat.scrollTop = chat.scrollHeight;
   }
 
-  /* --- Nach abgeschlossenem Exit-Flow: einfache Bestätigung ---------------
-     Wird erst gezeigt, NACHDEM im Exit-Flow (siehe renderExitFlow() unten)
-     tatsächlich abgeschlossen wurde (cfg.interviewEnded). Bis dahin bleibt
-     der Chat/Gesprächszustand sichtbar. Zeigt unterschiedlichen Text, je
-     nachdem ob regulär abgeschlossen ("continue") oder die Studie ganz
-     verlassen wurde ("withdraw") — cfg.exitFinalChoice, siehe finishExit()
-     in conversation.js. */
-  function renderFinished(chat) {
-    const ex = cfg.exit || {};
-    const isWithdraw = cfg.exitFinalChoice === "withdraw";
-    const title = isWithdraw ? (ex.finalWithdrawTitle || "Studie beendet") : (ex.finalThanksTitle || "Vielen Dank!");
-    const text = isWithdraw ? (ex.finalWithdrawText || "") : (ex.finalThanksText || "");
-    chat.innerHTML = '<div class="finishedscreen"><div class="finishedtitle"></div><div class="finishedtext"></div></div>';
-    chat.querySelector(".finishedtitle").textContent = title;
-    chat.querySelector(".finishedtext").textContent = text;
-  }
-
   /* --- Rückfrage vor dem freiwilligen Abbruch ------------------------------ */
   function renderConfirmOverlay() {
     const ov = document.getElementById("confirmov");
@@ -404,29 +385,43 @@
     document.getElementById("confirmTitle").textContent = cfg.exit.confirmTitle || "";
     document.getElementById("confirmText").textContent = cfg.exit.confirmText || "";
     document.getElementById("confirmCancelBtn").textContent = cfg.exit.confirmCancel || "Zurück zum Interview";
-    document.getElementById("confirmConfirmBtn").textContent = cfg.exit.confirmConfirm || "Interview beenden";
+    document.getElementById("confirmConfirmBtn").textContent = cfg.exit.confirmConfirm || "Interview vorzeitig beenden";
   }
 
-  /* --- Dreistufiger Exit-Flow ----------------------------------------------
-     Schritt 1 (Unterstützung) und 3 (Studienentscheid) gelten immer;
-     Schritt 2 (optionale Begründung) nur beim freiwilligen Abbruch (siehe
-     activeExitSteps() in conversation.js) — beim normalen Abschluss gibt es
-     ja nichts zu begründen. Inhalt wird bei jedem Aufruf neu aufgebaut;
-     Texte per textContent gesetzt, nicht per HTML-Konkatenation, damit kein
-     Fremdinhalt aus conversation.js als Markup interpretiert wird. */
+  /* --- Exit-Seite: Schritte, DANN die finale Bestätigung -------------------
+     Eine einzige, echte Seite ohne Rückweg — anders als die Rückfrage kein
+     Overlay über dem Interview. Zeigt zuerst den aktiven Schritt-Ablauf
+     (Unterstützung, ggf. Begründung, ggf. Studienentscheid — siehe
+     activeExitSteps() in conversation.js), und sobald tatsächlich
+     abgeschlossen wurde (cfg.interviewEnded), auf DERSELBEN Seite die
+     finale Bestätigung — nie zurück zu einer Chat-/Zustandsansicht, die das
+     Interview wieder sichtbar machen würde. Inhalt wird bei jedem Aufruf
+     neu aufgebaut; Texte per textContent, nicht per HTML-Konkatenation,
+     damit kein Fremdinhalt aus conversation.js als Markup interpretiert wird. */
   function renderExitFlow() {
     const ov = document.getElementById("exitov");
     if (!ov) return;
     ov.classList.toggle("hidden", !cfg.exitOpen);
     if (!cfg.exitOpen) return;
 
-    const steps = window.activeExitSteps ? window.activeExitSteps() : [1, 3];
+    const content = document.getElementById("exitContent");
+    const ex = cfg.exit;
+
+    if (cfg.interviewEnded) {
+      document.getElementById("exitStepper").textContent = "";
+      const isWithdraw = cfg.exitFinalChoice === "withdraw";
+      content.innerHTML = '<div class="exittitle"></div><div class="exittext"></div>';
+      content.querySelector(".exittitle").textContent =
+        isWithdraw ? (ex.finalWithdrawTitle || "Studie beendet") : (ex.finalThanksTitle || "Vielen Dank!");
+      content.querySelector(".exittext").textContent =
+        isWithdraw ? (ex.finalWithdrawText || "") : (ex.finalThanksText || "");
+      return;
+    }
+
+    const steps = window.activeExitSteps ? window.activeExitSteps() : [1];
     const step = window.currentExitStep ? window.currentExitStep() : steps[0];
     const stepPosition = steps.indexOf(step) + 1;
     document.getElementById("exitStepper").textContent = "Schritt " + stepPosition + " von " + steps.length;
-
-    const content = document.getElementById("exitContent");
-    const ex = cfg.exit;
 
     if (step === 1) {
       content.innerHTML =
@@ -665,9 +660,12 @@
 
   /* --- Freiwilliger Abbruch: Button oben rechts -> Rückfrage -------------- */
   var abortBtn = document.getElementById("abortBtn");
-  if (abortBtn) abortBtn.addEventListener("click", function () {
-    if (typeof window.startAbortFlow === "function") window.startAbortFlow();
-  });
+  if (abortBtn) {
+    abortBtn.textContent = cfg.exit.abortButton || "Interview vorzeitig beenden";
+    abortBtn.addEventListener("click", function () {
+      if (typeof window.startAbortFlow === "function") window.startAbortFlow();
+    });
+  }
 
   var confirmCancelBtn = document.getElementById("confirmCancelBtn");
   if (confirmCancelBtn) confirmCancelBtn.addEventListener("click", function () {

@@ -277,21 +277,6 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 }
 .mictesttranscript.on{ display:block; }
 
-/* 6c) ==========================  ABSCHLUSS  ================================
-    Einfacher Platzhalter, bis der richtige Abbruch-/Exit-Flow gebaut ist. */
-.finishedscreen{
-  flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
-  text-align:center; gap:14px; padding:24px;
-}
-.finishedtitle{ font:600 20px 'Instrument Sans',sans-serif; color:var(--ink); }
-.finishedtext{ font:400 14px/1.5 'Instrument Sans',sans-serif; color:var(--muted); max-width:40ch; }
-.finishedbtn{
-  margin-top:10px; padding:12px 26px; border:none; border-radius:24px;
-  background:var(--accent); color:#fff; font:600 13.5px 'Instrument Sans',sans-serif;
-  cursor:pointer;
-}
-.finishedbtn:hover{ background:var(--accent-ink); }
-
 /* 6b) ===================  VERLAUF & FRAGE WIEDERHOLEN  ====================
     Fußzeile mit zwei optionalen Aktionen — Plätze bleiben von Anfang an
     reserviert (visibility statt display), damit nichts springt, sobald sie
@@ -398,48 +383,55 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 .confirmconfirm{ background:var(--accent); color:#fff; }
 .confirmconfirm:hover{ background:var(--accent-ink); }
 
-/* --- Dreistufiger Exit-Flow ----------------------------------------------- */
+/* --- Dreistufiger Exit-Flow: ECHTE SEITE, kein Overlay -------------------
+   Bewusst undurchsichtig und ohne "schwebenden Kasten" — anders als die
+   Rückfrage (.confirmov, bleibt ein Overlay: da soll es aussehen, als
+   könnte man zurück) darf hier kein Anschein entstehen, man könnte zum
+   Interview zurückkehren. Deckt das gesamte Fenster ab, auch die
+   Embodiment-Bühne links. */
 .exitov{
   position:absolute; inset:0; z-index:45;
   display:flex; align-items:center; justify-content:center;
-  background:rgba(20,18,15,.55); backdrop-filter:blur(7px);
+  background:var(--page);
+  overflow-y:auto; padding:40px 20px;
 }
 .exitov.hidden{ display:none; }
 .exitbox{
-  width:min(440px, 88%); max-height:84%; overflow-y:auto;
-  background:var(--paper); border-radius:20px; padding:28px 28px 26px;
-  box-shadow:0 30px 70px -24px rgba(30,26,20,.45);
+  width:min(460px, 92%);
+  padding:8px 4px;
 }
 .exitstepper{
   font:500 11.5px 'Instrument Sans',sans-serif; color:var(--muted);
   text-transform:uppercase; letter-spacing:.04em; margin-bottom:16px;
+  text-align:center;
 }
-.exittitle{ font:600 19px 'Instrument Sans',sans-serif; margin-bottom:8px; }
-.exittext{ font:400 13.5px/1.55 'Instrument Sans',sans-serif; color:var(--muted); margin-bottom:18px; }
+.exittitle{ font:600 22px 'Instrument Sans',sans-serif; margin-bottom:10px; text-align:center; }
+.exittext{ font:400 14px/1.6 'Instrument Sans',sans-serif; color:var(--muted); margin-bottom:22px; text-align:center; }
 
-.exitresources{ list-style:none; margin:0 0 20px; padding:0; display:flex; flex-direction:column; gap:12px; }
-.exitresources li{ display:flex; flex-direction:column; gap:2px; font:400 13.5px 'Instrument Sans',sans-serif; }
+.exitresources{ list-style:none; margin:0 0 24px; padding:0; display:flex; flex-direction:column; gap:14px; }
+.exitresources li{ display:flex; flex-direction:column; gap:2px; font:400 14px 'Instrument Sans',sans-serif;
+  padding:14px 16px; background:var(--paper); border-radius:14px; }
 .exitresources li strong{ font-weight:600; color:var(--ink); }
 .exitresources li span{ color:var(--muted); font-size:12.5px; }
 
 .exitnext{
-  width:100%; padding:12px; border:none; border-radius:22px;
-  background:var(--accent); color:#fff; font:600 13.5px 'Instrument Sans',sans-serif;
+  width:100%; padding:13px; border:none; border-radius:24px;
+  background:var(--accent); color:#fff; font:600 14px 'Instrument Sans',sans-serif;
   cursor:pointer;
 }
 .exitnext:hover{ background:var(--accent-ink); }
 
 .exitreason{
-  width:100%; resize:vertical; padding:11px 13px; border-radius:12px;
-  border:1px solid rgba(0,0,0,.12); background:#fff;
-  font:400 13.5px/1.5 'Instrument Sans',sans-serif; color:var(--ink);
-  margin-bottom:14px;
+  width:100%; resize:vertical; padding:12px 14px; border-radius:12px;
+  border:1px solid rgba(0,0,0,.12); background:var(--paper);
+  font:400 14px/1.5 'Instrument Sans',sans-serif; color:var(--ink);
+  margin-bottom:16px;
 }
 .exitbtnrow{ display:flex; gap:10px; }
 .exitbtnrow .exitskip, .exitbtnrow .exitnext{ flex:1; width:auto; }
 .exitskip{
-  padding:12px; border-radius:22px; border:1px solid rgba(0,0,0,.12);
-  background:transparent; color:var(--ink); font:600 13.5px 'Instrument Sans',sans-serif;
+  padding:13px; border-radius:24px; border:1px solid rgba(0,0,0,.14);
+  background:transparent; color:var(--ink); font:600 14px 'Instrument Sans',sans-serif;
   cursor:pointer;
 }
 .exitskip:hover{ background:rgba(0,0,0,.04); }
@@ -447,14 +439,14 @@ a{ color:var(--accent); } a:hover{ color:var(--accent-ink); }
 /* Beide Optionen bewusst gleich gewichtet — keine optisch "empfohlene"
    Wahl, das ist eine Widerrufsentscheidung. */
 .exitchoice{
-  display:block; width:100%; text-align:left; margin-bottom:10px;
-  padding:14px 16px; border-radius:14px; border:1px solid rgba(0,0,0,.1);
-  background:#fff; cursor:pointer;
+  display:block; width:100%; text-align:left; margin-bottom:12px;
+  padding:16px 18px; border-radius:16px; border:1px solid rgba(0,0,0,.1);
+  background:var(--paper); cursor:pointer;
 }
 .exitchoice:hover{ border-color:var(--accent); }
-.exitchoicelabel{ display:block; font:600 14px 'Instrument Sans',sans-serif; color:var(--ink); margin-bottom:3px; }
-.exitchoicedesc{ display:block; font:400 12.5px/1.4 'Instrument Sans',sans-serif; color:var(--muted); }
+.exitchoicelabel{ display:block; font:600 14.5px 'Instrument Sans',sans-serif; color:var(--ink); margin-bottom:4px; }
+.exitchoicedesc{ display:block; font:400 13px/1.45 'Instrument Sans',sans-serif; color:var(--muted); }
 .exitdeletionnote{
-  margin-top:14px; padding-top:14px; border-top:1px solid rgba(0,0,0,.08);
-  font:400 12px/1.5 'Instrument Sans',sans-serif; color:var(--muted);
+  margin-top:16px; padding-top:16px; border-top:1px solid rgba(0,0,0,.08);
+  font:400 12.5px/1.55 'Instrument Sans',sans-serif; color:var(--muted); text-align:center;
 }

@@ -122,12 +122,15 @@ window.CONVERSATION = {
   exitFinalChoice: null, // "continue" oder "withdraw" — bestimmt den Text auf der allerletzten Seite
 
   exit: {
+    /* Button oben rechts, jederzeit während des aktiven Interviews. */
+    abortButton: "Interview vorzeitig beenden",
+
     /* Schritt 0 — Rückfrage bei freiwilligem Abbruch (entfällt beim
        normalen Abschluss über .endbar). */
-    confirmTitle:   "Interview wirklich beenden?",
+    confirmTitle:   "Interview wirklich vorzeitig beenden?",
     confirmText:    "Sie können jederzeit zum Gespräch zurückkehren. Wenn Sie beenden, wird das Interview geschlossen und nicht fortgesetzt.",
     confirmCancel:  "Zurück zum Interview",
-    confirmConfirm: "Interview beenden",
+    confirmConfirm: "Interview vorzeitig beenden",
 
     /* Schritt 1 — Unterstützung. Sachlich halten; die meisten Abbrüche haben
        keinen krisenhaften Grund, ein dramatischer Ton wirkt fehlplatziert. */
@@ -917,9 +920,14 @@ function skipExitReason() {
 // vollständigem Abschluss) oder "withdraw" (Studie vollständig beenden,
 // keine weiteren Daten). Wird sowohl vom Studienentscheid-Schritt (Abbruch)
 // als auch automatisch nach dem normalen Abschluss aufgerufen.
+//
+// WICHTIG: exitOpen bleibt hier bewusst true (nicht zurück auf false) —
+// die Exit-Seite ist eine echte, eigene Seite ohne Rückweg, keine
+// Overlay-Ebene über dem Interview. Die finale Bestätigung wird auf
+// DERSELBEN Seite gezeigt (siehe renderExitFlow() in index.html), nicht in
+// einer separaten Ansicht, die das Interview daneben wieder sichtbar macht.
 function finishExit(choice) {
   window.onExitChoice(choice);
-  window.CONVERSATION.exitOpen = false;
   window.CONVERSATION.exitFinalChoice = choice;
   window.CONVERSATION.interviewEnded = true;
   const url = choice === "withdraw" ? window.CONVERSATION.exit.withdrawUrl : window.CONVERSATION.exit.completionUrl;
