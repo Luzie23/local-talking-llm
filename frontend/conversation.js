@@ -21,7 +21,7 @@ window.CONVERSATION = {
 
   /* --- FAKTOR 1: EMBODIMENT ---------------------------------------------- */
   /* Erlaubt: "logo" | "picture" | "video" | "avatar"                        */
-  embodiment: "logo",
+  embodiment: "picture",
 
   /* Bild-/Videodatei einfach in study_content/assets/ ablegen (dort auch die
      Herkunft/Quelle in SOURCES.md eintragen — wichtig für KI-generierte
@@ -37,7 +37,7 @@ window.CONVERSATION = {
      separat geplanter Umbau (siehe Projektplan, Abschnitt „Offene Punkte"). */
   pictureSrc: "",
   videoSrc:   "",
-  logoSrc:    "/study-assets/2026-08-04_Logo_Claude_Design.png",
+  logoSrc:    "",
 
   /* --- FAKTOR 2: MODALITÄT ----------------------------------------------- */
   /* "text"   -> Chat-Blasen + Texteingabe                                   */
@@ -54,7 +54,7 @@ window.CONVERSATION = {
      System lädt im Hintergrund das Sprachmodell und vertont die
      Eröffnungsnachricht schon einmal vorab. Das kann besonders beim ALLERERSTEN
      Aufruf (Modell noch nicht "warmgelaufen") einen Moment dauern. */
-  startLoadingLabel: "System bereitet sich vor – einen Moment bitte …",
+  startLoadingLabel: "Bereitet sich vor – einen Moment bitte …",
 
   /* Beschriftungen für den optionalen Ton-/Mikrofon-Test im Start-Overlay.
      Der Test selbst blockiert "Interview starten" nicht — reines Angebot. */
@@ -392,6 +392,8 @@ function createSpokenAudioPlayer() {
   let dataArray = null;
   let usingAnalyser = false;
   let rafId = null;
+  let currentAudio = null;
+  let stopped = false;
 
   try {
     audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -435,6 +437,12 @@ function createSpokenAudioPlayer() {
   }
 
   function playPiece(piece, onDone) {
+    if (stopped) {
+      // Wurde zwischen dem Einreihen und dem Abspielen abgebrochen (z. B.
+      // Interview-Abbruch) — dieses Häppchen erst gar nicht mehr abspielen.
+      return;
+    }
+
     const audioData = atob(piece.audio);
     const bytes = new Uint8Array(audioData.length);
     for (let i = 0; i < audioData.length; i++) {
@@ -443,6 +451,7 @@ function createSpokenAudioPlayer() {
     const blob = new Blob([bytes], { type: "audio/wav" });
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
+    currentAudio = audio;
 
     if (usingAnalyser) {
       try {
@@ -456,6 +465,12 @@ function createSpokenAudioPlayer() {
     }
 
     audio.addEventListener("play", () => {
+      if (stopped) {
+        // Zwischen play() und diesem Event kam der Abbruch — sofort wieder
+        // anhalten, statt trotzdem weiterzuspielen.
+        audio.pause();
+        return;
+      }
       window.CONVERSATION.clinicianTyping = false;
       window.CONVERSATION.processingResponse = false;
       window.CONVERSATION.clinicianSpeaking = true;
@@ -466,6 +481,9 @@ function createSpokenAudioPlayer() {
     const finish = () => {
       stopLevelLoop();
       URL.revokeObjectURL(url);
+      if (currentAudio === audio) {
+        currentAudio = null;
+      }
       onDone();
     };
     audio.addEventListener("ended", finish);
@@ -481,8 +499,65 @@ function createSpokenAudioPlayer() {
     }
   }
 
-  return { playPiece: playPiece, close: close };
+  // Sofort-Stopp von außen (siehe stopActiveTurnNow() weiter unten) — z. B.
+  // wenn ein Abbruch bestätigt wird, während das LLM noch spricht oder
+  // gerade eine Antwort verarbeitet: "Abbruch ist Abbruch", die Ausgabe
+  // darf nicht im Hintergrund weiterlaufen, während schon die Exit-Seite
+  // gezeigt wird.
+  function stopNow() {
+    stopped = true;
+    stopLevelLoop();
+    if (currentAudio) {
+      try {
+        currentAudio.pause();
+      } catch (err) {
+        // egal, wir wollen nur sicherstellen, dass nichts mehr tönt
+      }
+      currentAudio = null;
+    }
+    close();
+  }
+
+  return { playPiece: playPiece, close: close, stopNow: stopNow };
 }
+
+/* =============================================================================
+   AKTIVER VORGANG — für sofortigen Abbruch von außen
+   -----------------------------------------------------------------------------
+   Genau EIN "laufender Vorgang" (gestreamte Antwort, gesprochene Eröffnung,
+   oder eine Wiederholung) kann zu einem Zeitpunkt aktiv sein. Bei einem
+   bestätigten Interview-Abbruch wird er hart gestoppt — Fetch/Stream wird
+   abgebrochen, Audio wird sofort angehalten. Ohne dieses Zentralstück würde
+   eine bereits laufende Sprachausgabe einfach weiterlaufen, während die
+   Person schon auf der Exit-Seite ist.
+============================================================================= */
+let activeTurnStopFn = null;
+
+function registerActiveTurn(stopFn) {
+  activeTurnStopFn = stopFn;
+}
+
+function clearActiveTurn(stopFn) {
+  // Nur zurücksetzen, wenn es wirklich noch derselbe Vorgang ist — ein
+  // inzwischen neu gestarteter Vorgang soll durch das Aufräumen des alten
+  // nicht versehentlich mit gelöscht werden.
+  if (activeTurnStopFn === stopFn) {
+    activeTurnStopFn = null;
+  }
+}
+
+function stopActiveTurnNow() {
+  if (activeTurnStopFn) {
+    try {
+      activeTurnStopFn();
+    } catch (err) {
+      console.warn("Fehler beim Stoppen des laufenden Vorgangs", err);
+    }
+    activeTurnStopFn = null;
+  }
+}
+
+window.stopActiveTurnNow = stopActiveTurnNow;
 
 /* =============================================================================
    GESTREAMTE SPRACH-ANTWORT (Step 5b)
@@ -505,9 +580,26 @@ async function readStreamedReply(response, msg) {
   let playing = false;
   let assembledText = "";
   let interviewFinished = false;
+  let aborted = false;
+
+  // "Abbruch ist Abbruch": wird von stopActiveTurnNow() aufgerufen, sobald
+  // ein Interview-Abbruch bestätigt wird, während diese Antwort noch läuft.
+  // Stoppt die Tonausgabe sofort und bricht den noch laufenden Stream ab,
+  // statt im Hintergrund weiterzuspielen, während schon die Exit-Seite zu
+  // sehen ist.
+  function stopThisTurn() {
+    aborted = true;
+    player.stopNow();
+    try {
+      reader.cancel();
+    } catch (err) {
+      // Verbindung war ggf. schon zu Ende — kein Problem.
+    }
+  }
+  registerActiveTurn(stopThisTurn);
 
   function maybePlayNext() {
-    if (playing || audioQueue.length === 0) {
+    if (aborted || playing || audioQueue.length === 0) {
       return;
     }
     playing = true;
@@ -520,8 +612,14 @@ async function readStreamedReply(response, msg) {
     });
   }
 
-  while (true) {
-    const { value, done } = await reader.read();
+  while (!aborted) {
+    let readResult;
+    try {
+      readResult = await reader.read();
+    } catch (err) {
+      break; // Stream wurde abgebrochen (reader.cancel() durch stopThisTurn)
+    }
+    const { value, done } = readResult;
     if (done) {
       break;
     }
@@ -561,10 +659,11 @@ async function readStreamedReply(response, msg) {
   }
 
   // Der Server ist fertig, aber es kann noch Audio in der Warteschlange
-  // liegen oder gerade spielen — erst danach gilt der Zug als beendet.
+  // liegen oder gerade spielen — erst danach gilt der Zug als beendet. Bricht
+  // sofort ab, falls währenddessen ein Interview-Abbruch dazwischenkommt.
   await new Promise((resolve) => {
     const check = () => {
-      if (!playing && audioQueue.length === 0) {
+      if (aborted || (!playing && audioQueue.length === 0)) {
         resolve();
       } else {
         setTimeout(check, 50);
@@ -572,6 +671,14 @@ async function readStreamedReply(response, msg) {
     };
     check();
   });
+
+  clearActiveTurn(stopThisTurn);
+
+  if (aborted) {
+    // Wir sind längst auf der Exit-Seite — am Gesprächszustand gibt es
+    // nichts mehr sinnvoll zu ändern.
+    return;
+  }
 
   // Text wird erst jetzt, am Ende, ins Nachrichten-Objekt geschrieben — er
   // wurde ja nie live angezeigt, sondern nur fürs spätere Verlauf-Feature
@@ -752,9 +859,21 @@ function playOpeningSpoken() {
   lastReplyAudioPieces = pieces.filter(function (p) { return p.kind !== "framing"; });
   const player = createSpokenAudioPlayer();
   let index = 0;
+  let aborted = false;
+
+  function stopThisTurn() {
+    aborted = true;
+    player.stopNow();
+  }
+  registerActiveTurn(stopThisTurn);
 
   function playNext() {
+    if (aborted) {
+      clearActiveTurn(stopThisTurn);
+      return;
+    }
     if (index >= pieces.length) {
+      clearActiveTurn(stopThisTurn);
       player.close();
       window.CONVERSATION.clinicianSpeaking = false;
       window.CONVERSATION.processingResponse = false;
@@ -795,9 +914,21 @@ function replayLastQuestion() {
 
   const player = createSpokenAudioPlayer();
   let index = 0;
+  let aborted = false;
+
+  function stopThisTurn() {
+    aborted = true;
+    player.stopNow();
+  }
+  registerActiveTurn(stopThisTurn);
 
   function playNext() {
+    if (aborted) {
+      clearActiveTurn(stopThisTurn);
+      return;
+    }
     if (index >= lastReplyAudioPieces.length) {
+      clearActiveTurn(stopThisTurn);
       player.close();
       window.CONVERSATION.clinicianSpeaking = false;
       window.CONVERSATION.processingResponse = false;
@@ -898,6 +1029,15 @@ function cancelAbort() {
 }
 
 function confirmAbort() {
+  // "Abbruch ist Abbruch": stoppt sofort jede noch laufende Tonausgabe/
+  // Antwortverarbeitung, statt sie im Hintergrund weiterlaufen zu lassen,
+  // während schon die Exit-Seite gezeigt wird.
+  stopActiveTurnNow();
+  window.CONVERSATION.clinicianSpeaking = false;
+  window.CONVERSATION.clinicianTyping = false;
+  window.CONVERSATION.processingResponse = false;
+  window.CONVERSATION.userRecording = false;
+
   window.CONVERSATION.confirmOpen = false;
   window.CONVERSATION.exitViaAbort = true;
   window.CONVERSATION.exitStepIndex = 0;
@@ -907,8 +1047,11 @@ function confirmAbort() {
 }
 
 // Vom .endbar-Button nach normalem Abschluss — direkt in den Exit-Flow,
-// keine Rückfrage, kein Begründungs- oder Studienentscheid-Schritt.
+// keine Rückfrage, kein Begründungs- oder Studienentscheid-Schritt. Ruft
+// stopActiveTurnNow() ebenfalls (Sicherheitsnetz) auf, auch wenn hier im
+// Normalfall nichts mehr laufen sollte, sobald der Leitfaden fertig ist.
 function startNaturalExit() {
+  stopActiveTurnNow();
   window.CONVERSATION.exitViaAbort = false;
   window.CONVERSATION.exitStepIndex = 0;
   window.CONVERSATION.exitOpen = true;
