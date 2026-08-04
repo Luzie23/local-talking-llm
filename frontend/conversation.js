@@ -37,7 +37,7 @@ window.CONVERSATION = {
      separat geplanter Umbau (siehe Projektplan, Abschnitt „Offene Punkte"). */
   pictureSrc: "",
   videoSrc:   "",
-  logoSrc:    "/study_content/assets/2026-08-04_Logo_Claude_Design.png",
+  logoSrc:    "/study-assets/2026-08-04_Logo_Claude_Design.png",
 
   /* --- FAKTOR 2: MODALITÄT ----------------------------------------------- */
   /* "text"   -> Chat-Blasen + Texteingabe                                   */
