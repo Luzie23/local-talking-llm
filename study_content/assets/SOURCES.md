@@ -19,4 +19,16 @@ Quellenangabe, falls übernommen
 
 ---
 
-(Eintrag hier duplizieren für jede weitere Datei in diesem Ordner.)
+# Hier die Infos zu den Dateien:
+
+---
+
+**Dateiname:** 2026-08-04_Logo_Claude_Design.png
+**Erstellt am:** 04.08.2026
+**Erstellt mit:** Claude Design
+**Prompt/Anweisung (falls KI-generiert):** Ich möchte nun gerne ein schlichtes passendes Logo für das designte Interviewsystem erstellen. [HINWEIS: Die Frontend Dateien waren Claude Design bekannt.]
+**Verwendet für:** embodiment: "logo" (siehe pictureSrc in
+frontend/conversation.js)
+**Lizenz/Rechte:** "eigene Erstellung, keine Einschränkung"
+
+---

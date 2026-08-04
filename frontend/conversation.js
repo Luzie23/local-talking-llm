@@ -21,20 +21,23 @@ window.CONVERSATION = {
 
   /* --- FAKTOR 1: EMBODIMENT ---------------------------------------------- */
   /* Erlaubt: "logo" | "picture" | "video" | "avatar"                        */
-  embodiment: "picture",
+  embodiment: "logo",
 
   /* Bild-/Videodatei einfach in study_content/assets/ ablegen (dort auch die
      Herkunft/Quelle in SOURCES.md eintragen — wichtig für KI-generierte
      Bilder wie ein Logo, falls es später mal ersetzt werden soll), dann hier
      den Pfad "/study-assets/<Dateiname>" eintragen, z. B.:
        pictureSrc: "/study-assets/logo.png"
-     Leer lassen -> es wird ein Platzhalter angezeigt. Gilt auch für "logo"
-     als Embodiment (nutzt ebenfalls pictureSrc).
-     NOCH NICHT UMGESETZT: Dieses Feld selbst liegt noch hier im
+     Leer lassen -> es wird ein Platzhalter angezeigt. logoSrc ist ein
+     EIGENES Feld (nicht dasselbe wie pictureSrc) — so lassen sich Logo- und
+     Portrait-Bedingung unabhängig voneinander konfigurieren, ohne dass ein
+     Wechsel der Bedingung versehentlich das falsche Bild zeigt.
+     NOCH NICHT UMGESETZT: Diese Felder selbst liegen noch hier im
      Frontend-Code, nicht in study_content/ — das wäre ein größerer,
      separat geplanter Umbau (siehe Projektplan, Abschnitt „Offene Punkte"). */
   pictureSrc: "",
   videoSrc:   "",
+  logoSrc:    "/study_content/assets/2026-08-04_Logo_Claude_Design.png",
 
   /* --- FAKTOR 2: MODALITÄT ----------------------------------------------- */
   /* "text"   -> Chat-Blasen + Texteingabe                                   */
@@ -51,7 +54,7 @@ window.CONVERSATION = {
      System lädt im Hintergrund das Sprachmodell und vertont die
      Eröffnungsnachricht schon einmal vorab. Das kann besonders beim ALLERERSTEN
      Aufruf (Modell noch nicht "warmgelaufen") einen Moment dauern. */
-  startLoadingLabel: "Bereitet sich vor – einen Moment bitte …",
+  startLoadingLabel: "System bereitet sich vor – einen Moment bitte …",
 
   /* Beschriftungen für den optionalen Ton-/Mikrofon-Test im Start-Overlay.
      Der Test selbst blockiert "Interview starten" nicht — reines Angebot. */

@@ -207,7 +207,7 @@
   const FALLBACK = {
     clinicianName: "Dr. Maren Vos",
     clinicianRole: "Klinisches Interview · Aufnahme",
-    embodiment: "picture", pictureSrc: "", videoSrc: "",
+    embodiment: "picture", pictureSrc: "", videoSrc: "", logoSrc: "",
     modality: "text",
     clinicianTyping: true,
     clinicianSpeaking: false, userRecording: false, liveTranscript: "", spokenChars: null,
@@ -235,7 +235,9 @@
   function embodimentHTML() {
     switch (cfg.embodiment) {
       case "logo":
-        return '<div class="logofill"><div class="logoglyph"></div></div>';
+        return cfg.logoSrc
+          ? '<img class="fill embimg" src="' + cfg.logoSrc + '" alt="Logo">'
+          : '<div class="logofill"><div class="logoglyph"></div></div>';
       case "avatar":
         return '<div class="avatarfill"><div class="avhead"></div><div class="avbody"></div></div>';
       case "picture":
