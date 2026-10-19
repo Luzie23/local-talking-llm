@@ -4,7 +4,7 @@ import importlib.util
 import os
 import sys
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 # Add the backend/ folder to the path so we can import llm_provider directly.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
