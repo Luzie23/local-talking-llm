@@ -28,6 +28,7 @@ in llm_provider.py for more detail on that.
 Used by: backend/app.py.
 """
 import os
+from typing import Any
 
 import yaml
 
@@ -49,7 +50,7 @@ class InterviewGuide:
         """
         path = os.path.join(INTERVIEWS_DIR, guide_filename)
         with open(path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+            data: dict[str, Any] = yaml.safe_load(f) or {}
 
         self.guide_id = data.get("guide_id", guide_filename)
         self.title = data.get("title", "")
