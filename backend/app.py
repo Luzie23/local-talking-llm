@@ -14,6 +14,8 @@ folder:
 How to run it:
     python backend/app.py            (terminal mode, asks for microphone input)
     python backend/app.py --web      (starts a local web server, open in browser)
+    CLI-Optionen (--model, --provider ollama|minimax, --api-key, --temperature, 
+    --save-voice, --web, --language)
 
 See the project's README for the full list of command-line options
 (model choice, language, etc.), and for how to download a Piper voice
@@ -109,7 +111,7 @@ def index():
 
 
 @app.route("/study-assets/<path:filename>")
-def study_assets(filename):
+def study_assets(filename: str):
     """
     Serves files from study_content/assets/ (logo, embodiment pictures/videos,
     etc.) — set pictureSrc/videoSrc in frontend/conversation.js to
