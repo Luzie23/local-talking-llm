@@ -1,5 +1,6 @@
 """Unit tests for the LLM provider factory in backend/llm_provider.py."""
 
+import importlib.util
 import os
 import sys
 import unittest
@@ -7,6 +8,18 @@ from unittest.mock import patch, MagicMock
 
 # Add the backend/ folder to the path so we can import llm_provider directly.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
+
+# The MiniMax provider is test-only (see the docstring of create_llm() in
+# llm_provider.py and the project's local-first data principle), and
+# langchain_openai is deliberately not installed in the default environment
+# (see requirements.txt). When the package is missing, the MiniMax factory
+# tests are skipped instead of erroring — the same pattern
+# test_minimax_integration.py uses for the missing API key — so `make test`
+# stays green without it. With langchain_openai installed they run as before.
+_HAS_LANGCHAIN_OPENAI = importlib.util.find_spec("langchain_openai") is not None
+_SKIP_MINIMAX = (
+    "langchain_openai not installed — skipping (test-only MiniMax provider)"
+)
 
 
 class TestCreateLlm(unittest.TestCase):
@@ -38,6 +51,7 @@ class TestCreateLlm(unittest.TestCase):
         create_llm("ollama", model="llama3")
         mock_ollama.assert_called_once_with(model="llama3", base_url="http://localhost:11434")
 
+    @unittest.skipUnless(_HAS_LANGCHAIN_OPENAI, _SKIP_MINIMAX)
     @patch("langchain_openai.ChatOpenAI")
     def test_minimax_provider_default_model(self, mock_chat):
         """Test that MiniMax provider uses default model 'MiniMax-M2.7'."""
@@ -50,6 +64,7 @@ class TestCreateLlm(unittest.TestCase):
             temperature=0.7,
         )
 
+    @unittest.skipUnless(_HAS_LANGCHAIN_OPENAI, _SKIP_MINIMAX)
     @patch("langchain_openai.ChatOpenAI")
     def test_minimax_provider_custom_model(self, mock_chat):
         """Test that MiniMax provider accepts a custom model name."""
@@ -62,6 +77,7 @@ class TestCreateLlm(unittest.TestCase):
             temperature=0.7,
         )
 
+    @unittest.skipUnless(_HAS_LANGCHAIN_OPENAI, _SKIP_MINIMAX)
     @patch("langchain_openai.ChatOpenAI")
     def test_minimax_api_key_from_env(self, mock_chat):
         """Test that MiniMax provider reads API key from MINIMAX_API_KEY env var."""
@@ -75,6 +91,7 @@ class TestCreateLlm(unittest.TestCase):
             temperature=0.7,
         )
 
+    @unittest.skipUnless(_HAS_LANGCHAIN_OPENAI, _SKIP_MINIMAX)
     def test_minimax_no_api_key_raises(self):
         """Test that MiniMax provider raises ValueError when no API key is provided."""
         create_llm = self._import_create_llm()
@@ -85,6 +102,7 @@ class TestCreateLlm(unittest.TestCase):
                 create_llm("minimax")
             self.assertIn("MINIMAX_API_KEY", str(ctx.exception))
 
+    @unittest.skipUnless(_HAS_LANGCHAIN_OPENAI, _SKIP_MINIMAX)
     @patch("langchain_openai.ChatOpenAI")
     def test_minimax_temperature_clamping_zero(self, mock_chat):
         """Test that temperature 0.0 is clamped to 0.01 for MiniMax."""
@@ -93,6 +111,7 @@ class TestCreateLlm(unittest.TestCase):
         call_kwargs = mock_chat.call_args[1]
         self.assertAlmostEqual(call_kwargs["temperature"], 0.01)
 
+    @unittest.skipUnless(_HAS_LANGCHAIN_OPENAI, _SKIP_MINIMAX)
     @patch("langchain_openai.ChatOpenAI")
     def test_minimax_temperature_clamping_negative(self, mock_chat):
         """Test that negative temperature is clamped to 0.01 for MiniMax."""
@@ -101,6 +120,7 @@ class TestCreateLlm(unittest.TestCase):
         call_kwargs = mock_chat.call_args[1]
         self.assertAlmostEqual(call_kwargs["temperature"], 0.01)
 
+    @unittest.skipUnless(_HAS_LANGCHAIN_OPENAI, _SKIP_MINIMAX)
     @patch("langchain_openai.ChatOpenAI")
     def test_minimax_temperature_clamping_high(self, mock_chat):
         """Test that temperature > 1.0 is clamped to 1.0 for MiniMax."""
@@ -109,6 +129,7 @@ class TestCreateLlm(unittest.TestCase):
         call_kwargs = mock_chat.call_args[1]
         self.assertAlmostEqual(call_kwargs["temperature"], 1.0)
 
+    @unittest.skipUnless(_HAS_LANGCHAIN_OPENAI, _SKIP_MINIMAX)
     @patch("langchain_openai.ChatOpenAI")
     def test_minimax_temperature_normal(self, mock_chat):
         """Test that a valid temperature is passed through unchanged."""
@@ -124,6 +145,7 @@ class TestCreateLlm(unittest.TestCase):
             create_llm("unknown_provider")
         self.assertIn("Unknown provider", str(ctx.exception))
 
+    @unittest.skipUnless(_HAS_LANGCHAIN_OPENAI, _SKIP_MINIMAX)
     @patch("langchain_openai.ChatOpenAI")
     def test_minimax_api_key_arg_overrides_env(self, mock_chat):
         """Test that explicit api_key argument takes precedence over env var."""
@@ -133,6 +155,7 @@ class TestCreateLlm(unittest.TestCase):
         call_kwargs = mock_chat.call_args[1]
         self.assertEqual(call_kwargs["api_key"], "arg-key")
 
+    @unittest.skipUnless(_HAS_LANGCHAIN_OPENAI, _SKIP_MINIMAX)
     @patch("langchain_openai.ChatOpenAI")
     def test_minimax_base_url(self, mock_chat):
         """Test that MiniMax provider uses the correct base URL."""
