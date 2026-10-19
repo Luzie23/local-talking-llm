@@ -277,4 +277,3 @@ With Whisper for listening, Ollama (or MiniMax) for the conversational core, and
 - [Original Blog Post](https://blog.duy-huynh.com/build-your-own-voice-assistant-and-run-it-locally/)
 
 ---
-

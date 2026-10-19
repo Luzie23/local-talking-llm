@@ -12,4 +12,3 @@ what each field means.
 
 Which guide is currently active is set in `study_content/study_settings.yaml`
 under `interview_guide`.
-

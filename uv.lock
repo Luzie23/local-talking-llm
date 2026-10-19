@@ -5,7 +5,7 @@ resolution-markers = [
     "python_full_version < '3.12'",
     "python_full_version >= '3.12' and python_full_version < '3.12.4'",
     "python_full_version >= '3.12.4'",
-  
+
 ]
 
 [[package]]

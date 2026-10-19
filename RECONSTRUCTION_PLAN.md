@@ -15,7 +15,7 @@
 
 > Date: 2026-10-19 · Language: English, with German domain terms quoted where relevant
 
-  
+
 
 ---
 
@@ -43,11 +43,11 @@ Architectural rules any reconstruction must respect:
 3. **Prompt-injection defense in depth**: detection is only an *additional* layer — the architecture must stay safe even when an injection is *not* detected. Separate untrusted user input from system instructions, strictly validate outputs and tool calls, keep agent privileges minimal (OWASP LLM01:2025 / LLM06:2025, AISVS C02, incl. Unicode NFC/NFKC normalization of inputs).
 4. **MVP scope** (explicit in the PDF): one section with several question groups incl. `all_required`; a Diagnostiker that evaluates only clarity and navigation-relevant values; a rule engine over `all / any / not / eq / gte / lte / threshold`; the Sprecher as default; the Validator with all check aspects; the Interventionsmonitor with the three signal classes; the canonical bypass; delivery ACK; expert-approved reference scenarios.
 5. **Explicitly out of scope** (per the PDF): arbitrary loop structures, diagnostic modules, treatment advice, an LLM-based "free" supervisor, a full authoring frontend.
-  
+
 
 ### 1.2 Current-state snapshot of the repository
 
-  
+
 
 | Area | File(s) | Current state |
 |---|---|---|
@@ -82,9 +82,9 @@ Architectural rules any reconstruction must respect:
 | 9 | Study condition | Framing text inside the guide YAML; no machine-checkable condition object | `StudyCondition` (transparency etc.) supplied to Speaker *and* Validator; "no speaker" as explicit non-default config | **Mostly total** |
 | 10 | Test infrastructure | `unittest` + `sys.path` hacks; no pytest, no CI, no LLM test doubles | Deterministic core tests, state-based navigator tests, contract tests with a fake LLM, expert reference scenarios, fault injection, modality parity | **Total** as infrastructure — must be built *before* phases that rely on it |
 
-**Reading of the gaps:** of the ten areas, eight are total gaps and two are partially present. Only the modality adapters (STT/TTS/audio), the researcher-editable content scaffold, and the calm safety-hint UX carry over unchanged. The reconstruction is therefore primarily a *replacement of the orchestration and domain layer* (`app.py` + `interview_guide.py` + `llm_provider.py`), not a rewrite of the I/O layer.  
+**Reading of the gaps:** of the ten areas, eight are total gaps and two are partially present. Only the modality adapters (STT/TTS/audio), the researcher-editable content scaffold, and the calm safety-hint UX carry over unchanged. The reconstruction is therefore primarily a *replacement of the orchestration and domain layer* (`app.py` + `interview_guide.py` + `llm_provider.py`), not a rewrite of the I/O layer.
 
----  
+---
 
 ## 3. Reconstruction steps — independent evaluation
 
@@ -94,7 +94,7 @@ Ordering principles:
 2. **Deterministic before stochastic:** everything that can be built and tested without a language model (navigator, rule engine, state machine, validator pre-checks) is built *before* any LLM is wired in.
 3. **Schema-early, infrastructure-late:** the audit-event schema and the ID scheme (`run_id`/`turn_id`/`delivery_id`) are nearly free in week one and extremely expensive after the Supervisor exists; the heavier persistence concerns (idempotent commands, `run_version`, delivery ACK) come when the delivery protocol does.
 4. **Test doubles before contract tests:** a deterministic fake LLM exists before any agent's contract is validated, or contract tests and reference scenarios cannot run reproducibly.
-  
+
 
 ### Phase 0 — Foundation & hygiene
 
@@ -156,7 +156,7 @@ Ordering principles:
 | 4.3 | **PROMPT_INJECTION** channel: input preprocessing (Unicode NFC/NFKC normalization, string checks) + LLM-assisted classification; documented explicitly as an *additional layer only* — the architecture's safety guarantees must not depend on it firing |
 | 4.4 | Separate, documented reactions per signal class + priority/conflict rules (abort wins over everything; signals are never merged into one score) |
 
-  
+
 **Acceptance:** each of the three signals can fire independently with its own reaction and log entry; a scripted abort ends the session gracefully with a complete audit trail; the pipeline shape from Phase 2.5 is unchanged (the stub is replaced, not re-plumbed).
 
 ### Phase 5 — Delivery protocol & frontend
@@ -169,7 +169,7 @@ Ordering principles:
 | 5.4 | UI: intervention-signal display (reusing the calm non-blocking hint pattern), the abort flow, and the canonical-fallback display when the validator blocks |
 | 5.5 | Optimistic `run_version` on the API (client passes the version it last observed; mismatch → re-sync from the state endpoint) |
 
-  
+
 
 **Acceptance:** a full session in *both* modalities produces the same sequence of functional events; killing the client between reserve and ACK does not corrupt the run (retransmission works); a stale `run_version` is detected and re-synced.
 
@@ -254,7 +254,7 @@ The PDF's plan has phases **A** (contracts), **B** (navigator isolation, incl. l
 
 7. **Flask single-process, one participant at a time.** This is a deliberate operating model, not a bug — but the delivery protocol must not silently assume concurrency it cannot have. *Mitigation:* keep the constraint documented (8.4) and assert it in tests.
 
-  
+
 **Open questions (need decisions, ideally before Phase 3)**
 
 1. Which local model(s) are the target (gemma3 4B vs. 12B vs. other) and is GPU available? Drives risks 1–2.

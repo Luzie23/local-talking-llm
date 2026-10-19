@@ -1142,4 +1142,3 @@ window.advanceExitStep = advanceExitStep;
 window.submitExitReason = submitExitReason;
 window.skipExitReason = skipExitReason;
 window.chooseExitDecision = chooseExitDecision;
-

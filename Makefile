@@ -22,10 +22,10 @@ hello:
 
 lint:
 	@echo "Running linter..."
-	@source $(VENV)/bin/activate && pre-commit run --all-files
+	@. $(VENV)/bin/activate && pre-commit run --all-files
 	@echo "Done."
 
-# running the whole test suite (the existing unittest-based tests, discovered 
+# running the whole test suite (the existing unittest-based tests, discovered
 # by pytest) from one command, from the project root.
 test:
 	@echo "Running tests..."

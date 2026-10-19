@@ -14,7 +14,7 @@ folder:
 How to run it:
     python backend/app.py            (terminal mode, asks for microphone input)
     python backend/app.py --web      (starts a local web server, open in browser)
-    CLI-Optionen (--model, --provider ollama|minimax, --api-key, --temperature, 
+    CLI-Optionen (--model, --provider ollama|minimax, --api-key, --temperature,
     --save-voice, --web, --language)
 
 See the project's README for the full list of command-line options
@@ -209,9 +209,14 @@ def process_answer(answer_text: str) -> list[dict]:
     from the final combined text alone.
     """
     if interview.is_awaiting_followup_answer():
-        print(f"[interview] answering follow-up: \"{interview.pending_followup_text}\"")
+        pending_followup_text = interview.pending_followup_text
+        # Invariant of InterviewGuide: the "awaiting follow-up" flag is only
+        # set together with the follow-up text (start_followup) and both are
+        # cleared together (advance/reset) — so the text is never None here.
+        assert pending_followup_text is not None
+        print(f"[interview] answering follow-up: \"{pending_followup_text}\"")
         feedback, _ = llm_provider.get_feedback_and_followup(
-            chain_with_history, profile, interview.pending_followup_text, answer_text,
+            chain_with_history, profile, pending_followup_text, answer_text,
             followup_allowed=False, language_code=args.language,
         )
         print(f"[interview] feedback={feedback!r}")
@@ -465,6 +470,10 @@ def run_terminal_mode():
                 played_chunks.append(audio_array)
 
         if args.save_voice and played_chunks:
+            # Invariant: a chunk is only appended in the same loop iteration
+            # that sets sample_rate, so the rate is known whenever there is
+            # anything to save.
+            assert sample_rate is not None
             response_count += 1
             filename = f"voices/response_{response_count:03d}.wav"
             full_audio = np.concatenate(played_chunks)
