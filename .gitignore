@@ -129,6 +129,10 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# Study data stays on this machine and is never
+# committed — see backend/store.py (DEFAULT_STORE_ROOT).
+data/
+
 # Environments
 .env
 .venv
