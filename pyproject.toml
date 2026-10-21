@@ -12,7 +12,7 @@ dependencies = [
     "langchain>=0.3.25",
     "numpy>=1.26.0",
     "piper-tts>=1.6.0",
-    # Declared explicitly: until now 19-10-2026 pydantic was only present as a transitive 
+    # Declared explicitly: until now 19-10-2026 pydantic was only present as a transitive
     # dependency of langchain.
     # The Phase 1 contract models will depend on it directly.
     "pydantic>=2.11.5",
