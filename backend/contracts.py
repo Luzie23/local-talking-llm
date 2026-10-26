@@ -83,6 +83,15 @@ class QuestionState(str, Enum):
     REVISED. CLOSED is reached only once the answer is interpreted and no
     information is missing; SKIPPED if the question is not needed at all
     (the information is already known).
+
+    SKIPPED: the participant already told us the information this
+    question would have asked about (earlier in the conversation) — the
+    question is never delivered to the participant, but the criteria that
+    depend on it can still be evaluated, because the information is
+    known, not missing. A skipped question is locked for this run (it is
+    never asked in this run). Skipping a question does NOT end the
+    interview — the run ends only via the explicit run-level transitions
+    (complete_run / abort_run).
     """
 
     UNSEEN = "UNSEEN"                     # part of interview, not yet needed for patient
@@ -92,7 +101,7 @@ class QuestionState(str, Enum):
     ANSWER_RECORDED = "ANSWER_RECORDED"   # answer recorded via input medium
     CLOSED = "CLOSED"                     # answer interpreted, no information missing
     REVISED = "REVISED"                   # answer interpreted, information missing
-    SKIPPED = "SKIPPED"                   # question not needed, information already known
+    SKIPPED = "SKIPPED"                   # never delivered: information already known (see class docstring)
 
 
 class RunStatus(str, Enum):
