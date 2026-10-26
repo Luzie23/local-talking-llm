@@ -5,6 +5,15 @@ Reads one interview guide file from study_content/interviews/*.yaml and
 keeps track of where the current participant is in it: which question
 comes next, and when the guide is finished.
 
+As of Phase 2 (step 2.1, RECONSTRUCTION_PLAN.md) this is a THIN WRAPPER
+around the v2 interview definition model (backend/interview_definition.py):
+the legacy linear YAML is mapped onto the v2 model by the adapter there
+(same question order and behavior) and ALL loading is delegated to that
+module. What this file keeps is only the legacy runtime cursor (which
+question is "current" now, the one-follow-up cap), because the legacy
+pipeline (backend/app.py) needs it. In the new protocol, those roles are
+taken over by the Navigator / Supervisor (Phase 2, step 2.5 onward).
+
 This file deliberately knows nothing about the LLM, audio, or the web
 server — it only manages "what is the fixed question sequence, and where
 are we in it". backend/llm_provider.py is responsible for generating the
@@ -32,8 +41,12 @@ from typing import Any
 
 import yaml
 
-INTERVIEWS_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "study_content", "interviews"
+from interview_definition import (
+    INTERVIEWS_DIR,
+    InterviewDefinition,
+    InterviewDefinitionError,
+    to_v2,
+    validate_definition,
 )
 
 
@@ -42,7 +55,8 @@ class InterviewGuide:
 
     def __init__(self, guide_filename: str):
         """
-        Load a guide file and flatten all its questions into one ordered list.
+        Load a guide file (legacy format) and map it onto the v2 interview
+        definition model (Phase 2, step 2.1).
 
         Args:
             guide_filename: File name inside study_content/interviews/,
@@ -51,35 +65,50 @@ class InterviewGuide:
         path = os.path.join(INTERVIEWS_DIR, guide_filename)
         with open(path, "r", encoding="utf-8") as f:
             data: dict[str, Any] = yaml.safe_load(f) or {}
+        if "definition_version" in data:
+            raise InterviewDefinitionError(
+                f"{guide_filename} uses the v2 interview definition format "
+                "(top-level 'definition_version' key / hierarchical "
+                "sections), but the legacy pipeline can only present legacy "
+                "guides — point study_content/study_settings.yaml at a "
+                "legacy guide until the new pipeline takes over "
+                "(RECONSTRUCTION_PLAN.md Phase 5)"
+            )
+        # Phase 2 (step 2.1): ALL loading is delegated to the v2 definition
+        # model. The adapter maps this legacy file onto it, keeping the
+        # question order and behavior (ids are generated with the v2
+        # convention sec_/qg_/sq_); `definition_version` names the
+        # exact guide content (a content hash) for the audit trail.
+        self.definition: InterviewDefinition = to_v2(data, guide_filename)
+        validate_definition(self.definition, guide_filename, require_questions=False)
 
-        self.guide_id = data.get("guide_id", guide_filename)
-        self.title = data.get("title", "")
-
+        # The legacy public surface (used by backend/app.py):
+        self.guide_id = self.definition.guide_id
+        self.title = self.definition.title
         # Not used yet — this is the hook for Step 3 ("constrain the LLM"),
         # which will map this label to an actual set of behavior
         # instructions (e.g. "strict_clinical" vs "flexible_conversational").
-        self.behavior_profile = data.get("behavior_profile")
+        self.behavior_profile = self.definition.behavior_profile
+        self.framing_message = self.definition.framing_message
+        self.closing_message = self.definition.closing_message
 
-        self.framing_message = (data.get("framing_message") or "").strip()
-        self.closing_message = (data.get("closing_message") or "").strip()
-
-        # All questions across all sections, flattened into one ordered
-        # list, since the pilot presents the guide strictly in sequence
+        # All questions across the whole hierarchy (sections > question
+        # groups > single questions), flattened into one ordered list,
+        # since the pilot presents the guide strictly in sequence
         # (no branching, no randomization within the guide).
-        self.questions = []
-        for section in data.get("sections", []):
-            section_title = section.get("section_title")
-            for question in section.get("questions", []):
-                self.questions.append({
-                    "id": question["id"],
-                    "text": question["text"],
-                    "section_title": section_title,
-                    # Whether a single, short LLM-initiated follow-up is
-                    # allowed for this specific item (see Step 3 / the
-                    # "strict_clinical"/"flexible_conversational" behavior
-                    # profiles). Defaults to False if not set.
-                    "allow_followup": bool(question.get("allow_followup", False)),
-                })
+        self.questions = [
+            {
+                "id": q.id,
+                "text": q.text,
+                "section_title": group.title,
+                # Whether a single, short LLM-initiated follow-up is
+                # allowed for this specific item (see Step 3 / the
+                # "strict_clinical"/"flexible_conversational" behavior
+                # profiles). Defaults to False if not set.
+                "allow_followup": q.allow_followup,
+            }
+            for group, q in self.definition.questions_with_group()
+        ]
 
         # Index of the question that comes next. A single fixed value is
         # used because, per the project's core principles, only one
@@ -92,6 +121,14 @@ class InterviewGuide:
         self._awaiting_followup_answer = False
         self._followup_used_for_current = False
         self.pending_followup_text: str | None = None
+
+    @property
+    def definition_version(self) -> str:
+        """
+        The v2 definition version of the loaded guide content
+        ("<guide_id>@legacy-<content hash>"), for the audit trail.
+        """
+        return self.definition.definition_version
 
     def current_question(self) -> dict | None:
         """Return the question that should be asked right now, or None if the guide is finished."""
