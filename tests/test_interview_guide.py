@@ -64,7 +64,12 @@ class TestInterviewGuide(unittest.TestCase):
     def test_flattens_questions_across_sections_in_order(self):
         filename = self._write_guide(TEST_GUIDE_YAML)
         guide = InterviewGuide(filename)
-        self.assertEqual([q["id"] for q in guide.questions], ["q1", "q2", "q3"])
+        # legacy question ids (q1/q2/q3) are remapped to generated
+        # v2-convention ids by the adapter (see to_v2)
+        self.assertEqual(
+            [q["id"] for q in guide.questions],
+            ["sq_1.1.1", "sq_1.1.2", "sq_2.1.1"],
+        )
         self.assertEqual(guide.questions[0]["section_title"], "Section A")
         self.assertEqual(guide.questions[2]["section_title"], "Section B")
 
@@ -72,11 +77,11 @@ class TestInterviewGuide(unittest.TestCase):
         filename = self._write_guide(TEST_GUIDE_YAML)
         guide = InterviewGuide(filename)
 
-        self.assertEqual(guide.current_question()["id"], "q1")
+        self.assertEqual(guide.current_question()["id"], "sq_1.1.1")
         self.assertFalse(guide.is_finished())
 
-        self.assertEqual(guide.advance()["id"], "q2")
-        self.assertEqual(guide.advance()["id"], "q3")
+        self.assertEqual(guide.advance()["id"], "sq_1.1.2")
+        self.assertEqual(guide.advance()["id"], "sq_2.1.1")
         self.assertFalse(guide.is_finished())
 
         self.assertIsNone(guide.advance())
@@ -89,7 +94,7 @@ class TestInterviewGuide(unittest.TestCase):
         guide.advance()
         guide.advance()
         guide.reset()
-        self.assertEqual(guide.current_question()["id"], "q1")
+        self.assertEqual(guide.current_question()["id"], "sq_1.1.1")
         self.assertFalse(guide.is_finished())
 
     def test_empty_guide_has_no_questions(self):
@@ -117,11 +122,11 @@ class TestInterviewGuide(unittest.TestCase):
         self.assertEqual(guide.pending_followup_text, "Can you say more about that?")
 
         # Still on the same question — advance() hasn't been called yet.
-        self.assertEqual(guide.current_question()["id"], "q1")
+        self.assertEqual(guide.current_question()["id"], "sq_1.1.1")
 
         # Moving on resets all follow-up state for the new question.
         next_q = guide.advance()
-        self.assertEqual(next_q["id"], "q2")
+        self.assertEqual(next_q["id"], "sq_1.1.2")
         self.assertFalse(guide.is_awaiting_followup_answer())
         self.assertFalse(guide.followup_already_used())
         self.assertIsNone(guide.pending_followup_text)
