@@ -29,17 +29,32 @@ means v2, anything else is legacy):
    count/threshold/majority/weighted sum), section `relations`
    (temporal / pathological / custom) and `jumps` (direct ID references
    to any question, question group or section group; loops are allowed —
-   dead ends are rejected at import). Default navigation is the postorder
-   traversal; criteria groups allow deviations, cross-links and loops.
-   ⚠️ Status (2026-10-22): the loader/model (Phase 2 step 2.1) now
-   implements the full hierarchy — nested sections, `sec_`/`qg_`/`sq_`
-   id prefixes (prefix mandatory, numeric part informational),
-   `answer_type`, criteria on criteria groups (question group OR section
-   group), section relations, and loop-tolerant import validation (only
-   dead ends / invalid references are rejected). The Navigator itself
-   (step 2.5) is not implemented yet; the full operator set beyond
-   `all / any / not / eq / gte / lte / threshold` and the loop-back-
-   to-locked-group behavior are open points for that step.
+   dead ends are rejected at import; jumps are DEFERRED — they resolve
+   at group completion; a jump may carry an episode aspect, see the
+   status note below). Default navigation is the postorder traversal;
+   criteria groups allow deviations, cross-links and loops.
+✅ Status (2026-10-26): the loader/model (Phase 2 step 2.1), the
+   criteria rule engine (step 2.3, `backend/criteria_engine.py` — the
+   full operator set over the four-valued logic SATISFIED /
+   NOT_SATISFIED / OPEN / UNCLEAR) and the deterministic Navigator
+   (step 2.4, `backend/interview_navigator.py` — postorder fallback
+   order, candidate set with per-candidate reasons (including the
+   episodes each question was asked about), DEFERRED jump resolution
+   at group completion (`complete_group` / `group_is_complete`) and
+   the EPISODE MODEL for locked jump targets) are implemented. The
+   loop-back-to-locked-group open point (RECONSTRUCTION_PLAN.md §5,
+   question 6) was DECIDED on 2026-10-26 as the episode model: the
+   per-interview `episodes` block (now-episode + past-episode
+   declaration: `dynamic` — declared at run time — or `predeclared`
+   with fixed names), the `episode_evaluable` marker on question
+   groups, the jump's episode aspect (`episode_jump` / `episode`),
+   and the run-level episode registry (declare / alias / merge — the
+   same question is never re-asked for the same real episode; see
+   `docs/interview_navi_design.md`, addendum 2026-10-26). The
+   Supervisor (step 2.5) is not implemented yet; the Diagnostiker's
+   episode-identity verdict (its interview-wide NAVIGATION prompt
+   mode, Phase 3) arrives as an `EpisodeDecision` that the Supervisor
+   applies to the Navigator.
 
 Copy the example of the format you want and edit the copy to create your
 own guide. See the comments at the top of each file for what every field

@@ -48,7 +48,67 @@ Ohne Criteria Groups folgt die Navigation einer Postordertraversierung; mit Crit
 | Aggregation (Gruppenebene) | Anzahl/Count, Schwellenwert, Mehrheit, gewichtete Summe |
 
 ## Sprungziele und Validierung
-Sprungziele werden als direkte Referenzen auf diese IDs modelliert, unabhängig davon, ob das Ziel eine Question, Question Group oder Section Group ist. Sackgassen (fehlendes oder ungültiges Sprungziel) müssen bereits beim Einpflegen eines Interviews vom Code erkannt und verhindert werden. Nach Sprüngen wird default der Postordertraversierung gefolgt. Eine Frage darf im selben Interviewdurchlauf nicht erneut gestellt werden. Das konkrete Verhalten bei Schleifen, die zu einer bereits beantworteten (gesperrten) Question Group zurückführen, ist bewusst offen gelassen und wird zu einem späteren Zeitpunkt separat behandelt.
+Sprungziele werden als direkte Referenzen auf diese IDs modelliert, unabhängig davon, ob das Ziel eine Question, Question Group oder Section Group ist. Sackgassen (fehlendes oder ungültiges Sprungziel) müssen bereits beim Einpflegen eines Interviews vom Code erkannt und verhindert werden. Nach Sprüngen wird default der Postordertraversierung gefolgt. Das konkrete Verhalten bei Schleifen, die zu einer bereits beantworteten (gesperrten) Question Group zurückführen, war offen gelassen — **entschieden am 2026-10-26: das Episoden-Modell**, siehe den Nachtrag unten.
 
 ## Bezug zum Interviewer-Agenten
 Der Interviewer-Agent nutzt das spätere Navigationstool, um eine "zu stellende Fragen"-Menge zu führen, daraus die sinnvollste nächste Frage zu bestimmen und je nach Ausgang der Criteria-Group-Auswertungen entsprechend zu reagieren.
+
+## Nachtrag: Episoden-Modell und verschobene Sprungauslösung (2026-10-26)
+
+Die oben offen gelassene Frage — Verhalten einer Schleife, die zu einer
+bereits beantworteten (gesperrten/locked) Question Group zurückführt —
+ist entschieden (Eigentümerentscheidung 2026-10-26; Umsetzung in
+`backend/interview_definition.py`, `backend/interview_run.py` und
+`backend/interview_navigator.py`, Tests in `tests/`).
+
+**Episoden-Modell.** Das Konzept "Episode" ist ein Definitionselement
+PRO INTERVIEW (Block `episodes` im v2-Format; standardmäßig
+deaktiviert). Das Interview fragt zunächst alles über die NOW-Episode
+(Fenster in Tagen + lesbare Regel). Führt das zu keiner Diagnose,
+kommen frühere Episoden ins Spiel:
+
+- die ärztliche Fachkraft erklärt eine weitere Episode; die Laufzeit
+  weist deterministische IDs zu (`ep_1`, `ep_2`, …),
+- die Patientin / der Patient beschreibt die Episode in eigenen
+  Worten — diese wörtlichen Fassungen akkumulieren als Aliasse der
+  Episode (Verlauf des Gesprächs, Referenzmaterial),
+- zwei Erklärungen können sich auf dieselbe reale Episode beziehen:
+  der **Diagnostiker** ist die einzige LLM, die das Interview als
+  Ganzes betrachtet, und urteilt über die Identität (seine einzige
+  interview-weite Rolle); die Laufzeit vereinheitlicht identische
+  Erklärungen (`merged_into` zeigt auf die frühere Erklärung, die
+  Aliasse wandern auf die Gewinner-Episode),
+- eine Frage wird pro (Frage, kanonische Episode) höchstens EINMAL
+  gestellt — die alte Regel "nie erneut stellen" ist der
+  Spezialfall; `CLOSED/SKIPPED → REQUIRED` ist der einzige Übergang
+  aus einem Endzustand und dient ausschließlich dem Episode-Re-Ask
+  (`reopen_question`).
+
+**Sprung-Aspect.** Ein Sprung kann einen Episode-Aspect tragen
+(genau einer): `episode_jump: true` (dynamischer Modus) oder
+`episode: <name>` (vorab deklarierte Episoden). Das Ziel muss eine
+Question Group (oder eine Frage) sein, deren Gruppe
+`episode_evaluable: true` trägt — wird beim Einlesen validiert.
+
+**Verhalten bei gesperrtem Ziel.**
+
+- Sprung OHNE Episode-Aspect: wird ignoriert + protokolliert
+  (`loop_note` im Navigationsvorschlag),
+- Sprung MIT Episode-Aspect: die Zielgruppe wird für diese Episode
+  NOCHMALS GESTELLT (`reopen_proposals` für die Pflichtfragen der
+  Gruppe, die für diese Episode noch nicht gestellt wurden;
+  `reframe_context` macht den Wechsel explizit: "wir sprechen jetzt
+  über Episode X, nicht über die bisher bewertete(n) Episode(n)"),
+- dynamischer Modus: der Navigationsvorschlag meldet zunächst
+  `pending_episode` und wartet auf die Diagnostiker-Entscheidung
+  (`EpisodeDecision`: neue Episode oder dieselbe reale Episode —
+  nach einem Merge gilt die kanonische ID); dieselbe reale Episode →
+  Sprung wird ignoriert + protokolliert.
+
+**Verschobene Sprungauslösung.** Kriterien werden weiterhin ONLINE
+entschieden; Sprünge und Gruppenkonsequenzen werden aber erst bei
+GRUPPENABSCHLUSS (alle Pflichtfragen der Gruppe terminal) angewendet:
+`complete_group` schlägt die übersprungenen optionalen Fragen der
+Gruppe vor und löst den ersten ausgelösten Sprung der Gruppe aus
+(Declarationsreihenfolge); `resolve_jump` mitten in der Gruppe
+schlägt fehl (fails loudly).
