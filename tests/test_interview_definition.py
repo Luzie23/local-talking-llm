@@ -322,7 +322,7 @@ class TestV2Loading(DefinitionTestBase):
         defn = load_interview_definition(
             os.path.join(INTERVIEWS_DIR, "depression_scid_v2_example.yaml")
         )
-        self.assertEqual(defn.definition_version, "scid_depression_v2@2")
+        self.assertEqual(defn.definition_version, "scid_depression_v2@3")
         self.assertEqual([s.id for s in defn.sections], ["sec_1", "sec_2"])
         self.assertEqual(
             [g.id for g in defn.all_question_groups()],
@@ -336,6 +336,18 @@ class TestV2Loading(DefinitionTestBase):
         paths = [path for path, _ in defn._walk()]
         self.assertIn("sec_1 > sec_1.1", paths)
         self.assertTrue(defn.canonical_fallback_message)
+        # the episode block (design addendum 2026-10-26): dynamic mode,
+        # the two-week now-episode, qg_1.1 re-askable per episode, and
+        # the criterion-gated episode jump of sq_1.1.2
+        self.assertTrue(defn.episodes.enabled)
+        self.assertEqual(defn.episodes.past.declaration, "dynamic")
+        self.assertEqual(defn.episodes.now.window_days, 14)
+        group = defn.group_by_id("qg_1.1")
+        self.assertTrue(group.episode_evaluable)
+        jumps = defn.question_by_id("sq_1.1.2").jumps
+        self.assertEqual(jumps[1].to, "qg_1.1")
+        self.assertTrue(jumps[1].episode_jump)
+        self.assertEqual(jumps[1].on_criterion, "c_anhedonia_present")
 
     def test_auto_detect_v2_and_legacy(self):
         v2 = load_interview_definition(
@@ -809,3 +821,200 @@ class TestImportValidation(DefinitionTestBase):
         message = str(ctx.exception)
         self.assertIn("sq_1.1.1", message)
         self.assertIn("qg_zzz", message)
+
+
+class TestEpisodeValidation(DefinitionTestBase):
+    """
+    Import-time validation of the `episodes` block and the episode jump
+    aspect (design addendum 2026-10-26).
+    """
+
+    DYNAMIC = (
+        "episodes:\n"
+        "  enabled: true\n"
+        "  now:\n"
+        "    window_days: 30\n"
+        '    rule: "the last 30 days"\n'
+        "  past:\n"
+        "    declaration: dynamic\n"
+    )
+
+    # qg_1.1 becomes episode_evaluable (its strategy line is the anchor):
+    EVALUABLE_ANCHOR = "        strategy: all_required\n"
+    EVALUABLE = (
+        "        strategy: all_required\n"
+        "        episode_evaluable: true\n"
+    )
+    # the first jump of sq_1.1.2 (-> sq_1.1.1 when c_yes SATISFIED):
+    JUMP_ANCHOR = "                when: SATISFIED\n"
+    ASPECT_JUMP = "                episode_jump: true\n"
+    ASPECT_NAME = "                episode: e_one\n"
+
+    @staticmethod
+    def _predeclared(episodes_yaml: str) -> str:
+        return (
+            "episodes:\n"
+            "  enabled: true\n"
+            "  now:\n"
+            "    window_days: 30\n"
+            '    rule: "the last 30 days"\n'
+            "  past:\n"
+            "    declaration: predeclared\n"
+            f"    episodes: {episodes_yaml}\n"
+        )
+
+    def _with_aspect(self, text: str, aspect: str) -> str:
+        return text.replace(self.JUMP_ANCHOR, self.JUMP_ANCHOR + aspect, 1)
+
+    def test_valid_dynamic_episodes_block_loads(self):
+        text = self._with_aspect(
+            VALID_V2_YAML.replace(self.EVALUABLE_ANCHOR, self.EVALUABLE, 1),
+            self.ASPECT_JUMP,
+        ) + self.DYNAMIC
+        defn = self._load_v2(text)
+        self.assertTrue(defn.episodes.enabled)
+        self.assertEqual(defn.episodes.now.window_days, 30)
+        self.assertEqual(defn.episodes.past.declaration, "dynamic")
+        self.assertEqual(defn.episodes.past.episodes, [])
+
+    def test_valid_predeclared_episodes_block_loads(self):
+        text = self._with_aspect(
+            VALID_V2_YAML.replace(self.EVALUABLE_ANCHOR, self.EVALUABLE, 1),
+            self.ASPECT_NAME,
+        ) + self._predeclared("[e_one, e_two]")
+        defn = self._load_v2(text)
+        self.assertEqual(defn.episodes.past.episodes, ["e_one", "e_two"])
+
+    def test_episode_evaluable_rejected_without_episodes(self):
+        self._expect_error(
+            VALID_V2_YAML.replace(self.EVALUABLE_ANCHOR, self.EVALUABLE, 1),
+            "episode_evaluable but the definition's episodes block is disabled",
+        )
+
+    def test_episode_jump_rejected_without_episodes(self):
+        self._expect_error(
+            self._with_aspect(VALID_V2_YAML, self.ASPECT_JUMP),
+            "episode jump but the definition's episodes block is disabled",
+        )
+
+    def test_episode_jump_needs_dynamic_mode(self):
+        self._expect_error(
+            self._with_aspect(
+                VALID_V2_YAML.replace(
+                    self.EVALUABLE_ANCHOR, self.EVALUABLE, 1
+                ),
+                self.ASPECT_JUMP,
+            ) + self._predeclared("[e_one]"),
+            "episode_jump needs past.declaration 'dynamic'",
+        )
+
+    def test_named_episode_needs_predeclared_mode(self):
+        self._expect_error(
+            self._with_aspect(
+                VALID_V2_YAML.replace(
+                    self.EVALUABLE_ANCHOR, self.EVALUABLE, 1
+                ),
+                self.ASPECT_NAME,
+            ) + self.DYNAMIC,
+            "a named episode needs past.declaration 'predeclared'",
+        )
+
+    def test_named_episode_must_be_predeclared(self):
+        self._expect_error(
+            self._with_aspect(
+                VALID_V2_YAML.replace(
+                    self.EVALUABLE_ANCHOR, self.EVALUABLE, 1
+                ),
+                "                episode: e_zzz\n",
+            ) + self._predeclared("[e_one]"),
+            "episode 'e_zzz' is not predeclared",
+        )
+
+    def test_episode_aspect_is_mutually_exclusive(self):
+        self._expect_error(
+            self._with_aspect(
+                VALID_V2_YAML.replace(
+                    self.EVALUABLE_ANCHOR, self.EVALUABLE, 1
+                ),
+                self.ASPECT_JUMP + self.ASPECT_NAME,
+            ) + self.DYNAMIC,
+            "episode_jump and episode are mutually exclusive",
+        )
+
+    def test_predeclared_episodes_must_be_non_empty(self):
+        self._expect_error(
+            self._with_aspect(
+                VALID_V2_YAML.replace(
+                    self.EVALUABLE_ANCHOR, self.EVALUABLE, 1
+                ),
+                self.ASPECT_NAME,
+            ) + self._predeclared("[]"),
+            "non-empty 'episodes' list",
+        )
+
+    def test_predeclared_episodes_must_be_unique(self):
+        self._expect_error(
+            self._with_aspect(
+                VALID_V2_YAML.replace(
+                    self.EVALUABLE_ANCHOR, self.EVALUABLE, 1
+                ),
+                self.ASPECT_NAME,
+            ) + self._predeclared("[e_one, e_one]"),
+            "duplicate entries in past.episodes",
+        )
+
+    def test_predeclared_episode_names_must_be_non_blank(self):
+        self._expect_error(
+            self._with_aspect(
+                VALID_V2_YAML.replace(
+                    self.EVALUABLE_ANCHOR, self.EVALUABLE, 1
+                ),
+                self.ASPECT_NAME,
+            ) + self._predeclared("[e_one, ' ']"),
+            "predeclared episode names must be non-blank",
+        )
+
+    def test_disabled_episodes_with_past_declaration_rejected(self):
+        self._expect_error(
+            VALID_V2_YAML
+            + "episodes:\n"
+            "  enabled: false\n"
+            "  past:\n"
+            "    declaration: predeclared\n"
+            "    episodes: [e_one]\n",
+            "episodes is disabled but past.declaration is 'predeclared'",
+        )
+
+    def test_episode_jump_target_must_be_episode_evaluable(self):
+        # the jump onto the GROUP qg_1.1.1 — that group is not
+        # episode_evaluable
+        text = VALID_V2_YAML.replace(
+            "              - to: qg_1.1.1\n",
+            "              - to: qg_1.1.1\n"
+            "                episode_jump: true\n",
+            1,
+        ) + self.DYNAMIC
+        self._expect_error(
+            text, "episode jump target 'qg_1.1.1' is not episode_evaluable"
+        )
+
+    def test_episode_jump_on_question_target_checks_the_parent_group(self):
+        # the jump -> sq_1.1.1: its parent group qg_1.1 is NOT
+        # episode_evaluable -> rejected
+        text = self._with_aspect(
+            VALID_V2_YAML, self.ASPECT_JUMP
+        ) + self.DYNAMIC
+        self._expect_error(
+            text, "episode jump target 'qg_1.1' is not episode_evaluable"
+        )
+
+    def test_episode_jump_cannot_target_a_section(self):
+        text = VALID_V2_YAML.replace(
+            "                  - to: sec_1\n",
+            "                  - to: sec_1\n"
+            "                    episode_jump: true\n",
+            1,
+        ) + self.DYNAMIC
+        self._expect_error(
+            text, "episode jump cannot target a section group"
+        )

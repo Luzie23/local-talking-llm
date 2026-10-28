@@ -27,7 +27,9 @@ from interview_definition import (
     AnyRule,
     CriterionDefinition,
     EqRule,
+    EpisodeConfiguration,
     InterviewDefinition,
+    PastEpisodesConfig,
     QuestionDefinition,
     QuestionGroup,
     SectionGroup,
@@ -141,12 +143,26 @@ class TestQuestionTransitionMatrix(unittest.TestCase):
         import interview_run
 
         table = interview_run._QUESTION_TRANSITIONS
+        # The table allows CLOSED/SKIPPED -> REQUIRED, but the ENTRY
+        # POINT decides: require_question is only for UNSEEN questions
+        # (the first visit); a CLOSED/SKIPPED question is re-asked via
+        # reopen_question (the episode model — see TestEpisodeReopen).
+        require_guard = {QuestionState.CLOSED, QuestionState.SKIPPED}
         for from_state in QuestionState:
             for method_name, to_state in self.METHODS.items():
                 with self.subTest(fro=from_state.value, to=to_state.value):
                     run = make_run()
                     drive_question(run, "sq_1.1.1", from_state)
-                    if to_state in table[from_state]:
+                    if (
+                        method_name == "require_question"
+                        and from_state in require_guard
+                    ):
+                        with self.assertRaises(IllegalTransitionError):
+                            run.require_question("sq_1.1.1", "test")
+                        self.assertEqual(
+                            run.question_state("sq_1.1.1"), from_state
+                        )
+                    elif to_state in table[from_state]:
                         record = getattr(run, method_name)("sq_1.1.1", "test")
                         self.assertEqual(run.question_state("sq_1.1.1"), to_state)
                         self.assertEqual(record.from_state, from_state.value)
@@ -395,3 +411,252 @@ class TestTransitionLogAndSnapshot(unittest.TestCase):
         self.assertIs(event.subject, SubjectKind.RUN)
         self.assertIsNone(event.subject_id)
         self.assertEqual((event.from_state, event.to_state), ("ACTIVE", "ABORTED"))
+
+
+def make_episode_run(
+    episodes: EpisodeConfiguration | None = None,
+) -> InterviewRun:
+    """A run over the test definition with the episodes block replaced."""
+    definition = make_definition()
+    if episodes is not None:
+        definition = definition.model_copy(update={"episodes": episodes})
+    return InterviewRun(definition, new_run_id())
+
+
+def dynamic_episodes() -> EpisodeConfiguration:
+    return EpisodeConfiguration(
+        enabled=True, past=PastEpisodesConfig(declaration="dynamic")
+    )
+
+
+class TestEpisodeRegistry(unittest.TestCase):
+    """
+    The per-interview episode registry (design addendum 2026-10-26):
+    seeding, dynamic declaration (deterministic ep_1, ep_2, ...), the
+    patient's verbatim aliases, and the Diagnostiker's merge.
+    """
+
+    def test_now_episode_is_always_seeded(self):
+        run = make_episode_run()  # episodes disabled
+        self.assertIn("now", run.episodes)
+        now = run.episodes["now"]
+        self.assertEqual(now.kind, "now")
+        self.assertEqual(now.window_days, 30)
+        self.assertIsNone(now.merged_into)
+
+    def test_predeclared_episodes_are_seeded(self):
+        run = make_episode_run(
+            EpisodeConfiguration(
+                enabled=True,
+                past=PastEpisodesConfig(
+                    declaration="predeclared", episodes=["e_one", "e_two"]
+                ),
+            )
+        )
+        self.assertEqual(set(run.episodes), {"now", "e_one", "e_two"})
+        self.assertEqual(run.episodes["e_one"].kind, "past")
+        self.assertEqual(run.episodes["e_one"].label, "e_one")
+        self.assertEqual(run.canonical_episode("e_two"), "e_two")
+
+    def test_declare_episode_needs_enabled_dynamic_mode(self):
+        for episodes in (
+            None,
+            dynamic_episodes(),
+            EpisodeConfiguration(
+                enabled=True,
+                past=PastEpisodesConfig(
+                    declaration="predeclared", episodes=["e_one"]
+                ),
+            ),
+        ):
+            with self.subTest(episodes=episodes):
+                run = make_episode_run(episodes)
+                if episodes is None or (
+                    episodes is not None
+                    and episodes.past.declaration != "dynamic"
+                ):
+                    with self.assertRaises(IllegalTransitionError):
+                        run.declare_episode("other period", "clinician")
+                else:
+                    run.declare_episode("other period", "clinician")
+
+    def test_declare_episode_assigns_deterministic_ids(self):
+        run = make_episode_run(dynamic_episodes())
+        rec1 = run.declare_episode(
+            "another period", "clinician declares a past episode"
+        )
+        rec2 = run.declare_episode(
+            "   ", "clinician declares a second past episode"
+        )
+        self.assertEqual(
+            (rec1.subject, rec1.subject_id), (SubjectKind.EPISODE, "ep_1")
+        )
+        self.assertEqual(
+            (rec2.subject, rec2.subject_id), (SubjectKind.EPISODE, "ep_2")
+        )
+        self.assertEqual(rec1.from_state, "none")
+        self.assertEqual(rec1.to_state, "declared")
+        self.assertEqual(run.episodes["ep_1"].kind, "past")
+        self.assertEqual(run.episodes["ep_1"].label, "another period")
+        self.assertIsNone(run.episodes["ep_2"].label)  # blank label -> None
+
+
+    def test_record_episode_alias_accumulates_on_the_canonical_episode(self):
+        run = make_episode_run(dynamic_episodes())
+        run.declare_episode("another period", "clinician")
+        run.record_episode_alias("ep_1", "march 2026", "the patient specifies")
+        run.record_episode_alias("ep_1", "march 2026", "the patient repeats")
+        run.record_episode_alias("ep_1", "the month before uni", "the patient")
+        self.assertEqual(
+            run.episodes["ep_1"].aliases,
+            ("march 2026", "the month before uni"),
+        )
+        records = run.transitions
+        self.assertEqual(records[-1].subject, SubjectKind.EPISODE)
+        self.assertEqual(records[-1].to_state, "aliased")
+
+    def test_merge_episodes_unifies_to_the_earlier_declaration(self):
+        run = make_episode_run(dynamic_episodes())
+        run.declare_episode("period one", "clinician")
+        run.record_episode_alias("ep_1", "march 2026", "the patient")
+        run.declare_episode("period two", "clinician")
+        run.record_episode_alias("ep_2", "the month before uni", "the patient")
+        rec = run.merge_episodes(
+            "ep_2", "ep_1", "Diagnostiker: the same real episode"
+        )
+        self.assertEqual(rec.subject_id, "ep_2")
+        self.assertEqual(rec.to_state, "merged_into:ep_1")
+        self.assertEqual(run.canonical_episode("ep_2"), "ep_1")
+        self.assertEqual(run.canonical_episode("ep_1"), "ep_1")
+        self.assertEqual(run.episodes["ep_2"].merged_into, "ep_1")
+        self.assertIsNone(run.episodes["ep_1"].merged_into)
+        # the aliases live on the winner (order preserved, no duplicates)
+        self.assertEqual(
+            run.episodes["ep_1"].aliases,
+            ("march 2026", "the month before uni"),
+        )
+        # new aliases are recorded on the canonical episode via either id
+        run.record_episode_alias("ep_2", "early spring", "the patient")
+        self.assertIn("early spring", run.episodes["ep_1"].aliases)
+
+    def test_merge_of_the_same_episode_is_rejected(self):
+        run = make_episode_run(dynamic_episodes())
+        run.declare_episode("period one", "clinician")
+        run.declare_episode("period two", "clinician")
+        run.merge_episodes("ep_1", "ep_2", "Diagnostiker: identical")
+        with self.assertRaises(IllegalTransitionError):
+            run.merge_episodes("ep_1", "ep_2", "again")
+
+    def test_unknown_episode_ids_fail_loudly(self):
+        run = make_episode_run(dynamic_episodes())
+        with self.assertRaises(ValueError):
+            run.canonical_episode("ep_9")
+
+    def test_episode_operations_respect_the_terminal_run(self):
+        run = make_episode_run(dynamic_episodes())
+        run.declare_episode("another period", "clinician")
+        run.abort_run("participant left")
+        with self.assertRaises(IllegalTransitionError):
+            run.declare_episode("another", "clinician")
+        with self.assertRaises(IllegalTransitionError):
+            run.record_episode_alias("ep_1", "march", "patient")
+
+    def test_episode_operations_carry_causes(self):
+        run = make_episode_run(dynamic_episodes())
+        with self.assertRaises(ValueError):
+            run.declare_episode("another period", "")
+
+
+class TestEpisodeReopen(unittest.TestCase):
+    """
+    reopen_question: CLOSED/SKIPPED -> REQUIRED FOR ANOTHER EPISODE,
+    with the (question, episode) once-only invariant (the plain
+    "never re-asked" rule is the special case of it).
+    """
+
+    def test_require_records_the_now_episode(self):
+        run = make_episode_run(dynamic_episodes())
+        run.require_question("sq_1.1.1", "nav plan")
+        self.assertEqual(run.question_episodes["sq_1.1.1"], ["now"])
+        self.assertEqual(run.transitions[0].episode, "now")
+
+    def test_reopen_closed_question_for_a_new_episode(self):
+        run = make_episode_run(dynamic_episodes())
+        drive_question(run, "sq_1.1.1", QuestionState.CLOSED)
+        run.declare_episode("another period", "clinician")
+        rec = run.reopen_question(
+            "sq_1.1.1", "ep_1", "episode jump re-asks the target group"
+        )
+        self.assertEqual(rec.from_state, "CLOSED")
+        self.assertEqual(rec.to_state, "REQUIRED")
+        self.assertEqual(rec.episode, "ep_1")
+        self.assertEqual(run.question_state("sq_1.1.1"), QuestionState.REQUIRED)
+        self.assertEqual(run.question_episodes["sq_1.1.1"], ["now", "ep_1"])
+        # the audit event carries the episode
+        event = rec.to_event(run.run_id, DEFINITION_VERSION)
+        self.assertEqual(event.episode, "ep_1")
+
+    def test_reopen_from_skipped(self):
+        run = make_episode_run(dynamic_episodes())
+        drive_question(run, "sq_1.1.1", QuestionState.SKIPPED)
+        run.declare_episode("another period", "clinician")
+        run.reopen_question("sq_1.1.1", "ep_1", "episode jump")
+        self.assertEqual(run.question_state("sq_1.1.1"), QuestionState.REQUIRED)
+
+    def test_same_episode_is_never_re_asked(self):
+        run = make_episode_run(dynamic_episodes())
+        drive_question(run, "sq_1.1.1", QuestionState.CLOSED)
+        with self.assertRaises(IllegalTransitionError) as ctx:
+            run.reopen_question("sq_1.1.1", "now", "episode jump")
+        self.assertIn("never re-asked for the same episode", str(ctx.exception))
+        self.assertEqual(run.question_state("sq_1.1.1"), QuestionState.CLOSED)
+
+    def test_same_real_episode_after_a_merge_is_never_re_asked(self):
+        run = make_episode_run(dynamic_episodes())
+        drive_question(run, "sq_1.1.1", QuestionState.CLOSED)
+        run.declare_episode("period one", "clinician")
+        run.record_episode_alias("ep_1", "march 2026", "the patient")
+        run.declare_episode("period two", "clinician")
+        run.merge_episodes("ep_2", "ep_1", "Diagnostiker: identical")
+        run.reopen_question("sq_1.1.1", "ep_1", "episode jump")
+        # work the re-opened question through to CLOSED again
+        run.reserve_question("sq_1.1.1", "nav")
+        run.deliver_question("sq_1.1.1", "output")
+        run.record_answer("sq_1.1.1", "answered for ep_1")
+        run.close_question("sq_1.1.1", "closed for ep_1")
+        # ep_2 is the same REAL episode (merged into ep_1) -> rejected
+        with self.assertRaises(IllegalTransitionError) as ctx:
+            run.reopen_question("sq_1.1.1", "ep_2", "episode jump again")
+        self.assertIn("already asked for episode 'ep_1'", str(ctx.exception))
+        # the rejected re-open leaves the question where it was
+        self.assertEqual(run.question_state("sq_1.1.1"), QuestionState.CLOSED)
+
+    def test_reopen_only_from_terminal_question_states(self):
+        run = make_episode_run(dynamic_episodes())
+        with self.assertRaises(IllegalTransitionError):
+            run.reopen_question("sq_1.1.1", "ep_1", "x")  # UNSEEN
+        run.require_question("sq_1.1.1", "nav plan")
+        with self.assertRaises(IllegalTransitionError):
+            run.reopen_question("sq_1.1.1", "ep_1", "x")  # REQUIRED
+
+    def test_require_from_closed_is_rejected(self):
+        run = make_episode_run(dynamic_episodes())
+        drive_question(run, "sq_1.1.1", QuestionState.CLOSED)
+        with self.assertRaises(IllegalTransitionError) as ctx:
+            run.require_question("sq_1.1.1", "nav plan again")
+        self.assertIn("reopen_question", str(ctx.exception))
+
+    def test_snapshot_carries_the_episode_data(self):
+        run = make_episode_run(dynamic_episodes())
+        drive_question(run, "sq_1.1.1", QuestionState.CLOSED)
+        run.declare_episode("another period", "clinician")
+        run.record_episode_alias("ep_1", "march 2026", "the patient")
+        run.reopen_question("sq_1.1.1", "ep_1", "episode jump")
+        snap = run.snapshot(run_version=9)
+        self.assertEqual(snap.question_episodes["sq_1.1.1"], ["now", "ep_1"])
+        self.assertEqual(set(snap.episodes), {"now", "ep_1"})
+        self.assertEqual(snap.episodes["ep_1"].aliases, ("march 2026",))
+        # the EpisodeState value objects are FROZEN: the snapshot's
+        # registry cannot be mutated in place
+        with self.assertRaises(Exception):
+            snap.episodes["ep_1"].aliases = ("tampered",)  # type: ignore[misc]
