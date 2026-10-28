@@ -18,10 +18,13 @@ design (docs/interview_navi_design.md is the binding reference):
     with the Navigator) and a criteria-group marker,
   * criteria: declared ON a criteria group (question group OR section
     group); a criteria group's criterion always refers to ALL elements
-    of that group together. Rule AST: all / any / not / eq / gte /
-    lte / threshold (the design note's full operator set — logical,
-    arithmetic, text, completeness, group-level aggregation — is a
-    later step),
+    of that group together. Rule AST: the design note's FULL operator
+    set — logical (not / all / any), arithmetic (eq / neq / gte / lte /
+    between / min / max / threshold), text (contains / not_contains),
+    completeness (is_empty / is_not_empty), group-level aggregation
+    (count / majority / weighted_sum); evaluation (four-valued logic)
+    is the criteria engine's job (backend/criteria_engine.py, Phase 2
+    step 2.3),
   * transitions (jumps) as direct id references to any single question,
     question group or section group. Jumps may form LOOPS (the earlier
     loop-free requirement is dropped); only dead ends — missing or
@@ -155,6 +158,69 @@ class MeaningUnit(BaseModel):
     description: str = Field(min_length=1)
 
 
+class NowEpisodeConfig(BaseModel):
+    """
+    The NOW-EPISODE: the episode every question is FIRST asked about.
+    It must have occurred — or still be occurring — within its window
+    (the SCID: the last month); the natural-language `rule` is carried
+    into the Diagnostiker's prompts (the binding is by the prompts, not
+    by this code).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    window_days: int = Field(default=30, ge=1)
+    rule: str | None = None
+
+
+class PastEpisodesConfig(BaseModel):
+    """
+    How PAST episodes come into play (when the now-episode does not
+    allow a diagnosis):
+      * "none"        - no past episodes; the interview is worked
+                        through exactly once;
+      * "dynamic"     - SCID style: the clinician declares "another
+                        episode" mid-conversation, the patient then
+                        specifies it in their own words; declarations
+                        may turn out to refer to the same real
+                        episode (identity is judged by the
+                        Diagnostiker, merged by the run);
+      * "predeclared" - the author names the episodes up front; a jump
+                        may name one of them (`Jump.episode`).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    declaration: Literal["none", "dynamic", "predeclared"] = "none"
+    # the predeclared episode names (required, unique, non-blank in
+    # that mode; unused in the other modes).
+    episodes: list[str] = Field(default_factory=list)
+
+
+class EpisodeConfiguration(BaseModel):
+    """
+    The PER-INTERVIEW episode definition (design addendum 2026-10-26,
+    docs/interview_navi_design.md). Some interviews (the SCID) are
+    worked through per time period/episode; others are not — hence a
+    definition-level switch.
+
+    With `enabled: false` (the default) there is no episode machinery
+    at all: a question is simply never re-asked, and a jump to an
+    already-answered group is ignored + logged. With `enabled: true`
+    the run carries an episode registry (always the now-episode, plus
+    the past episodes of `past.declaration`) and a jump with an
+    episode aspect (`episode_jump` / `episode`) may re-enter an
+    already-assessed group FOR ANOTHER EPISODE (the same question is
+    never re-asked for the same real episode).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = False
+    now: NowEpisodeConfig = Field(default_factory=NowEpisodeConfig)
+    past: PastEpisodesConfig = Field(default_factory=PastEpisodesConfig)
+
+
 class Jump(BaseModel):
     """
     One declarative transition (jump) out of a question.
@@ -169,6 +235,23 @@ class Jump(BaseModel):
     Jumps are data here — they are evaluated by the Navigator, not by
     this module. Jumps MAY form loops (design note); only dead ends
     (unknown target) are rejected at import.
+
+    JUMPS ARE DEFERRED: criteria are decided online, but a jump is
+    only RESOLVED once its question's group is worked through (all
+    required questions terminal) — the group consequences are applied
+    at group completion (owner decision 2026-10-26).
+
+    EPISODE ASPECT (the per-interview `episodes` block, design addendum
+    2026-10-26): a jump that re-enters its target for ANOTHER episode
+    than the one(s) already assessed there:
+      * dynamic mode   - `episode_jump: true` (no name: the concrete
+                         episode is a RUNTIME outcome — the clinician
+                         declares it, the patient specifies it in their
+                         own words, the Diagnostiker judges identity);
+      * predeclared    - `episode: <name>` (one of the definition's
+                         predeclared episodes).
+    Exactly one of the two (validated at import); both require the
+    target group to be `episode_evaluable`.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -176,6 +259,11 @@ class Jump(BaseModel):
     to: str = Field(min_length=1)
     on_criterion: str | None = None
     when: CriterionStatus = CriterionStatus.SATISFIED
+    # the episode aspect (see the class docstring): exactly one of
+    # episode_jump / episode, validated against the definition's
+    # `episodes` block at import time.
+    episode_jump: bool = False
+    episode: str | None = None
 
 
 # How the answer to a single question is recorded (design note:
@@ -252,6 +340,11 @@ class QuestionGroup(BaseModel):
     # Criteria-group marker (see the class docstring).
     criteria_group: bool = False
     criteria: list[CriterionDefinition] = Field(default_factory=list)
+    # EPISODE EVALUABLE (the per-interview `episodes` block, design
+    # addendum 2026-10-26): the group may be re-asked FOR ANOTHER
+    # EPISODE — only such a group may be the target of a jump with an
+    # episode aspect (episode_jump / episode).
+    episode_evaluable: bool = False
 
     @field_validator("id")
     @classmethod
@@ -269,10 +362,13 @@ class ValueDeclaration(BaseModel):
     One declared navigation value: a NAMED, TYPED input the criterion
     rule engine reads — the "navigation-relevant values" the Diagnostiker
     extracts per answer (plan §1.1). Criteria do not parse raw answer
-    text: they reference these values by name, and the rule AST
-    (eq / gte / lte / threshold / all / any / not) is evaluated over
-    them. Import-time validation guarantees a criterion only references
-    declared values, with type-matching operators.
+    text: they reference these values by name, and the rule AST (the
+    full operator set: eq / neq / gte / lte / between / min / max /
+    threshold / contains / not_contains / is_empty / is_not_empty /
+    count / majority / weighted_sum / all / any / not) is evaluated
+    over them (backend/criteria_engine.py). Import-time validation
+    guarantees a criterion only references declared values, with
+    type-matching operators.
 
     Relation to the design note: the note's per-question answer type
     (boolean / number / string) defines how a question's answer is
@@ -284,7 +380,11 @@ class ValueDeclaration(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str = Field(min_length=1)
-    type: Literal["bool", "number", "category"]
+    # "string" = free-text value (the design note's "unspezifizierter
+    # String" answer type, extracted from a string answer); the text
+    # operators (contains / not_contains / is_empty / is_not_empty)
+    # operate on it.
+    type: Literal["bool", "number", "category", "string"]
     # type=category: the allowed categories (must be non-empty, unique).
     categories: list[str] = Field(default_factory=list)
     # type=number: optional scale bounds and NAMED thresholds
@@ -295,8 +395,11 @@ class ValueDeclaration(BaseModel):
     thresholds: dict[str, float] = Field(default_factory=dict)
 
 
-# --- the declarative criterion AST (the rule operators of the plan: -----
-# --- all / any / not / eq / gte / lte / threshold) -----------------------
+# --- the declarative criterion AST (the FULL operator set of the -------
+# --- design note, docs/interview_navi_design.md): logical not/all/any,
+# --- arithmetic eq/neq/gte/lte/between/min/max/threshold, text
+# --- contains/not_contains, completeness is_empty/is_not_empty,
+# --- group-level aggregation count/majority/weighted_sum ----------------
 
 
 class EqRule(BaseModel):
@@ -370,8 +473,190 @@ class NotRule(BaseModel):
     rule: "CriteriaRule"
 
 
+class NeqRule(BaseModel):
+    """`value != not_equals`, checked against the value's declared type."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    op: Literal["neq"] = "neq"
+    value: str = Field(min_length=1)
+    not_equals: bool | int | float | str
+
+
+class BetweenRule(BaseModel):
+    """`min <= value <= max`, both bounds inclusive (number values only)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    op: Literal["between"] = "between"
+    value: str = Field(min_length=1)
+    min: float
+    max: float
+
+    @model_validator(mode="after")
+    def _min_must_not_exceed_max(self) -> BetweenRule:
+        if self.min > self.max:
+            raise ValueError(
+                f"between: min ({self.min}) must not exceed max ({self.max})"
+            )
+        return self
+
+
+class MinRule(BaseModel):
+    """`value >= threshold` — "at least threshold" (number values only)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    op: Literal["min"] = "min"
+    value: str = Field(min_length=1)
+    threshold: float
+
+
+class MaxRule(BaseModel):
+    """`value <= threshold` — "at most threshold" (number values only)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    op: Literal["max"] = "max"
+    value: str = Field(min_length=1)
+    threshold: float
+
+
+class ContainsRule(BaseModel):
+    """The (string) value contains `needle` (case-insensitive)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    op: Literal["contains"] = "contains"
+    value: str = Field(min_length=1)
+    needle: str = Field(min_length=1)
+
+
+class NotContainsRule(BaseModel):
+    """The (string) value does NOT contain `needle` (case-insensitive)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    op: Literal["not_contains"] = "not_contains"
+    value: str = Field(min_length=1)
+    needle: str = Field(min_length=1)
+
+
+class IsEmptyRule(BaseModel):
+    """
+    The value is empty: no extractable content (None) or a blank string.
+    A present number or boolean is never empty.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    op: Literal["is_empty"] = "is_empty"
+    value: str = Field(min_length=1)
+
+
+class IsNotEmptyRule(BaseModel):
+    """The value carries content (the negation of is_empty)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    op: Literal["is_not_empty"] = "is_not_empty"
+    value: str = Field(min_length=1)
+
+
+def _check_unique_value_names(values: list[str]) -> list[str]:
+    """Aggregation rules reference each value at most once."""
+    if len(set(values)) != len(values):
+        duplicates = sorted({v for v in values if values.count(v) > 1})
+        raise ValueError(
+            f"duplicate value names in {values!r} (must be unique: "
+            f"{duplicates})"
+        )
+    return values
+
+
+class CountRule(BaseModel):
+    """
+    Group-level aggregation (design note: "Anzahl/Count" + group-level
+    "Schwellenwert"): at least `gte` of the listed values equal `if_eq`.
+    A criterion on a criteria group refers to ALL elements of the group
+    together — the listed values are the values set from the group's
+    questions.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    op: Literal["count"] = "count"
+    values: list[str] = Field(min_length=1)
+    if_eq: bool | int | float | str
+    gte: int = Field(ge=0)
+
+    @field_validator("values")
+    @classmethod
+    def _values_must_be_unique(cls, v: list[str]) -> list[str]:
+        return _check_unique_value_names(v)
+
+
+class MajorityRule(BaseModel):
+    """
+    Group-level aggregation (design note: "Mehrheit"): STRICTLY MORE
+    THAN HALF of the listed values equal `if_eq` (with an even number
+    of values, exactly half does NOT count as a majority).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    op: Literal["majority"] = "majority"
+    values: list[str] = Field(min_length=1)
+    if_eq: bool | int | float | str
+
+    @field_validator("values")
+    @classmethod
+    def _values_must_be_unique(cls, v: list[str]) -> list[str]:
+        return _check_unique_value_names(v)
+
+
+class WeightedSumRule(BaseModel):
+    """
+    Group-level aggregation (design note: "gewichtete Summe"):
+    sum(weight_i * value_i) >= threshold over the listed (number)
+    values. Every listed value needs a weight; missing weights and
+    non-number values are rejected at import.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    op: Literal["weighted_sum"] = "weighted_sum"
+    values: list[str] = Field(min_length=1)
+    weights: dict[str, float]
+    threshold: float
+
+    @field_validator("values")
+    @classmethod
+    def _values_must_be_unique(cls, v: list[str]) -> list[str]:
+        return _check_unique_value_names(v)
+
+
 CriteriaRule = Annotated[
-    Union[EqRule, GteRule, LteRule, ThresholdRule, AllRule, AnyRule, NotRule],
+    Union[
+        EqRule,
+        NeqRule,
+        GteRule,
+        LteRule,
+        BetweenRule,
+        MinRule,
+        MaxRule,
+        ThresholdRule,
+        ContainsRule,
+        NotContainsRule,
+        IsEmptyRule,
+        IsNotEmptyRule,
+        CountRule,
+        MajorityRule,
+        WeightedSumRule,
+        AllRule,
+        AnyRule,
+        NotRule,
+    ],
     Field(discriminator="op"),
 ]
 
@@ -487,6 +772,9 @@ class InterviewDefinition(BaseModel):
     # (question/section) groups themselves — a criteria group's
     # criterion refers to all elements of that group together.
     sections: list[SectionGroup] = Field(default_factory=list)
+    # The per-interview episode definition (design addendum 2026-10-26):
+    # disabled by default — see EpisodeConfiguration.
+    episodes: EpisodeConfiguration = Field(default_factory=EpisodeConfiguration)
 
     # ------------------------------------------------------------------
     # derived views — document order (depth-first, children in listed
@@ -580,6 +868,9 @@ class InterviewDefinition(BaseModel):
         group_ids: set[str] = set()
         question_ids: set[str] = set()
         criterion_ids: set[str] = set()
+        # episode-jump validation (design addendum 2026-10-26)
+        group_of_question: dict[str, str] = {}
+        episode_evaluable_groups: set[str] = set()
 
         for path, node in self._walk():
             if isinstance(node, SectionGroup):
@@ -588,6 +879,8 @@ class InterviewDefinition(BaseModel):
             else:
                 note("group", node.id, f"question group {node.id!r} ({path})")
                 group_ids.add(node.id)
+                if node.episode_evaluable:
+                    episode_evaluable_groups.add(node.id)
             for ci, c in enumerate(node.criteria):
                 note(
                     "criterion",
@@ -603,6 +896,7 @@ class InterviewDefinition(BaseModel):
                         f"question {q.id!r} in {path} (questions[{qi}])",
                     )
                     question_ids.add(q.id)
+                    group_of_question[q.id] = node.id
                     for ui, unit in enumerate(q.meaning_units):
                         note(
                             "meaning-unit",
@@ -641,8 +935,10 @@ class InterviewDefinition(BaseModel):
 
         # --- 4. jump targets + jump conditions (dead ends) --------------
         # No acyclicity check on purpose: jumps MAY form loops (design
-        # note). The loop-back-to-locked-group behavior is an open point
-        # decided with the Navigator (step 2.5).
+        # note). A jump back into an already-answered (locked) group is
+        # decided at RUNTIME by the episode model (design addendum
+        # 2026-10-26): without an episode aspect it is ignored + logged;
+        # with one, the target is re-asked for the other episode.
         for path, node in self._walk():
             if not isinstance(node, QuestionGroup):
                 continue
@@ -670,6 +966,97 @@ class InterviewDefinition(BaseModel):
                             f"a declared criterion (criteria: "
                             f"{sorted(criterion_ids) or 'none'})"
                         )
+                    # the episode aspect (design addendum 2026-10-26):
+                    # exactly one of episode_jump / episode, and it must
+                    # fit the definition's episodes block + target.
+                    if jump.episode_jump and jump.episode is not None:
+                        errors.append(
+                            f"{jloc}: episode_jump and episode are mutually "
+                            f"exclusive (exactly one episode mode)"
+                        )
+                    if jump.episode_jump or jump.episode is not None:
+                        if not self.episodes.enabled:
+                            errors.append(
+                                f"{jloc}: episode jump but the definition's "
+                                f"episodes block is disabled"
+                            )
+                        elif jump.episode_jump and (
+                            self.episodes.past.declaration != "dynamic"
+                        ):
+                            errors.append(
+                                f"{jloc}: episode_jump needs "
+                                f"past.declaration 'dynamic' (got "
+                                f"{self.episodes.past.declaration!r})"
+                            )
+                        elif jump.episode is not None and (
+                            self.episodes.past.declaration != "predeclared"
+                        ):
+                            errors.append(
+                                f"{jloc}: a named episode needs "
+                                f"past.declaration 'predeclared' (got "
+                                f"{self.episodes.past.declaration!r})"
+                            )
+                        elif (
+                            jump.episode is not None
+                            and jump.episode not in self.episodes.past.episodes
+                        ):
+                            errors.append(
+                                f"{jloc}: episode {jump.episode!r} is not "
+                                f"predeclared (declared: "
+                                f"{sorted(self.episodes.past.episodes)})"
+                            )
+                        if jump.to in section_ids:
+                            errors.append(
+                                f"{jloc}: an episode jump cannot target a "
+                                f"section group (MVP: question groups only)"
+                            )
+                        elif jump.to in question_ids:
+                            target_group = group_of_question[jump.to]
+                            if target_group not in episode_evaluable_groups:
+                                errors.append(
+                                    f"{jloc}: episode jump target "
+                                    f"{target_group!r} is not episode_evaluable"
+                                )
+                        elif jump.to in group_ids and (
+                            jump.to not in episode_evaluable_groups
+                        ):
+                            errors.append(
+                                f"{jloc}: episode jump target {jump.to!r} "
+                                f"is not episode_evaluable"
+                            )
+
+        # --- 4b. episode configuration (addendum 2026-10-26) ------------
+        episodes = self.episodes
+        if not episodes.enabled and episodes.past.declaration != "none":
+            errors.append(
+                f"episodes block: episodes is disabled but "
+                f"past.declaration is {episodes.past.declaration!r} "
+                f"(enable episodes or use 'none')"
+            )
+        if episodes.past.declaration == "predeclared":
+            names = episodes.past.episodes
+            if not names:
+                errors.append(
+                    "episodes block: predeclared past episodes need a "
+                    "non-empty 'episodes' list"
+                )
+            if len(set(names)) != len(names):
+                errors.append(
+                    "episodes block: duplicate entries in past.episodes"
+                )
+            for name in names:
+                if not name.strip():
+                    errors.append(
+                        "episodes block: predeclared episode names must be "
+                        "non-blank"
+                    )
+        if not episodes.enabled:
+            for path, node in self._walk():
+                if isinstance(node, QuestionGroup) and node.episode_evaluable:
+                    errors.append(
+                        f"{path}: episode_evaluable but the definition's "
+                        f"episodes block is disabled"
+                    )
 
         # --- 4. criteria reference declared values with matching types ---
         def value_decl(name: str, path: str) -> ValueDeclaration | None:
@@ -681,42 +1068,94 @@ class InterviewDefinition(BaseModel):
                 )
             return decl
 
+        def literal_matches(decl: ValueDeclaration, literal: object) -> bool:
+            """Does a rule literal match the value's declared type?"""
+            return (decl.type == "bool" and isinstance(literal, bool)) or (
+                decl.type == "number"
+                and isinstance(literal, (int, float))
+                and not isinstance(literal, bool)
+            ) or (
+                decl.type == "string" and isinstance(literal, str)
+            ) or (
+                decl.type == "category"
+                and isinstance(literal, str)
+                and literal in decl.categories
+            )
+
+        def type_details(decl: ValueDeclaration) -> str:
+            details = f"(type: {decl.type}"
+            if decl.categories:
+                details += f", categories: {decl.categories}"
+            return details + ")"
+
         def check_rule(rule: CriteriaRule, path: str) -> None:
             if isinstance(rule, (AllRule, AnyRule)):
                 for i, sub in enumerate(rule.rules):
                     check_rule(sub, f"{path}.rules[{i}]")
             elif isinstance(rule, NotRule):
                 check_rule(rule.rule, f"{path}.rule")
-            elif isinstance(rule, EqRule):
+            elif isinstance(rule, (EqRule, NeqRule)):
                 decl = value_decl(rule.value, path)
                 if decl is None:
                     return
-                ok = (
-                    decl.type == "bool" and isinstance(rule.equals, bool)
-                ) or (
-                    decl.type == "number"
-                    and isinstance(rule.equals, (int, float))
-                    and not isinstance(rule.equals, bool)
-                ) or (
-                    decl.type == "category"
-                    and isinstance(rule.equals, str)
-                    and rule.equals in decl.categories
+                literal = (
+                    rule.equals if isinstance(rule, EqRule) else rule.not_equals
                 )
-                if not ok:
-                    details = f"(type: {decl.type}"
-                    if decl.categories:
-                        details += f", categories: {decl.categories}"
-                    details += ")"
+                if not literal_matches(decl, literal):
                     errors.append(
-                        f"{path}: eq {rule.equals!r} does not match the "
-                        f"declared type of value {rule.value!r} {details}"
+                        f"{path}: {rule.op} {literal!r} does not match the "
+                        f"declared type of value {rule.value!r} "
+                        f"{type_details(decl)}"
                     )
-            elif isinstance(rule, (GteRule, LteRule)):
+            elif isinstance(rule, (GteRule, LteRule, MinRule, MaxRule)):
                 decl = value_decl(rule.value, path)
                 if decl is not None and decl.type != "number":
                     errors.append(
                         f"{path}: {rule.op} needs a number value, but "
                         f"{rule.value!r} is declared as {decl.type}"
+                    )
+            elif isinstance(rule, BetweenRule):
+                decl = value_decl(rule.value, path)
+                if decl is not None and decl.type != "number":
+                    errors.append(
+                        f"{path}: between needs a number value, but "
+                        f"{rule.value!r} is declared as {decl.type}"
+                    )
+            elif isinstance(rule, (ContainsRule, NotContainsRule)):
+                decl = value_decl(rule.value, path)
+                if decl is not None and decl.type != "string":
+                    errors.append(
+                        f"{path}: {rule.op} needs a string value, but "
+                        f"{rule.value!r} is declared as {decl.type}"
+                    )
+            elif isinstance(rule, (IsEmptyRule, IsNotEmptyRule)):
+                # any declared type is fine — the value must exist
+                value_decl(rule.value, path)
+            elif isinstance(rule, (CountRule, MajorityRule)):
+                for name in rule.values:
+                    decl = value_decl(name, path)
+                    if decl is not None and not literal_matches(
+                        decl, rule.if_eq
+                    ):
+                        errors.append(
+                            f"{path}: {rule.op} if_eq {rule.if_eq!r} does not "
+                            f"match the declared type of value {name!r} "
+                            f"{type_details(decl)}"
+                        )
+            elif isinstance(rule, WeightedSumRule):
+                for name in rule.values:
+                    decl = value_decl(name, path)
+                    if decl is not None and decl.type != "number":
+                        errors.append(
+                            f"{path}: weighted_sum needs a number value, "
+                            f"but {name!r} is declared as {decl.type}"
+                        )
+                missing = [n for n in rule.values if n not in rule.weights]
+                if missing:
+                    errors.append(
+                        f"{path}: weighted_sum has no weight for value(s) "
+                        f"{missing} (weights given for: "
+                        f"{sorted(rule.weights) or 'none'})"
                     )
             elif isinstance(rule, ThresholdRule):
                 decl = value_decl(rule.value, path)

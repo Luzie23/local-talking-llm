@@ -7,6 +7,9 @@ This module is only stdlib + Pydantic. It defines the complete boundary surface 
 so every other component (Navigator, agents, Supervisor, delivery protocol) imports from here:
 
   * CriterionStatus    — the four-valued criterion logic
+  * ValueReading       — the Diagnostiker's current reading of one
+                         navigation value (the criteria engine's input,
+                         Phase 2.3)
   * QuestionState / RunStatus / DeliveryState — the state vocabularies
   * NavigationAssessment — the Diagnostiker's structured output
   * QuestionCandidate / QuestionCandidateSet — the Navigator's types
@@ -306,18 +309,26 @@ class Modality(str, Enum):
 class SubjectKind(str, Enum):
     """
     What a state-transition event is about — i.e. WHICH state machine
-    changed. The three subjects have DIFFERENT state vocabularies, which
+    changed. The four subjects have DIFFERENT state vocabularies, which
     is why from_state/to_state on the event are plain strings:
       RUN       -> RunStatus      (ACTIVE -> COMPLETED / ABORTED)
-      QUESTION  -> QuestionState  (UNSEEN -> REQUIRED -> ... -> CLOSED)
+      QUESTION  -> QuestionState  (UNSEEN -> REQUIRED -> ... -> CLOSED;
+                                   CLOSED/SKIPPED -> REQUIRED only via
+                                   the episode re-open, step 2.2)
       CRITERION -> CriterionStatus (OPEN -> SATISFIED / NOT_SATISFIED /
                                      UNCLEAR)
-    subject_id names the affected question/criterion (None for RUN).
+      EPISODE   -> the episode registry of the run (declaration /
+                   alias / merge of the interview's episodes — the
+                   per-interview `episodes` block, design addendum
+                   2026-10-26)
+    subject_id names the affected question/criterion/episode
+    (None for RUN).
     """
 
     RUN = "run"
     QUESTION = "question"
     CRITERION = "criterion"
+    EPISODE = "episode"
 
 
 class EventType(str, Enum):
@@ -339,6 +350,41 @@ class EventType(str, Enum):
     DELIVERY_DELIVERED = "delivery_delivered"
     DELIVERY_ACKNOWLEDGED = "delivery_acknowledged"
     DELIVERY_RETRANSMITTED = "delivery_retransmitted"
+
+
+# ---------------------------------------------------------------------------
+# 1b. Value readings — the criteria engine's input (Phase 2, step 2.3)
+# ---------------------------------------------------------------------------
+
+
+class ValueReading(BaseModel):
+    """
+    One navigation value's CURRENT reading in this run — the input the
+    criteria rule engine (backend/criteria_engine.py) evaluates the
+    rule AST over.
+
+    Who produces it: the Diagnostiker (Phase 3), which interprets an
+    answer and extracts the navigation-relevant values (plan §1.1);
+    the Supervisor passes the readings to the Navigator / criteria
+    engine. One reading = one value's current state.
+
+    How the four-valued logic reads a reading (see criteria_engine.py):
+      * the value's name is NOT in the readings mapping — the question
+        that provides the value has not been answered yet -> OPEN
+      * reliable == False — an answer exists but could not be
+        interpreted reliably -> UNCLEAR
+      * reliable == True — the value is evaluated; `value` of None
+        means the answer carried no extractable content ("empty");
+        a value that does not match the value's DECLARED type is not
+        interpretable -> UNCLEAR (never silently NOT_SATISFIED)
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(min_length=1)
+    value: JsonValue = None
+    reliable: bool = True
+
 
 # ---------------------------------------------------------------------------
 # 2. ID scheme — run_id / turn_id / delivery_id from day one
@@ -708,6 +754,44 @@ class StudyCondition(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class EpisodeState(BaseModel):
+    """
+    One interview episode in the run's episode registry.
+
+    The episode concept is a PER-INTERVIEW definition element (the
+    `episodes` block of the definition, design addendum 2026-10-26):
+    the interview first asks everything about the NOW-EPISODE (which
+    must have occurred or still be occurring within its window — for
+    the SCID: the last month); if that does not allow a diagnosis,
+    PAST EPISODES come into play. A past episode is either PREDECLARED
+    by the interview (a fixed name) or declared mid-conversation
+    (dynamic, SCID style): the clinician declares "another episode"
+    first, the patient then specifies it in their own words — the
+    verbatim framings accumulate as `aliases`. Two declarations may
+    refer to the SAME real episode ("march 2026" = "the month before I
+    started uni"): when the Diagnostiker judges them identical, the
+    later one is merged into the earlier (canonical) one via
+    `merged_into` (one hop), so the same question is never asked twice
+    for the same real episode.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str = Field(min_length=1)
+    kind: Literal["now", "past"]
+    # the predeclared name (dynamic mode: the clinician's label; None
+    # for the now-episode).
+    label: str | None = None
+    # the patient's verbatim framings ("march 2026", ...), in order.
+    aliases: tuple[str, ...] = ()
+    # set on the NON-canonical side of a merge (points at the winner).
+    merged_into: str | None = None
+    # now-episode only: the look-back window in days, plus the natural-
+    # language rule carried into the Diagnostiker's prompts.
+    window_days: int | None = Field(default=None, ge=1)
+    rule: str | None = None
+
+
 class RunState(BaseModel):
     """
     The current state snapshot of one interview run.
@@ -729,6 +813,13 @@ class RunState(BaseModel):
     current_turn_id: str | None = Field(default=None, pattern=TURN_ID_PATTERN)
     question_states: dict[str, QuestionState] = Field(default_factory=dict)
     criterion_states: dict[str, CriterionStatus] = Field(default_factory=dict)
+    # which episodes each question was asked about (in order; the first
+    # visit is the now-episode) — the "same question never twice for
+    # the same episode" invariant is checked against this.
+    question_episodes: dict[str, list[str]] = Field(default_factory=dict)
+    # the episode registry (id -> EpisodeState), seeded from the
+    # definition's `episodes` block (always contains `now`).
+    episodes: dict[str, EpisodeState] = Field(default_factory=dict)
 
     def bumped(self, **updates: Any) -> RunState:
         """
@@ -875,6 +966,10 @@ class StateTransitionEvent(RunEvent):
     from_state: str = Field(min_length=1)
     to_state: str = Field(min_length=1)
     cause: str = Field(min_length=1)
+    # the episode the transition is about (question require/re-open:
+    # which episode the question is asked about; episode registry
+    # events: the affected episode). None when not episode-related.
+    episode: str | None = None
 
 
 class AgentOutputEvent(RunEvent):

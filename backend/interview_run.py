@@ -37,7 +37,15 @@ Transition tables (from -> legal to):
       REVISED          -> DELIVERED       (re-entry for the re-ask; the
                                            Navigator must NOT move on to a
                                            new question while one is REVISED)
-      CLOSED, SKIPPED are terminal
+      CLOSED, SKIPPED  -> REQUIRED        (the EPISODE re-open only: a
+                                           question is re-asked FOR
+                                           ANOTHER EPISODE — the same
+                                           question is never re-asked
+                                           for the same real episode;
+                                           the plain "never re-asked"
+                                           rule is the special case of
+                                           the once-per-(question,
+                                           episode) invariant below)
   CRITERION (CriterionStatus):
       OPEN          -> SATISFIED | NOT_SATISFIED | UNCLEAR
       UNCLEAR       -> SATISFIED | NOT_SATISFIED | UNCLEAR
@@ -50,6 +58,10 @@ Invariants enforced beyond the tables:
   * at most one question in RESERVED at a time (the single next question)
   * once the run is COMPLETED/ABORTED, no further state changes at all
   * every transition carries a non-empty cause (the audit "why")
+  * a question is asked at most once PER EPISODE: (question, canonical
+    episode) pairs are never repeated (require_question records the
+    now-episode for the first visit; reopen_question only for a
+    different episode — the episode model, design addendum 2026-10-26)
   * a skipped question does NOT end the interview: REQUIRED -> SKIPPED
     only locks that one question (the information was already known, so
     the criteria depending on it can be evaluated without delivery);
@@ -67,6 +79,7 @@ from typing import Final
 from contracts import (
     RUN_ID_RE,
     CriterionStatus,
+    EpisodeState,
     QuestionState,
     RunState,
     RunStatus,
@@ -116,8 +129,11 @@ _QUESTION_TRANSITIONS: Final[dict[QuestionState, frozenset[QuestionState]]] = {
     QuestionState.DELIVERED: frozenset({QuestionState.ANSWER_RECORDED}),
     QuestionState.ANSWER_RECORDED: frozenset({QuestionState.CLOSED, QuestionState.REVISED}),
     QuestionState.REVISED: frozenset({QuestionState.DELIVERED}),
-    QuestionState.CLOSED: frozenset(),
-    QuestionState.SKIPPED: frozenset(),
+    # the episode re-open (CLOSED/SKIPPED -> REQUIRED) is the only move
+    # OUT of a terminal question state — see require_question /
+    # reopen_question for the guards that make it episode-specific.
+    QuestionState.CLOSED: frozenset({QuestionState.REQUIRED}),
+    QuestionState.SKIPPED: frozenset({QuestionState.REQUIRED}),
 }
 
 _CRITERION_TRANSITIONS: Final[dict[CriterionStatus, frozenset[CriterionStatus]]] = {
@@ -152,6 +168,10 @@ class TransitionRecord:
     to_state: str
     cause: str
     timestamp: datetime
+    # the episode the transition is about (question require/re-open:
+    # which episode the question is asked about; episode registry
+    # events: the affected episode). None when not episode-related.
+    episode: str | None = None
 
     def to_event(self, run_id: str, definition_version: str) -> StateTransitionEvent:
         """
@@ -166,6 +186,7 @@ class TransitionRecord:
             from_state=self.from_state,
             to_state=self.to_state,
             cause=self.cause,
+            episode=self.episode,
         )
 
 
@@ -206,6 +227,178 @@ class InterviewRun:
             c.id: CriterionStatus.OPEN for c in definition.all_criteria()
         }
         self._transitions: list[TransitionRecord] = []
+        self._seed_episodes()
+
+    # ------------------------------------------------------------------
+    # the episode registry (the per-interview `episodes` block, design
+    # addendum 2026-10-26)
+    # ------------------------------------------------------------------
+
+    def _seed_episodes(self) -> None:
+        """
+        Seed the episode registry from the definition's `episodes`
+        block. ALWAYS the now-episode (id "now") — the episode every
+        question is first asked about; with `past.declaration ==
+        "predeclared"`, the predeclared episodes are seeded by name.
+        In dynamic mode past episodes are created at RUNTIME
+        (declare_episode: ep_1, ep_2, ...).
+        """
+        episodes = self._definition.episodes
+        self._episodes: dict[str, EpisodeState] = {
+            "now": EpisodeState(
+                id="now",
+                kind="now",
+                window_days=episodes.now.window_days,
+                rule=episodes.now.rule,
+            )
+        }
+        self._episode_order: list[str] = ["now"]
+        for name in episodes.past.episodes:
+            self._episodes[name] = EpisodeState(id=name, kind="past", label=name)
+            self._episode_order.append(name)
+        self._episode_counter = 0
+        self._question_episodes: dict[str, list[str]] = {}
+
+    @property
+    def episodes(self) -> dict[str, EpisodeState]:
+        """A copy of the episode registry (id -> EpisodeState)."""
+        return dict(self._episodes)
+
+    @property
+    def question_episodes(self) -> dict[str, list[str]]:
+        """
+        Which episodes each question was asked about (in order; a copy
+        of the lists). The first visit is the now-episode.
+        """
+        return {q: list(eps) for q, eps in self._question_episodes.items()}
+
+    def canonical_episode(self, episode_id: str) -> str:
+        """
+        The canonical id of an episode (follows a merge one hop: the
+        winner of a merge is never merged again). Fails loudly on an
+        unknown id.
+        """
+        episode = self._episodes.get(episode_id)
+        if episode is None:
+            raise ValueError(
+                f"unknown episode id {episode_id!r} (known: "
+                f"{', '.join(self._episodes) or 'none'})"
+            )
+        return episode.merged_into or episode_id
+
+    def _require_dynamic_episodes(self, operation: str) -> None:
+        """Past-episode registry operations need enabled + dynamic mode."""
+        episodes = self._definition.episodes
+        if not episodes.enabled:
+            raise IllegalTransitionError(
+                SubjectKind.EPISODE,
+                "",
+                "none",
+                operation,
+                "the definition's episodes block is disabled — no episode "
+                "machinery exists for this interview",
+            )
+        if episodes.past.declaration != "dynamic":
+            raise IllegalTransitionError(
+                SubjectKind.EPISODE,
+                "",
+                "none",
+                operation,
+                f"past episodes are {episodes.past.declaration!r} — "
+                "dynamic-mode operations (declare/alias/merge) apply only "
+                "with past.declaration 'dynamic'",
+            )
+
+    def _note_question_episode(self, question_id: str, episode: str) -> None:
+        """Record that the question was asked about the (canonical) episode."""
+        self._question_episodes.setdefault(question_id, []).append(episode)
+
+    def declare_episode(self, label: str, cause: str) -> TransitionRecord:
+        """
+        Declare a NEW past episode (dynamic mode only): the clinician
+        declares "another episode", after which the patient specifies
+        it in their own words (record_episode_alias). The run assigns
+        the deterministic id ep_1, ep_2, ... The returned record's
+        subject_id is the new episode id.
+        """
+        _require_cause(cause)
+        self._require_active()
+        self._require_dynamic_episodes("declare_episode")
+        self._episode_counter += 1
+        episode_id = f"ep_{self._episode_counter}"
+        self._episodes[episode_id] = EpisodeState(
+            id=episode_id, kind="past", label=label.strip() or None
+        )
+        self._episode_order.append(episode_id)
+        return self._log(SubjectKind.EPISODE, episode_id, "none", "declared", cause)
+
+    def record_episode_alias(
+        self, episode_id: str, alias: str, cause: str
+    ) -> TransitionRecord:
+        """
+        Record one of the patient's VERBATIM framings of an episode
+        (dynamic mode only): "march 2026", "the month before I started
+        uni", ... Aliases accumulate on the CANONICAL episode (a
+        merged episode's aliases live on its winner) and are the
+        reference material for the Diagnostiker's identity judgments.
+        """
+        _require_cause(cause)
+        self._require_active()
+        self._require_dynamic_episodes("record_episode_alias")
+        canonical = self.canonical_episode(episode_id)
+        episode = self._episodes[canonical]
+        if alias not in episode.aliases:
+            self._episodes[canonical] = episode.model_copy(
+                update={"aliases": episode.aliases + (alias,)}
+            )
+        return self._log(
+            SubjectKind.EPISODE, canonical, "declared", "aliased", cause
+        )
+
+    def merge_episodes(
+        self, episode_id_a: str, episode_id_b: str, cause: str
+    ) -> TransitionRecord:
+        """
+        Merge two episode declarations into ONE real episode (dynamic
+        mode only): the Diagnostiker judged them identical, the run
+        unifies them — the EARLIER episode (creation order) is the
+        canonical one, the later one becomes an alias of it
+        (merged_into, aliases merged into the winner). The returned
+        record's subject_id is the merged-away (non-canonical) id.
+        """
+        _require_cause(cause)
+        self._require_active()
+        self._require_dynamic_episodes("merge_episodes")
+        a = self.canonical_episode(episode_id_a)
+        b = self.canonical_episode(episode_id_b)
+        if a == b:
+            raise IllegalTransitionError(
+                SubjectKind.EPISODE,
+                episode_id_b,
+                "merged",
+                f"canonical:{a}",
+                f"{episode_id_a!r} and {episode_id_b!r} are already the "
+                f"same episode ({a!r}) — nothing to merge",
+            )
+        winner, loser = sorted((a, b), key=self._episode_order.index)
+        self._episodes[loser] = self._episodes[loser].model_copy(
+            update={"merged_into": winner}
+        )
+        merged_aliases = self._episodes[winner].aliases + tuple(
+            alias
+            for alias in self._episodes[loser].aliases
+            if alias not in self._episodes[winner].aliases
+        )
+        self._episodes[winner] = self._episodes[winner].model_copy(
+            update={"aliases": merged_aliases}
+        )
+        return self._log(
+            SubjectKind.EPISODE,
+            loser,
+            "standalone",
+            f"merged_into:{winner}",
+            cause,
+        )
 
     # ------------------------------------------------------------------
     # internal helpers (the single choke point for every state change)
@@ -218,6 +411,7 @@ class InterviewRun:
         from_state: str,
         to_state: str,
         cause: str,
+        episode: str | None = None,
     ) -> TransitionRecord:
         record = TransitionRecord(
             subject=subject,
@@ -226,12 +420,17 @@ class InterviewRun:
             to_state=to_state,
             cause=cause,
             timestamp=utc_now(),
+            episode=episode,
         )
         self._transitions.append(record)
         return record
 
     def _apply_question(
-        self, question_id: str, target: QuestionState, cause: str
+        self,
+        question_id: str,
+        target: QuestionState,
+        cause: str,
+        episode: str | None = None,
     ) -> TransitionRecord:
         self._require_active()
         question_id = self._known_question(question_id)
@@ -247,7 +446,10 @@ class InterviewRun:
                 f"legal from {current.value}: {legal_names}",
             )
         self._question_states[question_id] = target
-        return self._log(SubjectKind.QUESTION, question_id, current.value, target.value, cause)
+        return self._log(
+            SubjectKind.QUESTION, question_id, current.value, target.value, cause,
+            episode=episode,
+        )
 
     def _apply_criterion(
         self, criterion_id: str, target: CriterionStatus, cause: str
@@ -316,10 +518,77 @@ class InterviewRun:
     # the ONLY mutation paths — question transitions
     # ------------------------------------------------------------------
 
-    def require_question(self, question_id: str, cause: str) -> TransitionRecord:
-        """UNSEEN -> REQUIRED: the Navigator marks the question as currently required."""
+    def require_question(
+        self, question_id: str, cause: str, episode_id: str = "now"
+    ) -> TransitionRecord:
+        """
+        UNSEEN -> REQUIRED: the Navigator marks the question as
+        currently required — its FIRST visit. The question is asked
+        about the given episode (default: the now-episode) and the
+        (question, episode) pair is recorded (the audit trail + the
+        once-per-(question, episode) invariant).
+        """
         _require_cause(cause)
-        return self._apply_question(question_id, QuestionState.REQUIRED, cause)
+        question_id = self._known_question(question_id)
+        current = self._question_states[question_id]
+        if current is not QuestionState.UNSEEN:
+            raise IllegalTransitionError(
+                SubjectKind.QUESTION,
+                question_id,
+                current.value,
+                QuestionState.REQUIRED.value,
+                "require is only for UNSEEN questions; a CLOSED/SKIPPED "
+                "question is re-asked via reopen_question (another episode)",
+            )
+        episode = self.canonical_episode(episode_id)
+        record = self._apply_question(
+            question_id, QuestionState.REQUIRED, cause, episode=episode
+        )
+        self._note_question_episode(question_id, episode)
+        return record
+
+    def reopen_question(
+        self, question_id: str, episode_id: str, cause: str
+    ) -> TransitionRecord:
+        """
+        CLOSED/SKIPPED -> REQUIRED: re-ask the question FOR ANOTHER
+        EPISODE (the episode model, design addendum 2026-10-26). The
+        question is never re-asked for the same REAL episode: if the
+        (canonical) episode was already asked for this question, this
+        is an IllegalTransitionError. Called by the Supervisor when it
+        applies the Navigator's reopen_proposals (an episode jump
+        re-entering an already-assessed target group).
+        """
+        _require_cause(cause)
+        question_id = self._known_question(question_id)
+        self._require_active()
+        current = self._question_states[question_id]
+        if current not in (QuestionState.CLOSED, QuestionState.SKIPPED):
+            raise IllegalTransitionError(
+                SubjectKind.QUESTION,
+                question_id,
+                current.value,
+                QuestionState.REQUIRED.value,
+                "reopen is only for CLOSED/SKIPPED questions (a UNSEEN "
+                "question is required, not re-opened)",
+            )
+        episode = self.canonical_episode(episode_id)
+        asked = self._question_episodes.get(question_id, ())
+        if episode in asked:
+            raise IllegalTransitionError(
+                SubjectKind.QUESTION,
+                question_id,
+                current.value,
+                QuestionState.REQUIRED.value,
+                f"the question was already asked for episode {episode!r} "
+                f"(asked for: {', '.join(asked)}) — the same question is "
+                "never re-asked for the same episode",
+            )
+        record = self._apply_question(
+            question_id, QuestionState.REQUIRED, cause, episode=episode
+        )
+        self._note_question_episode(question_id, episode)
+        return record
 
     def reserve_question(self, question_id: str, cause: str) -> TransitionRecord:
         """REQUIRED -> RESERVED: reserved as the next question (at most one at a time)."""
@@ -487,4 +756,8 @@ class InterviewRun:
             run_version=run_version,
             question_states=dict(self._question_states),
             criterion_states=dict(self._criterion_states),
+            question_episodes={
+                q: list(eps) for q, eps in self._question_episodes.items()
+            },
+            episodes=dict(self._episodes),
         )
