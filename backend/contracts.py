@@ -124,6 +124,12 @@ class RunAbortCause(str, Enum):
     PARTICIPANT_ABORT_INTERVIEW = "participant_abort_interview"
     PARTICIPANT_ABORT_STUDY = "participant_abort_study"
     SAFETY_EARLY_STOP = "safety_early_stop"
+    # the interview's routed continuation target lies OUTSIDE the loaded
+    # definition (e.g. SCID A54 -> A78): an explicit, logged out-of-scope
+    # exit — never a silently ignored jump.
+    # Can be taken out, if interview-yaml has full interview and not only snippet.
+
+    OUT_OF_SCOPE = "out_of_scope"
 
 
 class DeliveryState(str, Enum):
@@ -792,6 +798,26 @@ class EpisodeState(BaseModel):
     rule: str | None = None
 
 
+class OutOfScopeExit(BaseModel):
+    """
+    WHY a run ended via RunAbortCause.OUT_OF_SCOPE (design addendum
+    2026-10-31, OFQ-6): the interview's deterministic routing resolved a
+    jump whose continuation target lies OUTSIDE the loaded definition.
+    The Supervisor aborts the run with this fact attached so the audit
+    log and the frontend can render the hand-over instead of pretending
+    the interview simply ended.
+    Can be taken out, if interview-yaml has full interview and not only snippet.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    # the external target the (loaded) interview routes to — free-form
+    # (it names a section/question of ANOTHER interview).
+    target_ref: str = Field(min_length=1)
+    # the definition's own framing of the exit (Jump.note), if any.
+    note: str | None = None
+
+
 class RunState(BaseModel):
     """
     The current state snapshot of one interview run.
@@ -820,6 +846,14 @@ class RunState(BaseModel):
     # the episode registry (id -> EpisodeState), seeded from the
     # definition's `episodes` block (always contains `now`).
     episodes: dict[str, EpisodeState] = Field(default_factory=dict)
+    # the episode the CURRENT readings / criterion decisions belong to
+    # ("now" until the Supervisor re-enters the interview for a past
+    # episode — design addendum 2026-10-31, OFQ-1/OFQ-2).
+    active_episode: str = "now"
+    # set exactly once, when the run ended via RunAbortCause.OUT_OF_SCOPE
+    # (the routed continuation target lies outside this definition).
+    # Can be taken out, if interview-yaml has full interview and not only snippet.
+    out_of_scope: OutOfScopeExit | None = None
 
     def bumped(self, **updates: Any) -> RunState:
         """

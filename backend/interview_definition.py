@@ -83,6 +83,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Annotated, Any, Iterator, Literal, Mapping, Sequence, Union
 
@@ -118,6 +119,20 @@ SUPPORTED_LANGUAGES = frozenset({"de", "en"})
 SECTION_ID_PREFIX = "sec_"
 QUESTION_GROUP_ID_PREFIX = "qg_"
 QUESTION_ID_PREFIX = "sq_"
+
+# ---------------------------------------------------------------------------
+# Question-text tokens:
+# placeholders a question's canonical text MAY contain — filled with a
+# RUNTIME value by the Navigator (rendered_text) so the wording stays
+# interview-faithful while adapting to the run (e.g. the patients symptom
+# term "euphorisch/reizbar" or the "time definition" article). The set is
+# CLOSED and validated at import: any other {token} is a definition
+# error. The Navigator knows how to fill exactly these.
+# ---------------------------------------------------------------------------
+
+TEXT_TOKENS = frozenset({"symptom_term", "other_time"})
+
+TEXT_TOKEN_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 class InterviewDefinitionError(ValueError):
@@ -236,6 +251,15 @@ class Jump(BaseModel):
     this module. Jumps MAY form loops (design note); only dead ends
     (unknown target) are rejected at import.
 
+    OUT-OF-SCOPE EXIT: a jump whose
+    continuation target lies OUTSIDE this definition (the SCID excerpt
+    ends at A78) is marked `out_of_scope: true`. Its `to` is then a
+    FREE-FORM reference to the external interview (validated: it must
+    NOT name a known section/group/question of this definition), and it
+    must carry no episode aspect. At runtime the Navigator resolves it
+    as an explicit error — the Supervisor aborts the run with
+    RunAbortCause.OUT_OF_SCOPE instead of silently continuing.
+
     JUMPS ARE DEFERRED: criteria are decided online, but a jump is
     only RESOLVED once its question's group is worked through (all
     required questions terminal) — the group consequences are applied
@@ -264,6 +288,13 @@ class Jump(BaseModel):
     # `episodes` block at import time.
     episode_jump: bool = False
     episode: str | None = None
+    # out-of-scope exit (see the class docstring): `to` then names the
+    # EXTERNAL continuation and must not be a known id of this
+    # definition; mutually exclusive with the episode aspect.
+    out_of_scope: bool = False
+    # the definition's own framing of the exit, surfaced with the
+    # abort (e.g. "SCID goes on here — outside this excerpt").
+    note: str | None = None
 
 
 # How the answer to a single question is recorded (design note:
@@ -661,6 +692,27 @@ CriteriaRule = Annotated[
 ]
 
 
+class CriterionScope(BaseModel):
+    """
+    WHICH episode a criterion is evaluated against: 
+    without a scope a criterion is RUN-SCOPED (the readings of every 
+    episode are merged — the legacy behavior). With a scope it is 
+    EPISODE-SCOPED and only the readings of the CURRENTLY
+    ACTIVE episode count, so a past episode cannot contaminate the
+    now-episode's decisions (and vice versa):
+      * `current` — evaluated against the episode being interviewed at
+        the moment (the now-episode at first, a declared past episode
+        after a re-entry);
+      * `past`    — evaluated against a DECLARED PAST episode only; in
+        the now-episode context it can never be decided (its values are
+        not asked there) — the Navigator must not propose it.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    episode: Literal["current", "past"]
+
+
 class CriterionDefinition(BaseModel):
     """
     One declared criterion: a declarative rule over navigation values.
@@ -672,6 +724,9 @@ class CriterionDefinition(BaseModel):
     id: str = Field(min_length=1)
     description: str | None = None
     rule: CriteriaRule
+    # which episode the criterion is evaluated against (None: run-scoped,
+    # the legacy behavior — see CriterionScope).
+    scope: CriterionScope | None = None
 
 
 class SectionRelation(BaseModel):
@@ -946,11 +1001,31 @@ class InterviewDefinition(BaseModel):
                 qloc = f"question {q.id!r} in {path} (questions[{qi}])"
                 for ji, jump in enumerate(q.jumps):
                     jloc = f"{qloc}, jumps[{ji}]"
-                    if (
-                        jump.to not in section_ids
-                        and jump.to not in group_ids
-                        and jump.to not in question_ids
-                    ):
+                    known_target = (
+                        jump.to in section_ids
+                        or jump.to in group_ids
+                        or jump.to in question_ids
+                    )
+                    if jump.out_of_scope:
+                        # an out-of-scope exit names the EXTERNAL
+                        # continuation: the target must be UNKNOWN here
+                        # (OFQ-6) — a known id is a plain (possibly loop)
+                        # jump and must not be flagged out of scope.
+                        if known_target:
+                            errors.append(
+                                f"{jloc}: out_of_scope jump target "
+                                f"{jump.to!r} is a known section, group or "
+                                f"question id of THIS definition — use a "
+                                f"free-form external reference instead "
+                                f"(or drop out_of_scope)"
+                            )
+                        if jump.episode_jump or jump.episode is not None:
+                            errors.append(
+                                f"{jloc}: out_of_scope and the episode "
+                                f"aspect (episode_jump / episode) are "
+                                f"mutually exclusive"
+                            )
+                    elif not known_target:
                         errors.append(
                             f"{jloc}: jump target {jump.to!r} is not a known "
                             f"section, group or question id (sections: "
@@ -1024,6 +1099,22 @@ class InterviewDefinition(BaseModel):
                                 f"{jloc}: episode jump target {jump.to!r} "
                                 f"is not episode_evaluable"
                             )
+
+        # --- 4a. question texts reference known text tokens only --------
+        # (addendum 2026-10-31, OFQ-4/OFQ-5): the {token} placeholders
+        # are a CLOSED set (TEXT_TOKENS); the Navigator renders them at
+        # runtime, so an unknown token would be spoken verbatim.
+        for path, node in self._walk():
+            if not isinstance(node, QuestionGroup):
+                continue
+            for qi, q in enumerate(node.questions):
+                for token in TEXT_TOKEN_RE.findall(q.text):
+                    if token not in TEXT_TOKENS:
+                        errors.append(
+                            f"question {q.id!r} in {path} (questions[{qi}]): "
+                            f"text references unknown text token {{{token}}} "
+                            f"(known: {sorted(TEXT_TOKENS)})"
+                        )
 
         # --- 4b. episode configuration (addendum 2026-10-26) ------------
         episodes = self.episodes

@@ -353,6 +353,41 @@ def evaluate_criterion(
     return evaluate_rule(criterion.rule, readings, declarations)
 
 
+def readings_for_criterion(
+    criterion: CriterionDefinition,
+    readings_by_context: Mapping[str, Mapping[str, ValueReading]],
+    active_context: str = "now",
+    active_is_past_episode: bool = False,
+) -> Mapping[str, ValueReading]:
+    """
+    Pick the readings a criterion is evaluated against. 
+    `readings_by_context` maps an episode id ("now",
+    "ep_1", ...) to that episode's current readings:
+
+      * run-scoped (no scope) — the readings of EVERY context are
+        merged (later context overrides earlier — the legacy behavior
+        for a single merged mapping);
+      * scope `current` — only the ACTIVE context's readings (the
+        now-episode at first, a declared past episode after a re-entry);
+      * scope `past` — the active context's readings when the active
+        episode is a PAST episode; in the now-episode context the
+        criterion can never be decided (its values are not asked there),
+        so the selection is EMPTY there (which evaluates to OPEN).
+
+    This is what keeps a past episode's values from contaminating the
+    now-episode's criterion decisions (and vice versa).
+    """
+    scope = criterion.scope
+    if scope is None:
+        merged: dict[str, ValueReading] = {}
+        for context_readings in readings_by_context.values():
+            merged.update(context_readings)
+        return merged
+    if scope.episode == "past" and not active_is_past_episode:
+        return {}
+    return dict(readings_by_context.get(active_context, {}))
+
+
 def evaluate_criteria(
     definition: InterviewDefinition,
     readings: Mapping[str, ValueReading],
