@@ -130,7 +130,7 @@ QUESTION_ID_PREFIX = "sq_"
 # error. The Navigator knows how to fill exactly these.
 # ---------------------------------------------------------------------------
 
-TEXT_TOKENS = frozenset({"symptom_term", "other_time"})
+TEXT_TOKENS = frozenset({"other_time", "symptom_term"})
 
 TEXT_TOKEN_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 

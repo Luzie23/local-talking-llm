@@ -449,7 +449,7 @@ class InterviewNavigator:
         the RUN's current state (design addendum 2026-10-31,
         OFQ-4/OFQ-5) — the wording stays SCID-faithful while adapting to
         the episode context:
-          * {mood_term}  — the ACTIVE episode's mood term: "euphorisch"
+          * {symptom_term} — the ACTIVE episode's symptom term: "euphorisch"
             when episode_elevated_mood holds, "reizbar" when
             episode_irritable_mood holds (default "euphorisch" before
             the mood is pinned — the SCID's euphoric framing);
@@ -470,17 +470,17 @@ class InterviewNavigator:
         active = run.readings()  # the active episode context
         now_readings = run.readings("now")
         if self._is_true(active.get("episode_elevated_mood")):
-            mood_term = "euphorisch"
+            symptom_term = "euphorisch"
         elif self._is_true(active.get("episode_irritable_mood")):
-            mood_term = "reizbar"
+            symptom_term = "reizbar"
         else:
-            mood_term = "euphorisch"
+            symptom_term = "euphorisch"
         now_mood_pinned = (
             self._is_true(now_readings.get("episode_elevated_mood"))
             or self._is_true(now_readings.get("episode_irritable_mood"))
         )
         values = {
-            "mood_term": mood_term,
+            "symptom_term": symptom_term,
             "other_time": "eine andere" if now_mood_pinned else "eine",
         }
         return TEXT_TOKEN_RE.sub(
