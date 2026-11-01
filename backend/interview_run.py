@@ -80,11 +80,13 @@ from contracts import (
     RUN_ID_RE,
     CriterionStatus,
     EpisodeState,
+    OutOfScopeExit,
     QuestionState,
     RunState,
     RunStatus,
     StateTransitionEvent,
     SubjectKind,
+    ValueReading,
     utc_now,
 )
 from interview_definition import InterviewDefinition
@@ -227,6 +229,16 @@ class InterviewRun:
             c.id: CriterionStatus.OPEN for c in definition.all_criteria()
         }
         self._transitions: list[TransitionRecord] = []
+        # the episode-scoped runtime state (design addendum 2026-10-31,
+        # OFQ-1/OFQ-2): the episode the CURRENT readings / criterion
+        # decisions belong to, the per-episode navigation-value readings,
+        # and the per-episode criterion states of episode-scoped
+        # criteria (run-scoped criteria keep the single global map above).
+        self._active_episode: str = "now"
+        self._readings: dict[str, dict[str, ValueReading]] = {}
+        self._episode_criterion_states: dict[str, dict[str, CriterionStatus]] = {}
+        # set exactly once via abort_out_of_scope (OFQ-6).
+        self._out_of_scope: OutOfScopeExit | None = None
         self._seed_episodes()
 
     # ------------------------------------------------------------------
@@ -285,6 +297,30 @@ class InterviewRun:
                 f"{', '.join(self._episodes) or 'none'})"
             )
         return episode.merged_into or episode_id
+
+    def set_active_episode(self, episode_id: str, cause: str) -> TransitionRecord:
+        """
+        Make `episode_id` the ACTIVE episode context (design addendum
+        2026-10-31, OFQ-1): the episode the CURRENT navigation-value
+        readings and the criterion decisions of episode-scoped criteria
+        belong to. The episode must exist in the registry (declare it
+        first in dynamic mode). Called by the Supervisor when it
+        re-enters the interview for a past episode — the re-entry itself
+        (re-opening the target questions) is the Supervisor's job, this
+        only switches the context.
+        """
+        _require_cause(cause)
+        self._require_active()
+        target = self.canonical_episode(episode_id)
+        current = self._active_episode
+        self._active_episode = target
+        return self._log(
+            SubjectKind.EPISODE,
+            target,
+            f"active:{current}",
+            f"active:{target}",
+            cause,
+        )
 
     def _require_dynamic_episodes(self, operation: str) -> None:
         """Past-episode registry operations need enabled + dynamic mode."""
@@ -638,8 +674,121 @@ class InterviewRun:
         return self._apply_question(question_id, QuestionState.SKIPPED, cause)
 
     # ------------------------------------------------------------------
+    # navigation values — the per-EPISODE readings (design addendum
+    # 2026-10-31, OFQ-2): the criterion engine evaluates a criterion
+    # only against the readings of the context its scope selects, so a
+    # past episode's values cannot contaminate the now-episode's
+    # decisions. A reading is NOT a state transition (there is no
+    # value subject in the audit vocabulary): it is the current content
+    # of a value in one episode's context, and storing it is a store
+    # operation, not a move in the transition tables.
+    # ------------------------------------------------------------------
+
+    def set_value(self, reading: ValueReading, cause: str) -> None:
+        """Store one value's reading in the ACTIVE episode's context."""
+        self.set_value_for(self._active_episode, reading, cause)
+
+    def set_value_for(
+        self, episode_id: str, reading: ValueReading, cause: str
+    ) -> None:
+        """
+        Store one value's reading in the given episode's context
+        (canonical id; must exist in the registry). Readings overwrite:
+        the LATEST reading of a value in a context wins — exactly the
+        semantics the criteria engine assumes for a current reading.
+        """
+        _require_cause(cause)
+        self._require_active()
+        context = self.canonical_episode(episode_id)
+        self._readings.setdefault(context, {})[reading.name] = reading
+
+    def readings(self, episode_id: str | None = None) -> dict[str, ValueReading]:
+        """
+        A copy of one episode context's current readings (value name ->
+        ValueReading). Default: the ACTIVE context.
+        """
+        context = (
+            self._active_episode
+            if episode_id is None
+            else self.canonical_episode(episode_id)
+        )
+        return dict(self._readings.get(context, {}))
+
+    def readings_by_context(self) -> dict[str, dict[str, ValueReading]]:
+        """A copy of ALL per-context readings (context id -> readings)."""
+        return {
+            context: dict(readings)
+            for context, readings in self._readings.items()
+        }
+
+    def all_readings(self) -> dict[str, ValueReading]:
+        """
+        The RUN-SCOPED view: all contexts merged (later episode context
+        overrides an earlier one — the legacy single-mapping behavior,
+        what unscoped criteria evaluate against).
+        """
+        merged: dict[str, ValueReading] = {}
+        ordered = [
+            context
+            for context in self._episode_order
+            if context in self._readings
+        ] + [
+            context
+            for context in self._readings
+            if context not in self._episode_order
+        ]
+        for context in ordered:
+            merged.update(self._readings[context])
+        return merged
+
+    def value(
+        self, name: str, episode_id: str | None = None
+    ) -> ValueReading | None:
+        """The current reading of one value (default: the active context)."""
+        return self.readings(episode_id).get(name)
+
+    # ------------------------------------------------------------------
     # criterion transitions (four-valued logic)
     # ------------------------------------------------------------------
+
+    def _criterion_scope(self, criterion_id: str):
+        """The criterion's scope (None: run-scoped — the legacy mode)."""
+        for criterion in self._definition.all_criteria():
+            if criterion.id == criterion_id:
+                return criterion.scope
+        return None
+
+    def _apply_episode_criterion(
+        self,
+        context: str,
+        criterion_id: str,
+        target: CriterionStatus,
+        cause: str,
+    ) -> TransitionRecord:
+        """The same transition-table check as _apply_criterion, per context."""
+        self._require_active()
+        self._known_criterion(criterion_id)
+        states = self._episode_criterion_states.setdefault(context, {})
+        current = states.get(criterion_id, CriterionStatus.OPEN)
+        legal = _CRITERION_TRANSITIONS[current]
+        if target not in legal:
+            legal_names = ", ".join(s.value for s in legal) or "none (terminal state)"
+            raise IllegalTransitionError(
+                SubjectKind.CRITERION,
+                f"{criterion_id} (episode {context})",
+                current.value,
+                target.value,
+                f"legal from {current.value}: {legal_names}",
+            )
+        states[criterion_id] = target
+        return self._log(
+            SubjectKind.CRITERION,
+            criterion_id,
+            current.value,
+            target.value,
+            cause,
+            episode=context,
+        )
 
     def set_criterion(
         self, criterion_id: str, status: CriterionStatus, cause: str
@@ -648,9 +797,60 @@ class InterviewRun:
         Move a criterion to `status` (OPEN -> any; UNCLEAR -> any;
         decided -> UNCLEAR only). Called by the Supervisor with the
         Diagnostiker's assessment (criterion evaluation, step 2.3).
+
+        Episode-scoped criteria (OFQ-2) are decided IN THE ACTIVE
+        EPISODE CONTEXT — the Supervisor switches the context before
+        evaluating a past episode, so the decision lands in the right
+        map; a `past`-scoped criterion cannot be decided in the
+        now-episode context at all (its values are not asked there).
         """
         _require_cause(cause)
-        return self._apply_criterion(criterion_id, status, cause)
+        self._known_criterion(criterion_id)
+        scope = self._criterion_scope(criterion_id)
+        if scope is None:
+            return self._apply_criterion(criterion_id, status, cause)
+        context = self._active_episode
+        if scope.episode == "past" and self._episodes[context].kind != "past":
+            raise IllegalTransitionError(
+                SubjectKind.CRITERION,
+                criterion_id,
+                "past-scoped",
+                status.value,
+                "a past-scoped criterion can only be decided in a "
+                "past-episode context (the active context is "
+                f"'{context}')",
+            )
+        return self._apply_episode_criterion(context, criterion_id, status, cause)
+
+    def force_criterion(
+        self, criterion_id: str, status: CriterionStatus, cause: str
+    ) -> list[TransitionRecord]:
+        """
+        Force-code a criterion to a decided status (design addendum
+        2026-10-31): the SCID escalation instruction (A52: "code A30
+        with '+' and A38 with 'JA'") is a CODING decision, not a
+        derived one — no answer of the active episode produced it.
+        The transition table forbids a direct decided -> decided move,
+        so an already-decided criterion is reopened via UNCLEAR first.
+        Returns the applied records (empty when the criterion already
+        holds `status` in the active context — the no-op case).
+        """
+        _require_cause(cause)
+        self._known_criterion(criterion_id)
+        current = self.criterion_state(criterion_id)
+        if current is status:
+            return []
+        records: list[TransitionRecord] = []
+        if current in (CriterionStatus.SATISFIED, CriterionStatus.NOT_SATISFIED):
+            records.append(
+                self.set_criterion(
+                    criterion_id,
+                    CriterionStatus.UNCLEAR,
+                    f"{cause} (reopened)",
+                )
+            )
+        records.append(self.set_criterion(criterion_id, status, cause))
+        return records
 
     # ------------------------------------------------------------------
     # run-level transitions
@@ -671,6 +871,28 @@ class InterviewRun:
         """ACTIVE -> ABORTED: the run ended before completion."""
         _require_cause(cause)
         return self._apply_run(RunStatus.ABORTED, cause)
+
+    def abort_out_of_scope(
+        self, target_ref: str, note: str = "", cause: str | None = None
+    ) -> TransitionRecord:
+        """
+        End the run via the OUT-OF-SCOPE exit (design addendum
+        2026-10-31, OFQ-6): the interview's routed continuation target
+        lies OUTSIDE this definition (the SCID excerpt ends at A78).
+        The OutOfScopeExit is recorded on the run (surfaced by the
+        snapshot / audit) and the run is aborted — an explicit,
+        logged hand-over, never a silently swallowed jump.
+        """
+        self._require_active()
+        self._out_of_scope = OutOfScopeExit(
+            target_ref=target_ref, note=note.strip() or None
+        )
+        if cause is None:
+            cause = (
+                "out-of-scope exit: the interview continues with "
+                f"{target_ref} (outside this definition)"
+            )
+        return self.abort_run(cause)
 
     # ------------------------------------------------------------------
     # read-only access (copies — no external code can mutate the run)
@@ -707,7 +929,47 @@ class InterviewRun:
         return self._question_states[self._known_question(question_id)]
 
     def criterion_state(self, criterion_id: str) -> CriterionStatus:
-        return self._criterion_states[self._known_criterion(criterion_id)]
+        """
+        The criterion's status in the ACTIVE episode context (the
+        episode-scoped model, design addendum 2026-10-31, OFQ-2):
+        run-scoped criteria keep the single global state;
+        episode-scoped criteria are read from the state map of the
+        active episode (a criterion that has not been decided in this
+        context is OPEN there, whatever other contexts say).
+        """
+        criterion_id = self._known_criterion(criterion_id)
+        scope = self._criterion_scope(criterion_id)
+        if scope is None:
+            return self._criterion_states[criterion_id]
+        context = self._active_episode
+        return self._episode_criterion_states.get(context, {}).get(
+            criterion_id, CriterionStatus.OPEN
+        )
+
+    @property
+    def active_episode(self) -> str:
+        """The episode the current readings / criterion decisions belong to."""
+        return self._active_episode
+
+    @property
+    def out_of_scope(self) -> OutOfScopeExit | None:
+        """The out-of-scope exit (set once via abort_out_of_scope)."""
+        return self._out_of_scope
+
+    def episode_criterion_states(
+        self, episode_id: str | None = None
+    ) -> dict[str, CriterionStatus]:
+        """
+        A copy of one episode context's criterion states (criterion id
+        -> status; default: the ACTIVE context). Run-scoped criteria are
+        NOT in these maps (they live in criterion_states).
+        """
+        context = (
+            self._active_episode
+            if episode_id is None
+            else self.canonical_episode(episode_id)
+        )
+        return dict(self._episode_criterion_states.get(context, {}))
 
     def reserved_question(self) -> str | None:
         """The single question currently RESERVED (the next question), if any."""
@@ -760,4 +1022,6 @@ class InterviewRun:
                 q: list(eps) for q, eps in self._question_episodes.items()
             },
             episodes=dict(self._episodes),
+            active_episode=self._active_episode,
+            out_of_scope=self._out_of_scope,
         )
