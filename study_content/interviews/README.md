@@ -15,7 +15,7 @@ means v2, anything else is legacy):
    (same question order and behavior); the adapter generates
    v2-convention ids (`sec_<n>`, `qg_<n>.1`, `sq_<n>.1.<m>`) and remaps
    the legacy question ids.
-2. **v2** — `depression_scid_v2_example.yaml`: the target format of the
+2. **v2** — `manic_scid_v2_example.yaml`: the target format of the
    reconstruction (RECONSTRUCTION_PLAN.md Phase 2; authoritative design
    note: `docs/interview_navi_design.md`): a structured interview as a
    navigable object — a hierarchy of Section Groups (arbitrarily

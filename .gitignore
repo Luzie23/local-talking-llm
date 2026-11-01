@@ -133,6 +133,10 @@ celerybeat.pid
 # committed — see backend/store.py (DEFAULT_STORE_ROOT).
 data/
 
+# files depicting the SCID interview aren't published due to licensing
+study_content/interviews/manic_scid_v2_example.yaml
+docs/manic_scid_v2_open_questions.md
+
 # Environments
 .env
 .venv
