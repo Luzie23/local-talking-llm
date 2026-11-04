@@ -112,3 +112,40 @@ GRUPPENABSCHLUSS (alle Pflichtfragen der Gruppe terminal) angewendet:
 Gruppe vor und löst den ersten ausgelösten Sprung der Gruppe aus
 (Declarationsreihenfolge); `resolve_jump` mitten in der Gruppe
 schlägt fehl (fails loudly).
+
+## Nachtrag: Deklarative Zwangskodierung von Kriterien über Sprünge (2026-11-03)
+
+Einige SCID-Instruktionen sind **Kodierungsentscheidungen**, die keine
+Antwort der aktiven Episode erzeugt, sondern durch die Eskalation selbst
+erzwungen werden — prototypisch A52: „Wenn die Episode schwer genug ist,
+um eine Hospitalisierung erforderlich zu machen, ... kodieren Sie A30 mit
+'+' und A38 mit 'JA' und fahren Sie mit A39 fort."
+
+**Mechanismus.** Ein Sprung kann ein Attribut `force_criterion` tragen:
+eine Liste von `{criterion, status}`-Einträgen (jedes `criterion` ein
+deklariertes Kriterium — importzeitlich validiert; `status` standardmäßig
+`SATISFIED`). Feuert der Sprung und wird er *angewendet* (das Ziel wird
+erst- oder neu gestellt — nicht ein gesperrtes Ziel, das als
+`LOCKED-IGNORED` ignoriert wurde), so kodiert der Supervisor jeden Eintrag
+über `run.force_criterion` im **aktiven Episode-Kontext** auf seinen
+Status. Das ist ein Kodierungsschritt, kein Navigationsschritt: die
+Sprungauflösung bleibt unverändert, und die Transitionstabelle wird
+beachtet (ein bereits entschiedenes Kriterium wird zuerst über `UNCLEAR`
+wiedereröffnet). Der Supervisor trägt kein Interview-spezifisches Wissen
+mehr; die Zuordnung liegt vollständig in der Definition.
+
+**Bezug zur A42–A48 → A31–A37-Übertragung.** Der eigentliche
+Symptom-Übergang ist NICHT Teil der Zwangskodierung: die manische Batterie
+(A31–A37) und die hypomane Batterie (A42–A48) schreiben auf die **gleichen
+gemeinsamen Symptom- und Schwerewerte** (`grandiosity`, `talkative`, …;
+`marked_impairment`, `hospitalized`, `psychotic_features`), sodass die
+manischen Kriterien (`c_mania_symptom_threshold`, `c_a39_severe`) die
+hypoman gesammelten Werte direkt lesen. Die `force_criterion`-Einträge
+decken genau den Teil ab, den die Antwortdaten *nicht* tragen:
+`c_a30_week` liest `episode_duration_days` (manisch) — ein Wert, der auf
+dem hypomanen Pfad nie gesetzt wird (`hypomania_duration_days` ist ein
+eigener, separater Wert) — und `c_mania_symptom_threshold` wird als
+Ergebnis der Neuklassifizierung definitiv als erfüllt fixiert. Die
+Dauer- und Dichtewerte bleiben bewusst getrennt, damit manische und
+hypomane Einordnung unabhängig voneinander pro Episode bewertet werden
+können.

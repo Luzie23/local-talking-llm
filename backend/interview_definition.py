@@ -236,6 +236,28 @@ class EpisodeConfiguration(BaseModel):
     past: PastEpisodesConfig = Field(default_factory=PastEpisodesConfig)
 
 
+class ForcedCriterion(BaseModel):
+    """
+    One criterion a jump FORCE-CODES when it fires (design addendum
+    2026-11-03, OFQ-7): a DECLARATIVE coding decision carried with the
+    jump, not a derived one. The SCID A52 escalation declares, on its
+    jump onto A39, "kodieren Sie A30 mit '+' und A38 mit 'JA'" — the
+    mania duration and symptom threshold are force-coded SATISFIED in
+    the active context even though no answer of that context produced
+    them (the mania duration value is never collected on the hypomanic
+    path, and the symptom threshold is locked in as met by the
+    reclassification). The Supervisor applies each entry through
+    run.force_criterion when the jump resolves; each `criterion` must
+    be a declared criterion (validated at import). `status` defaults to
+    SATISFIED.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    criterion: str = Field(min_length=1)
+    status: CriterionStatus = CriterionStatus.SATISFIED
+
+
 class Jump(BaseModel):
     """
     One declarative transition (jump) out of a question.
@@ -295,6 +317,12 @@ class Jump(BaseModel):
     # the definition's own framing of the exit, surfaced with the
     # abort (e.g. "SCID goes on here — outside this excerpt").
     note: str | None = None
+    # the criteria this jump FORCE-CODES when it fires (design addendum
+    # 2026-11-03, OFQ-7): a declarative coding decision carried with the
+    # jump — the Supervisor force-codes each entry in the active context
+    # when the jump resolves (see ForcedCriterion). Validated at import:
+    # each entry's criterion must be a declared criterion.
+    force_criterion: list[ForcedCriterion] = Field(default_factory=list)
 
 
 # How the answer to a single question is recorded (design note:
@@ -694,9 +722,9 @@ CriteriaRule = Annotated[
 
 class CriterionScope(BaseModel):
     """
-    WHICH episode a criterion is evaluated against: 
-    without a scope a criterion is RUN-SCOPED (the readings of every 
-    episode are merged — the legacy behavior). With a scope it is 
+    WHICH episode a criterion is evaluated against:
+    without a scope a criterion is RUN-SCOPED (the readings of every
+    episode are merged — the legacy behavior). With a scope it is
     EPISODE-SCOPED and only the readings of the CURRENTLY
     ACTIVE episode count, so a past episode cannot contaminate the
     now-episode's decisions (and vice versa):
@@ -1041,6 +1069,16 @@ class InterviewDefinition(BaseModel):
                             f"a declared criterion (criteria: "
                             f"{sorted(criterion_ids) or 'none'})"
                         )
+                    # the declared force-coding (OFQ-7): every criterion
+                    # the jump force-codes must be a declared criterion.
+                    for fi, forced in enumerate(jump.force_criterion):
+                        if forced.criterion not in criterion_ids:
+                            errors.append(
+                                f"{jloc}: force_criterion[{fi}].criterion "
+                                f"{forced.criterion!r} is not a declared "
+                                f"criterion (criteria: "
+                                f"{sorted(criterion_ids) or 'none'})"
+                            )
                     # the episode aspect (design addendum 2026-10-26):
                     # exactly one of episode_jump / episode, and it must
                     # fit the definition's episodes block + target.
