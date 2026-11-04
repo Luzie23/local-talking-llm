@@ -320,38 +320,118 @@ class TestV2Loading(DefinitionTestBase):
 
     def test_v2_example_in_repo_loads(self):
         defn = load_interview_definition(
-            os.path.join(INTERVIEWS_DIR, "depression_scid_v2_example.yaml")
-        )
-        self.assertEqual(defn.definition_version, "scid_depression_v2@3")
-        self.assertEqual([s.id for s in defn.sections], ["sec_1", "sec_2"])
-        self.assertEqual(
-            [g.id for g in defn.all_question_groups()],
-            ["qg_1.1", "qg_1.1.1", "qg_2.1"],
+            os.path.join(INTERVIEWS_DIR, "manic_scid_v2_example.yaml")
         )
         self.assertEqual(
-            [q.id for q in defn.all_questions()],
-            ["sq_1.1.1", "sq_1.1.2", "sq_1.1.1.1", "sq_1.1.1.2", "sq_2.1.1"],
+            defn.definition_version, "scid_manie_hypomanie_a29_a54_v2_atomic"
         )
-        # the nested section shows up in the walk at the right depth
-        paths = [path for path, _ in defn._walk()]
-        self.assertIn("sec_1 > sec_1.1", paths)
+        self.assertEqual(
+            [s.id for s in defn.sections],
+            [
+                "sec_current_mania",
+                "sec_current_hypomania",
+                "sec_previous_episode",
+                "sec_end",
+            ],
+        )
+        self.assertEqual(len(defn.all_question_groups()), 54)
+        self.assertEqual(len(defn.all_questions()), 154)
         self.assertTrue(defn.canonical_fallback_message)
-        # the episode block (design addendum 2026-10-26): dynamic mode,
-        # the two-week now-episode, qg_1.1 re-askable per episode, and
-        # the criterion-gated episode jump of sq_1.1.2
+        # the episode block (design addendum 2026-10-26): 30-day now-episode,
+        # dynamic past-episode declaration, and the A54 re-entry jump with
+        # episode aspect targeting the episode_evaluable A30 duration group
         self.assertTrue(defn.episodes.enabled)
         self.assertEqual(defn.episodes.past.declaration, "dynamic")
-        self.assertEqual(defn.episodes.now.window_days, 14)
-        group = defn.group_by_id("qg_1.1")
+        self.assertEqual(defn.episodes.now.window_days, 30)
+        group = defn.group_by_id("qg_a30_duration")
         self.assertTrue(group.episode_evaluable)
-        jumps = defn.question_by_id("sq_1.1.2").jumps
-        self.assertEqual(jumps[1].to, "qg_1.1")
-        self.assertTrue(jumps[1].episode_jump)
-        self.assertEqual(jumps[1].on_criterion, "c_anhedonia_present")
+        jumps = defn.question_by_id("sq_a54_6").jumps
+        self.assertEqual(jumps[0].to, "qg_a30_duration")
+        self.assertTrue(jumps[0].episode_jump)
+        self.assertEqual(jumps[0].on_criterion, "c_a54_elevated_energy")
+        # primary judgment (SCID criteria D/F) is derived from the
+        # etiology answers; it is a coding decision, not a routing gate
+        value_names = {v.name for v in defn.values}
+        self.assertNotIn("primary_episode", value_names)
+        self.assertNotIn("mania_primary", value_names)
+        self.assertNotIn("hypomania_primary", value_names)
+        rule = defn.criterion_by_id("c_a40_primary").rule
+        self.assertEqual(rule.op, "all")
+        self.assertEqual(
+            {leaf.value for leaf in rule.rules},
+            {
+                "physical_illness_before",
+                "medication_before",
+                "alcohol_before",
+                "drugs_before",
+            },
+        )
+        self.assertEqual(defn.criterion_by_id("c_a53_primary").rule.op, "all")
+        # the etiology chains end unconditionally at the A54 screen
+        for qid in ("sq_a40_7", "sq_a53_7"):
+            etio_jumps = defn.question_by_id(qid).jumps
+            self.assertEqual(len(etio_jumps), 1)
+            self.assertIsNone(etio_jumps[0].on_criterion)
+            self.assertEqual(etio_jumps[0].to, "qg_a54_elevated_screen")
+        # the A54 past-episode screen uses its own values, not the
+        # current-episode ones (no pre-decided screening criteria)
+        self.assertEqual(
+            defn.criterion_by_id("c_a54_elevated").rule.value,
+            "past_elevated_mood",
+        )
+        # the A29 energy gate blocks the batteries when unsatisfied
+        a29_6_jumps = defn.question_by_id("sq_a29_6").jumps
+        self.assertEqual(
+            [(j.to, j.when.value) for j in a29_6_jumps],
+            [
+                ("qg_a30_duration", "SATISFIED"),
+                ("qg_a54_elevated_screen", "NOT_SATISFIED"),
+            ],
+        )
+        # PDF cross-check 2026-10-29: SCID A41 asks its own density question
+        # for the hypomanic phase, so it needs a separate value. Sharing
+        # episode_most_days with A30 let c_a41_density get pre-decided by
+        # the A30 answer (decided-guard), skipping the hypomania battery.
+        self.assertIn("hypomania_most_days", value_names)
+        self.assertEqual(
+            defn.criterion_by_id("c_a41_density").rule.value,
+            "hypomania_most_days",
+        )
+        self.assertEqual(
+            defn.criterion_by_id("c_a30_density").rule.value,
+            "episode_most_days",
+        )
+        self.assertIn(
+            "hypomania_most_days",
+            defn.question_by_id("sq_a41_2").meaning_units[0].description,
+        )
+        self.assertIn(
+            "episode_most_days",
+            defn.question_by_id("sq_a30_4").meaning_units[0].description,
+        )
+        # SCID A39 question order: impact, then hospitalization (FALLS
+        # UNBEKANNT), then the NUR-WENN-NOTWENDIG block; the A54-derived
+        # psychosis clarification stays last and carries the gate jumps.
+        self.assertEqual(
+            [q.id for q in defn.group_by_id("qg_a39").questions],
+            [
+                "sq_a39_1",
+                "sq_a39_10",
+                "sq_a39_2",
+                "sq_a39_3",
+                "sq_a39_4",
+                "sq_a39_5",
+                "sq_a39_6",
+                "sq_a39_7",
+                "sq_a39_8",
+                "sq_a39_9",
+                "sq_a39_11",
+            ],
+        )
 
     def test_auto_detect_v2_and_legacy(self):
         v2 = load_interview_definition(
-            os.path.join(INTERVIEWS_DIR, "depression_scid_v2_example.yaml")
+            os.path.join(INTERVIEWS_DIR, "manic_scid_v2_example.yaml")
         )
         legacy = load_interview_definition(
             os.path.join(INTERVIEWS_DIR, "depression_scid_example.yaml")
@@ -619,7 +699,7 @@ class TestInterviewGuideWrapper(DefinitionTestBase):
 
     def test_v2_file_rejected_by_legacy_wrapper(self):
         with self.assertRaises(InterviewDefinitionError) as ctx:
-            InterviewGuide("depression_scid_v2_example.yaml")
+            InterviewGuide("manic_scid_v2_example.yaml")
         self.assertIn("v2", str(ctx.exception))
 
     def test_unknown_profile_fails_fast(self):
@@ -693,6 +773,40 @@ class TestImportValidation(DefinitionTestBase):
         self._expect_error(
             VALID_V2_YAML.replace("on_criterion: c_yes", "on_criterion: c_zzz"),
             "on_criterion 'c_zzz' is not a declared criterion",
+        )
+
+    def test_jump_force_criterion_is_parsed(self):
+        # a jump that declares a force-coding (OFQ-7) is parsed onto the
+        # jump; the default is an empty list (no force-coding declared).
+        definition = self._load_v2(VALID_V2_YAML)
+        self.assertEqual(
+            definition.question_by_id("sq_1.1.2").jumps[0].force_criterion, []
+        )
+        yaml_text = VALID_V2_YAML.replace(
+            "when: SATISFIED",
+            "when: SATISFIED\n"
+            "                force_criterion:\n"
+            "                - criterion: c_high\n"
+            "                  status: SATISFIED",
+        )
+        parsed = self._load_v2(yaml_text)
+        jump = parsed.question_by_id("sq_1.1.2").jumps[0]
+        self.assertEqual(len(jump.force_criterion), 1)
+        self.assertEqual(jump.force_criterion[0].criterion, "c_high")
+        self.assertEqual(
+            jump.force_criterion[0].status, CriterionStatus.SATISFIED
+        )
+
+    def test_jump_force_criterion_unknown_criterion(self):
+        self._expect_error(
+            VALID_V2_YAML.replace(
+                "when: SATISFIED",
+                "when: SATISFIED\n"
+                "                force_criterion:\n"
+                "                - criterion: c_zzz\n"
+                "                  status: SATISFIED",
+            ),
+            "force_criterion[0].criterion 'c_zzz' is not a declared criterion",
         )
 
     def test_relation_to_unknown_section(self):
