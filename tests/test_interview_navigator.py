@@ -12,7 +12,9 @@ not) and the EPISODE MODEL for locked jump targets (plain jumps:
 ignored + logged; dynamic episode jumps: pending until the
 Diagnostiker's EpisodeDecision, then re-ask / same-episode-ignore;
 predeclared: deterministic re-ask) — plus the online criterion-update
-proposals with the decided guard.
+proposals with the decided guard, the LoopPolicy variants for a plain
+locked-target jump (IGNORE_AND_CONTINUE / END_RUN / ERROR) and the
+{text token} rendering of the canonical question text (OFQ-4/OFQ-5).
 
 The navigator is pure and proposal-based: it never mutates the run;
 the tests drive the run through the state machine (step 2.2) exactly
@@ -51,6 +53,7 @@ from interview_definition import (
 from interview_navigator import (
     EpisodeDecision,
     InterviewNavigator,
+    LoopPolicy,
     NavigatorError,
 )
 from interview_run import InterviewRun
@@ -860,6 +863,273 @@ class TestCriterionUpdates(unittest.TestCase):
             nav(run).propose_criterion_updates(run, readings),
             {"c_anh": CriterionStatus.SATISFIED},
         )
+
+
+def make_render_definition() -> InterviewDefinition:
+    """
+    A definition exercising the {text token} rendering (design addendum
+    2026-10-31, OFQ-4/OFQ-5): one question carries the CLOSED token
+    set ({symptom_term}, {other_time}), one is plain text; the mood
+    values the tokens are rendered from are declared; the episodes
+    block is enabled (dynamic) so a past-episode context can be
+    entered.
+    """
+    return InterviewDefinition(
+        definition_version=DEFINITION_VERSION,
+        guide_id="navi_guide",
+        title="Navi Test Guide",
+        values=[
+            ValueDeclaration(name="episode_elevated_mood", type="bool"),
+            ValueDeclaration(name="episode_irritable_mood", type="bool"),
+        ],
+        sections=[
+            SectionGroup(
+                id="sec_1",
+                title="Mood",
+                children=[
+                    QuestionGroup(
+                        id="qg_1.1",
+                        title="Mood",
+                        questions=[
+                            QuestionDefinition(
+                                id="sq_1.1.1",
+                                text="Sind Sie {symptom_term} in {other_time} Zeit?",
+                            ),
+                            QuestionDefinition(
+                                id="sq_1.1.2",
+                                text="Plain question without tokens.",
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+        episodes=EpisodeConfiguration(
+            enabled=True, past=PastEpisodesConfig(declaration="dynamic")
+        ),
+    )
+
+
+def make_render_run() -> InterviewRun:
+    return InterviewRun(make_render_definition(), new_run_id())
+
+
+class TestRenderedText(unittest.TestCase):
+    """
+    rendered_text (OFQ-4/OFQ-5): the canonical question text with its
+    {text tokens} filled from the RUN's current state:
+      * {symptom_term} — from the ACTIVE episode context: "euphorisch"
+        (the SCID's euphoric framing) before the mood is pinned,
+        "reizbar" once the irritable mood holds (elevated wins the
+        precedence);
+      * {other_time} — from the NOW-episode context: "eine andere"
+        only once the now-episode's mood is pinned, else "eine".
+    A question without tokens is returned verbatim; an unknown id
+    fails loudly.
+    """
+
+    def render(self, run: InterviewRun, question_id: str = "sq_1.1.1") -> str:
+        return nav(run).rendered_text(question_id, run)
+
+    def test_default_before_the_mood_is_pinned(self):
+        run = make_render_run()
+        self.assertEqual(self.render(run), "Sind Sie euphorisch in eine Zeit?")
+
+    def test_elevated_mood_in_the_now_episode(self):
+        run = make_render_run()
+        run.set_value(
+            ValueReading(name="episode_elevated_mood", value=True), "answer"
+        )
+        self.assertEqual(
+            self.render(run), "Sind Sie euphorisch in eine andere Zeit?"
+        )
+
+    def test_irritable_mood_in_the_now_episode(self):
+        run = make_render_run()
+        run.set_value(
+            ValueReading(name="episode_irritable_mood", value=True), "answer"
+        )
+        self.assertEqual(
+            self.render(run), "Sind Sie reizbar in eine andere Zeit?"
+        )
+
+    def test_elevated_mood_takes_precedence(self):
+        run = make_render_run()
+        run.set_value(
+            ValueReading(name="episode_elevated_mood", value=True), "answer"
+        )
+        run.set_value(
+            ValueReading(name="episode_irritable_mood", value=True), "answer"
+        )
+        self.assertEqual(
+            self.render(run), "Sind Sie euphorisch in eine andere Zeit?"
+        )
+
+    def test_unreliable_reading_does_not_pin_the_mood(self):
+        run = make_render_run()
+        run.set_value(
+            ValueReading(
+                name="episode_irritable_mood", value=True, reliable=False
+            ),
+            "unreliable answer",
+        )
+        self.assertEqual(self.render(run), "Sind Sie euphorisch in eine Zeit?")
+
+    def test_symptom_term_follows_the_active_episode_context(self):
+        run = make_render_run()
+        run.declare_episode("another period", "clinician")
+        run.set_active_episode("ep_1", "re-enter for ep_1")
+        run.set_value(
+            ValueReading(name="episode_irritable_mood", value=True),
+            "answered for ep_1",
+        )
+        # the ACTIVE (past) context drives {symptom_term} ...
+        # ... while {other_time} still reflects the NOW-episode
+        # (its mood is unpinned)
+        self.assertEqual(self.render(run), "Sind Sie reizbar in eine Zeit?")
+
+    def test_verbatim_when_the_text_has_no_tokens(self):
+        run = make_render_run()
+        self.assertEqual(
+            self.render(run, "sq_1.1.2"), "Plain question without tokens."
+        )
+
+    def test_unknown_question_fails_loudly(self):
+        run = make_render_run()
+        with self.assertRaises(NavigatorError) as ctx:
+            self.render(run, "sq_zzz")
+        self.assertIn("sq_zzz", str(ctx.exception))
+
+
+def make_loop_definition() -> InterviewDefinition:
+    """
+    A PLAIN jump (no episode aspect) that loops back onto an
+    already-answered (locked) group, with questions still open AFTER
+    the source — the LoopPolicy decides what happens:
+      sec_1 / qg_1.1 / sq_1.1.1             (the locked target)
+      sec_2 / qg_2.1 / sq_2.1.1 -> sq_1.1.1 (the plain loop jump)
+      sec_3 / qg_3.1 / sq_3.1.1, sq_3.1.2   (still open afterwards)
+    """
+    return InterviewDefinition(
+        definition_version=DEFINITION_VERSION,
+        guide_id="navi_guide",
+        title="Navi Test Guide",
+        sections=[
+            SectionGroup(
+                id="sec_1",
+                title="First",
+                children=[
+                    QuestionGroup(
+                        id="qg_1.1",
+                        title="First",
+                        questions=[QuestionDefinition(id="sq_1.1.1", text="One?")],
+                    )
+                ],
+            ),
+            SectionGroup(
+                id="sec_2",
+                title="Second",
+                children=[
+                    QuestionGroup(
+                        id="qg_2.1",
+                        title="Second",
+                        questions=[
+                            QuestionDefinition(
+                                id="sq_2.1.1",
+                                text="Two?",
+                                jumps=[Jump(to="sq_1.1.1")],
+                            )
+                        ],
+                    )
+                ],
+            ),
+            SectionGroup(
+                id="sec_3",
+                title="Third",
+                children=[
+                    QuestionGroup(
+                        id="qg_3.1",
+                        title="Third",
+                        questions=[
+                            QuestionDefinition(id="sq_3.1.1", text="Three?"),
+                            QuestionDefinition(id="sq_3.1.2", text="Four?"),
+                        ],
+                    )
+                ],
+            ),
+        ],
+    )
+
+
+def locked_loop_run() -> InterviewRun:
+    """The target group LOCKED, the jump's group COMPLETE, the tail open."""
+    run = InterviewRun(make_loop_definition(), new_run_id())
+    close_question(run, "sq_1.1.1")  # the target group is locked
+    close_question(run, "sq_2.1.1")  # the jump's group is complete
+    return run
+
+
+class TestLoopPolicy(unittest.TestCase):
+    """
+    LoopPolicy: what the navigator does when a PLAIN jump (no episode
+    aspect) leads to an already-answered (locked) target. The locked
+    questions are never re-asked under any policy; every decision
+    carries a loop_note (the decision is LOGGED, never silent).
+    """
+
+    def test_default_policy_ignores_and_continues(self):
+        run = locked_loop_run()
+        n = nav(run)
+        self.assertIs(n.loop_policy, LoopPolicy.IGNORE_AND_CONTINUE)
+        res = n.resolve_jump(run, "sq_2.1.1")
+        self.assertTrue(res.fired)
+        self.assertEqual(res.jump.to, "sq_1.1.1")
+        self.assertTrue(res.locked_target)
+        self.assertIs(res.policy_applied, LoopPolicy.IGNORE_AND_CONTINUE)
+        # the deterministic postorder continues from the current
+        # position — nothing is skipped, nothing is re-asked
+        self.assertEqual(res.next_question, "sq_3.1.1")
+        self.assertEqual(res.skip_proposals, ())
+        self.assertEqual(res.reopen_proposals, ())
+        # and the decision is logged (never silent)
+        self.assertIn("has no episode aspect", res.loop_note)
+        self.assertIn("postorder continues", res.loop_note)
+
+    def test_end_run_skips_everything_remaining(self):
+        run = locked_loop_run()
+        n = InterviewNavigator(run.definition, loop_policy=LoopPolicy.END_RUN)
+        res = n.resolve_jump(run, "sq_2.1.1")
+        self.assertTrue(res.fired)
+        self.assertTrue(res.locked_target)
+        self.assertIs(res.policy_applied, LoopPolicy.END_RUN)
+        # the loop counts as "nothing more to ask": everything still
+        # open is a skip proposal and there is no next question
+        self.assertIsNone(res.next_question)
+        self.assertEqual(res.skip_proposals, ("sq_3.1.1", "sq_3.1.2"))
+        self.assertIn("everything remaining is skipped", res.loop_note)
+
+    def test_error_policy_fails_loudly(self):
+        run = locked_loop_run()
+        n = InterviewNavigator(run.definition, loop_policy=LoopPolicy.ERROR)
+        with self.assertRaises(NavigatorError) as ctx:
+            n.resolve_jump(run, "sq_2.1.1")
+        message = str(ctx.exception)
+        self.assertIn("'sq_2.1.1'", message)
+        self.assertIn("'sq_1.1.1'", message)
+        self.assertIn("fail loudly", message)
+
+    def test_the_policy_only_decides_locked_targets(self):
+        # with the target group still open the plain jump navigates
+        # normally — no loop policy is applied
+        run = InterviewRun(make_loop_definition(), new_run_id())
+        close_question(run, "sq_2.1.1")  # the jump's group is complete
+        n = InterviewNavigator(run.definition, loop_policy=LoopPolicy.ERROR)
+        res = n.resolve_jump(run, "sq_2.1.1")
+        self.assertTrue(res.fired)
+        self.assertFalse(res.locked_target)
+        self.assertIsNone(res.policy_applied)
+        self.assertIsNone(res.loop_note)
+        self.assertEqual(res.next_question, "sq_1.1.1")
 
 
 if __name__ == "__main__":

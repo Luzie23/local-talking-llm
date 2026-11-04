@@ -5,7 +5,8 @@ Phase 2, step 2.1): the v2 hierarchical InterviewDefinition loader
 arbitrarily deep), the import-time validation (globally unique ids, id
 prefixes sec_/qg_/sq_, section relations, criteria-group marker/criteria
 consistency, jump targets, criteria referencing known values/types,
-known behavior profiles) and the legacy adapter that maps the current
+known behavior profiles, and the CLOSED set of {text tokens} in
+question texts) and the legacy adapter that maps the current
 linear guide YAML onto the v2 model with generated ids.
 
 Loops between jumps are allowed by design (the loop-back-to-locked-group
@@ -935,6 +936,29 @@ class TestImportValidation(DefinitionTestBase):
         message = str(ctx.exception)
         self.assertIn("sq_1.1.1", message)
         self.assertIn("qg_zzz", message)
+
+    def test_unknown_text_token_is_rejected_at_import(self):
+        # {text tokens} form a CLOSED set (OFQ-4/OFQ-5): the question
+        # text may only reference the tokens known to the loader
+        text = VALID_V2_YAML.replace(
+            'text: "Q one?"', 'text: "Q one? {unknown_token}"'
+        )
+        self._expect_error(
+            text,
+            "text references unknown text token {unknown_token}",
+            "(known: ['other_time', 'symptom_term'])",
+        )
+
+    def test_known_text_tokens_are_accepted(self):
+        text = VALID_V2_YAML.replace(
+            'text: "Q one?"',
+            'text: "Are you {symptom_term} at {other_time} time?"',
+        )
+        definition = self._load_v2(text)
+        self.assertEqual(
+            definition.question_by_id("sq_1.1.1").text,
+            "Are you {symptom_term} at {other_time} time?",
+        )
 
 
 class TestEpisodeValidation(DefinitionTestBase):

@@ -3,7 +3,11 @@ Unit tests for backend/interview_run.py (RECONSTRUCTION_PLAN.md Phase 2,
 step 2.2): the InterviewRun state machine — the explicit legal/illegal
 transition tables, the invariants (single RESERVED question, terminal
 run guard, non-empty causes), the four-valued criterion logic, the
-transition log / RunState snapshot and the audit-event projection.
+transition log / RunState snapshot and the audit-event projection —
+plus the per-EPISODE navigation-value readings and criterion scoping
+(design addendum 2026-10-31, OFQ-2), the declarative jump force-coding
+(OFQ-7) and the OUT-OF-SCOPE exit (OFQ-6) as core state-machine
+behavior (the step 2.6 core test suite).
 
 All tests are deterministic and need no network access.
 """
@@ -20,12 +24,14 @@ from contracts import (
     RunStatus,
     StateTransitionEvent,
     SubjectKind,
+    ValueReading,
     new_run_id,
     parse_event,
 )
 from interview_definition import (
     AnyRule,
     CriterionDefinition,
+    CriterionScope,
     EqRule,
     EpisodeConfiguration,
     InterviewDefinition,
@@ -429,6 +435,61 @@ def dynamic_episodes() -> EpisodeConfiguration:
     )
 
 
+def make_scoped_definition() -> InterviewDefinition:
+    """
+    A definition carrying one RUN-scoped criterion (no scope — the
+    single global state, the legacy behavior), one `current`-scoped
+    criterion (decided in the ACTIVE episode context) and one `past`-
+    scoped criterion (decidable only in a past-episode context) — the
+    episode-scoped model (design addendum 2026-10-31, OFQ-2). The
+    episodes block is enabled (dynamic) so a past context can be
+    declared and entered at run time.
+    """
+    return InterviewDefinition(
+        definition_version=DEFINITION_VERSION,
+        guide_id="test_guide",
+        title="Test Guide",
+        values=[ValueDeclaration(name="v_yes", type="bool")],
+        sections=[
+            SectionGroup(
+                id="sec_1",
+                title="A",
+                children=[
+                    QuestionGroup(
+                        id="qg_1.1",
+                        title="A",
+                        strategy="all_required",
+                        criteria_group=True,
+                        questions=[
+                            QuestionDefinition(id="sq_1.1.1", text="A?"),
+                            QuestionDefinition(id="sq_1.1.2", text="B?"),
+                        ],
+                        criteria=[
+                            CriterionDefinition(
+                                id="c_run",
+                                rule=EqRule(value="v_yes", equals=True),
+                            ),
+                            CriterionDefinition(
+                                id="c_cur",
+                                rule=EqRule(value="v_yes", equals=True),
+                                scope=CriterionScope(episode="current"),
+                            ),
+                            CriterionDefinition(
+                                id="c_past",
+                                rule=EqRule(value="v_yes", equals=True),
+                                scope=CriterionScope(episode="past"),
+                            ),
+                        ],
+                    )
+                ],
+            )
+        ],
+        episodes=EpisodeConfiguration(
+            enabled=True, past=PastEpisodesConfig(declaration="dynamic")
+        ),
+    )
+
+
 class TestEpisodeRegistry(unittest.TestCase):
     """
     The per-interview episode registry (design addendum 2026-10-26):
@@ -660,3 +721,451 @@ class TestEpisodeReopen(unittest.TestCase):
         # registry cannot be mutated in place
         with self.assertRaises(Exception):
             snap.episodes["ep_1"].aliases = ("tampered",)  # type: ignore[misc]
+
+
+class TestValueReadingsAndEpisodeContext(unittest.TestCase):
+    """
+    The per-EPISODE navigation-value readings (design addendum
+    2026-10-31, OFQ-2): a reading is the CURRENT content of a value in
+    ONE episode's context — a STORE operation, not a state transition
+    (there is no value subject in the audit vocabulary). The criteria
+    engine evaluates each criterion only against the readings its scope
+    selects, so one episode's values cannot contaminate another's
+    decisions.
+    """
+
+    def test_set_value_goes_into_the_active_context(self):
+        run = make_episode_run(dynamic_episodes())
+        reading = ValueReading(name="v_yes", value=True)
+        run.set_value(reading, "Diagnostiker: answer to sq_1.1.1")
+        self.assertEqual(run.readings()["v_yes"], reading)
+        self.assertEqual(run.readings("now")["v_yes"], reading)
+        self.assertEqual(run.value("v_yes"), reading)
+        self.assertIsNone(run.value("v_missing"))
+        # only the now context carries readings so far
+        self.assertEqual(set(run.readings_by_context()), {"now"})
+
+    def test_set_value_follows_the_active_context(self):
+        run = make_episode_run(dynamic_episodes())
+        run.declare_episode("another period", "clinician")
+        run.set_active_episode("ep_1", "re-enter the interview for ep_1")
+        run.set_value(
+            ValueReading(name="v_yes", value=True), "answered ep_1"
+        )
+        # the reading landed in ep_1 — the ACTIVE context ...
+        self.assertTrue(run.readings()["v_yes"].value)
+        # ... and the now-episode's context is untouched
+        self.assertEqual(run.readings("now"), {})
+        self.assertIn("v_yes", run.readings("ep_1"))
+
+    def test_set_value_for_targets_the_named_context(self):
+        run = make_episode_run(dynamic_episodes())
+        run.declare_episode("another period", "clinician")
+        run.set_value_for(
+            "ep_1", ValueReading(name="v_yes", value=True), "answered ep_1"
+        )
+        self.assertTrue(run.readings("ep_1")["v_yes"].value)
+        self.assertEqual(run.readings("now"), {})
+        # the active context is still "now" — set_value_for does not
+        # switch contexts
+        self.assertEqual(run.active_episode, "now")
+        self.assertEqual(run.readings(), {})
+
+    def test_latest_reading_wins(self):
+        run = make_episode_run(dynamic_episodes())
+        run.set_value(ValueReading(name="v_yes", value=True), "first answer")
+        run.set_value(
+            ValueReading(name="v_yes", value=False), "clarification"
+        )
+        self.assertFalse(run.readings()["v_yes"].value)
+
+    def test_readings_are_copies(self):
+        run = make_episode_run(dynamic_episodes())
+        run.set_value(ValueReading(name="v_yes", value=True), "x")
+        one_context = run.readings()
+        one_context["v_tampered"] = ValueReading(
+            name="v_tampered", value=1
+        )
+        del one_context["v_yes"]
+        by_context = run.readings_by_context()
+        by_context["now"]["v_tampered"] = ValueReading(
+            name="v_tampered", value=1
+        )
+        # the run's own state survived both tampering attempts
+        self.assertTrue(run.readings()["v_yes"].value)
+        self.assertNotIn("v_tampered", run.readings())
+        self.assertNotIn("v_tampered", run.readings("now"))
+
+    def test_all_readings_merge_contexts_in_episode_order(self):
+        run = make_episode_run(dynamic_episodes())
+        # the now-episode answers yes, the past episode re-answers no
+        run.set_value_for(
+            "now", ValueReading(name="v_yes", value=True), "now"
+        )
+        run.declare_episode("another period", "clinician")
+        run.set_value_for(
+            "ep_1", ValueReading(name="v_yes", value=False), "ep_1"
+        )
+        merged = run.all_readings()
+        # the LATER context (ep_1, later in the registry order)
+        # overrides the earlier one — the legacy single-mapping view
+        self.assertFalse(merged["v_yes"].value)
+        # each context keeps its own reading (the isolation the
+        # criteria engine relies on)
+        self.assertTrue(run.readings("now")["v_yes"].value)
+        self.assertFalse(run.readings("ep_1")["v_yes"].value)
+        self.assertEqual(set(merged), {"v_yes"})
+
+    def test_set_value_guards(self):
+        run = make_episode_run(dynamic_episodes())
+        with self.assertRaises(ValueError):  # non-empty cause
+            run.set_value(ValueReading(name="v_yes", value=True), "   ")
+        with self.assertRaises(ValueError):  # unknown episode id
+            run.set_value_for(
+                "ep_9", ValueReading(name="v_yes", value=True), "x"
+            )
+        run.abort_run("participant left")
+        with self.assertRaises(IllegalTransitionError):  # terminal run
+            run.set_value(ValueReading(name="v_yes", value=True), "late")
+        with self.assertRaises(IllegalTransitionError):
+            run.set_value_for(
+                "now", ValueReading(name="v_yes", value=True), "late"
+            )
+
+    def test_set_active_episode_records_a_logged_transition(self):
+        run = make_episode_run(dynamic_episodes())
+        run.declare_episode("another period", "clinician")
+        record = run.set_active_episode("ep_1", "re-enter for the past")
+        self.assertEqual(record.subject, SubjectKind.EPISODE)
+        self.assertEqual(record.subject_id, "ep_1")
+        self.assertEqual(
+            (record.from_state, record.to_state),
+            ("active:now", "active:ep_1"),
+        )
+        self.assertEqual(record.cause, "re-enter for the past")
+        self.assertEqual(run.active_episode, "ep_1")
+        # switching back is legal and logged as well
+        record2 = run.set_active_episode("now", "back to the now-episode")
+        self.assertEqual(
+            (record2.from_state, record2.to_state),
+            ("active:ep_1", "active:now"),
+        )
+        self.assertEqual(run.active_episode, "now")
+
+    def test_set_active_episode_guards(self):
+        run = make_episode_run(dynamic_episodes())
+        with self.assertRaises(ValueError):  # not in the registry
+            run.set_active_episode("ep_9", "x")
+        with self.assertRaises(ValueError):  # non-empty cause
+            run.set_active_episode("now", "   ")
+        run.abort_run("participant left")
+        with self.assertRaises(IllegalTransitionError):  # terminal run
+            run.set_active_episode("now", "late")
+
+
+class TestEpisodeScopedCriteria(unittest.TestCase):
+    """
+    Episode-scoped criteria (design addendum 2026-10-31, OFQ-2):
+    a `current`-scoped criterion is decided IN the active episode
+    context (the SAME transition table per context — a criterion
+    undecided in one context is OPEN there, whatever the other
+    contexts say); a `past`-scoped criterion can never be decided in
+    the now-episode context (its values are not asked there). RUN-
+    scoped criteria keep the single global state and are NOT part of
+    the per-context maps.
+    """
+
+    def make_run(self) -> InterviewRun:
+        return InterviewRun(make_scoped_definition(), new_run_id())
+
+    def declare_and_enter_ep_1(self, run: InterviewRun) -> None:
+        run.declare_episode("another period", "clinician")
+        run.set_active_episode("ep_1", "re-enter for ep_1")
+
+    def test_current_scoped_criterion_is_decided_per_context(self):
+        run = self.make_run()
+        self.assertEqual(run.criterion_state("c_cur"), CriterionStatus.OPEN)
+        run.set_criterion("c_cur", CriterionStatus.SATISFIED, "decided now")
+        self.assertEqual(
+            run.criterion_state("c_cur"), CriterionStatus.SATISFIED
+        )
+        self.assertEqual(
+            run.episode_criterion_states("now"),
+            {"c_cur": CriterionStatus.SATISFIED},
+        )
+        # entering a past context: undecided there -> OPEN there
+        self.declare_and_enter_ep_1(run)
+        self.assertEqual(run.criterion_state("c_cur"), CriterionStatus.OPEN)
+        self.assertEqual(run.episode_criterion_states(), {})  # active: ep_1
+        # ... while the now-episode keeps its decision
+        self.assertEqual(
+            run.episode_criterion_states("now"),
+            {"c_cur": CriterionStatus.SATISFIED},
+        )
+
+    def test_transition_table_holds_per_context(self):
+        run = self.make_run()
+        self.declare_and_enter_ep_1(run)
+        run.set_criterion("c_cur", CriterionStatus.NOT_SATISFIED, "ep_1")
+        # decided -> decided is illegal IN THIS CONTEXT, too ...
+        with self.assertRaises(IllegalTransitionError):
+            run.set_criterion("c_cur", CriterionStatus.SATISFIED, "direct")
+        # ... but legal via UNCLEAR (the only move out of a decided state)
+        run.set_criterion("c_cur", CriterionStatus.UNCLEAR, "misread")
+        run.set_criterion("c_cur", CriterionStatus.SATISFIED, "re-decided")
+        self.assertEqual(
+            run.criterion_state("c_cur"), CriterionStatus.SATISFIED
+        )
+        self.assertEqual(
+            run.episode_criterion_states("ep_1"),
+            {"c_cur": CriterionStatus.SATISFIED},
+        )
+
+    def test_run_scoped_criterion_ignores_the_context(self):
+        run = self.make_run()
+        run.set_criterion("c_run", CriterionStatus.SATISFIED, "decided")
+        self.declare_and_enter_ep_1(run)
+        # run-scoped: the single global state, whatever the context
+        self.assertEqual(
+            run.criterion_state("c_run"), CriterionStatus.SATISFIED
+        )
+        # ... and it is NOT part of any per-context map
+        self.assertNotIn("c_run", run.episode_criterion_states("now"))
+        self.assertNotIn("c_run", run.episode_criterion_states())
+
+    def test_past_scoped_criterion_cannot_be_decided_in_the_now_episode(self):
+        run = self.make_run()
+        with self.assertRaises(IllegalTransitionError) as ctx:
+            run.set_criterion("c_past", CriterionStatus.SATISFIED, "early")
+        self.assertIn("past-episode context", str(ctx.exception))
+        self.assertEqual(run.criterion_state("c_past"), CriterionStatus.OPEN)
+
+    def test_past_scoped_criterion_is_decided_in_a_past_context(self):
+        run = self.make_run()
+        self.declare_and_enter_ep_1(run)
+        run.set_criterion("c_past", CriterionStatus.SATISFIED, "decided")
+        self.assertEqual(
+            run.criterion_state("c_past"), CriterionStatus.SATISFIED
+        )
+        self.assertEqual(
+            run.episode_criterion_states("ep_1"),
+            {"c_past": CriterionStatus.SATISFIED},
+        )
+        # back in the now-episode it is undecided again — and cannot be
+        # decided there at all (the past-scoped guard)
+        run.set_active_episode("now", "back to the now-episode")
+        self.assertEqual(run.criterion_state("c_past"), CriterionStatus.OPEN)
+        with self.assertRaises(IllegalTransitionError):
+            run.set_criterion("c_past", CriterionStatus.NOT_SATISFIED, "now")
+
+    def test_episode_criterion_states_returns_a_copy(self):
+        run = self.make_run()
+        run.set_criterion("c_cur", CriterionStatus.SATISFIED, "x")
+        states = run.episode_criterion_states("now")
+        states["c_tampered"] = CriterionStatus.SATISFIED
+        self.assertEqual(
+            run.episode_criterion_states("now"),
+            {"c_cur": CriterionStatus.SATISFIED},
+        )
+
+    def test_scoped_decision_carry_the_context_in_the_log(self):
+        run = self.make_run()
+        run.set_criterion("c_cur", CriterionStatus.SATISFIED, "decided now")
+        record = run.transitions[-1]
+        self.assertEqual(record.subject, SubjectKind.CRITERION)
+        self.assertEqual(record.subject_id, "c_cur")
+        self.assertEqual(record.episode, "now")
+
+
+class TestForceCriterion(unittest.TestCase):
+    """
+    run.force_criterion (design addendum 2026-11-03, OFQ-7): the
+    declarative jump force-coding ("code A30 with '+' and A38 with
+    'JA'") is applied by the Supervisor as a CODING decision in the
+    ACTIVE episode context — not a derived one. The transition table
+    forbids a direct decided -> decided move, so an already-decided
+    criterion is reopened via UNCLEAR first (both steps are logged);
+    a criterion that already holds the target status is a no-op (no
+    records, no log entry).
+    """
+
+    def test_open_criterion_is_forced_with_a_single_record(self):
+        run = make_run()
+        records = run.force_criterion(
+            "c_one", CriterionStatus.SATISFIED, "A52 escalation: code +'"
+        )
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].subject, SubjectKind.CRITERION)
+        self.assertEqual(records[0].subject_id, "c_one")
+        self.assertEqual(
+            (records[0].from_state, records[0].to_state),
+            ("OPEN", "SATISFIED"),
+        )
+        self.assertEqual(records[0].cause, "A52 escalation: code +'")
+        self.assertEqual(run.criterion_state("c_one"), CriterionStatus.SATISFIED)
+
+    def test_unclear_criterion_is_forced_with_a_single_record(self):
+        run = make_run()
+        run.set_criterion("c_one", CriterionStatus.UNCLEAR, "misread")
+        records = run.force_criterion(
+            "c_one", CriterionStatus.NOT_SATISFIED, "re-coded"
+        )
+        self.assertEqual(len(records), 1)
+        self.assertEqual(
+            (records[0].from_state, records[0].to_state),
+            ("UNCLEAR", "NOT_SATISFIED"),
+        )
+        self.assertEqual(
+            run.criterion_state("c_one"), CriterionStatus.NOT_SATISFIED
+        )
+
+    def test_already_at_the_target_status_is_a_no_op(self):
+        run = make_run()
+        run.set_criterion("c_one", CriterionStatus.SATISFIED, "decided")
+        before = len(run.transitions)
+        records = run.force_criterion(
+            "c_one", CriterionStatus.SATISFIED, "escalation fires again"
+        )
+        self.assertEqual(records, [])
+        self.assertEqual(len(run.transitions), before)  # nothing logged
+        self.assertEqual(
+            run.criterion_state("c_one"), CriterionStatus.SATISFIED
+        )
+
+    def test_decided_criterion_is_reopened_via_unclear_first(self):
+        run = make_run()
+        run.set_criterion("c_one", CriterionStatus.SATISFIED, "decided")
+        records = run.force_criterion(
+            "c_one", CriterionStatus.NOT_SATISFIED, "A52: reclassify"
+        )
+        self.assertEqual(len(records), 2)
+        self.assertEqual(
+            (records[0].from_state, records[0].to_state),
+            ("SATISFIED", "UNCLEAR"),
+        )
+        self.assertEqual(records[0].cause, "A52: reclassify (reopened)")
+        self.assertEqual(
+            (records[1].from_state, records[1].to_state),
+            ("UNCLEAR", "NOT_SATISFIED"),
+        )
+        self.assertEqual(records[1].cause, "A52: reclassify")
+        self.assertEqual(
+            run.criterion_state("c_one"), CriterionStatus.NOT_SATISFIED
+        )
+
+    def test_force_coding_happens_in_the_active_context(self):
+        run = InterviewRun(make_scoped_definition(), new_run_id())
+        run.set_criterion("c_cur", CriterionStatus.SATISFIED, "decided now")
+        run.declare_episode("another period", "clinician")
+        run.set_active_episode("ep_1", "re-enter for ep_1")
+        # c_cur is OPEN in ep_1: the force-coding lands THERE
+        records = run.force_criterion(
+            "c_cur", CriterionStatus.SATISFIED, "escalation in ep_1"
+        )
+        self.assertEqual(len(records), 1)
+        self.assertEqual(
+            run.episode_criterion_states("ep_1"),
+            {"c_cur": CriterionStatus.SATISFIED},
+        )
+        # and the now-episode keeps its own decision
+        run.set_active_episode("now", "back to the now-episode")
+        self.assertEqual(
+            run.episode_criterion_states("now"),
+            {"c_cur": CriterionStatus.SATISFIED},
+        )
+
+    def test_force_criterion_guards(self):
+        run = make_run()
+        with self.assertRaises(ValueError):  # unknown criterion id
+            run.force_criterion("c_zzz", CriterionStatus.SATISFIED, "x")
+        with self.assertRaises(ValueError):  # non-empty cause
+            run.force_criterion("c_one", CriterionStatus.SATISFIED, "   ")
+        run.complete_run("nothing more to ask")
+        with self.assertRaises(IllegalTransitionError):  # terminal run
+            run.force_criterion("c_one", CriterionStatus.SATISFIED, "late")
+
+
+class TestOutOfScopeExit(unittest.TestCase):
+    """
+    The OUT-OF-SCOPE exit (design addendum 2026-10-31, OFQ-6): the
+    interview's routed continuation target lies OUTSIDE the loaded
+    definition (the SCID excerpt ends at A78). The run is ABORTED with
+    the OutOfScopeExit recorded on it — an explicit, logged hand-over,
+    never a silently swallowed jump. The snapshot surfaces both the
+    exit and the active episode context.
+    """
+
+    def test_abort_out_of_scope_aborts_and_records_the_exit(self):
+        run = make_run()
+        record = run.abort_out_of_scope(
+            "sec_a78", note="  SCID continues beyond this excerpt  "
+        )
+        self.assertIs(run.status, RunStatus.ABORTED)
+        self.assertEqual(
+            (record.subject, record.subject_id), (SubjectKind.RUN, "")
+        )
+        self.assertEqual(
+            (record.from_state, record.to_state), ("ACTIVE", "ABORTED")
+        )
+        # the default cause names the external target
+        self.assertIn("out-of-scope exit", record.cause)
+        self.assertIn("sec_a78", record.cause)
+        self.assertIn("(outside this definition)", record.cause)
+        exit_ = run.out_of_scope
+        self.assertIsNotNone(exit_)
+        self.assertEqual(exit_.target_ref, "sec_a78")
+        self.assertEqual(exit_.note, "SCID continues beyond this excerpt")
+
+    def test_custom_cause_replaces_the_default(self):
+        run = make_run()
+        record = run.abort_out_of_scope("sec_a78", cause="routed outside")
+        self.assertEqual(record.cause, "routed outside")
+
+    def test_blank_note_is_stored_as_none(self):
+        run = make_run()
+        run.abort_out_of_scope("sec_a78", note="   ")
+        self.assertEqual(run.out_of_scope.target_ref, "sec_a78")
+        self.assertIsNone(run.out_of_scope.note)
+
+    def test_out_of_scope_requires_an_active_run(self):
+        run = make_run()
+        run.complete_run("nothing more to ask")
+        with self.assertRaises(IllegalTransitionError):
+            run.abort_out_of_scope("sec_a78")
+        aborted = make_run()
+        aborted.abort_run("participant left")
+        with self.assertRaises(IllegalTransitionError):
+            aborted.abort_out_of_scope("sec_a78")
+
+    def test_run_is_terminal_after_the_exit(self):
+        run = make_run()
+        run.abort_out_of_scope("sec_a78")
+        with self.assertRaises(IllegalTransitionError):
+            run.require_question("sq_1.1.1", "too late")
+        with self.assertRaises(IllegalTransitionError):
+            run.set_criterion("c_one", CriterionStatus.SATISFIED, "late")
+        with self.assertRaises(IllegalTransitionError):
+            run.abort_out_of_scope("sec_a78")  # a second exit is impossible
+        with self.assertRaises(IllegalTransitionError):
+            run.complete_run("too late")
+
+    def test_snapshot_carries_the_exit_and_the_active_episode(self):
+        run = make_run()
+        self.assertIsNone(run.out_of_scope)
+        self.assertIsNone(run.snapshot().out_of_scope)
+        self.assertEqual(run.snapshot().active_episode, "now")
+        run.abort_out_of_scope("sec_a78", note="hand-over to the full SCID")
+        snap = run.snapshot(run_version=7)
+        self.assertIs(snap.status, RunStatus.ABORTED)
+        self.assertEqual(snap.out_of_scope.target_ref, "sec_a78")
+        self.assertEqual(snap.out_of_scope.note, "hand-over to the full SCID")
+        self.assertEqual(snap.active_episode, "now")
+        self.assertEqual(snap.run_version, 7)
+
+    def test_snapshot_carries_the_active_episode_after_a_switch(self):
+        run = make_episode_run(dynamic_episodes())
+        run.declare_episode("another period", "clinician")
+        run.set_active_episode("ep_1", "re-enter for ep_1")
+        self.assertEqual(run.snapshot().active_episode, "ep_1")
+        run.set_active_episode("now", "back to the now-episode")
+        self.assertEqual(run.snapshot().active_episode, "now")
