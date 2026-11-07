@@ -134,6 +134,25 @@ transition_prompt = ChatPromptTemplate.from_messages([
 chat_sessions: dict[str, InMemoryChatMessageHistory] = {}
 
 
+def response_text(result) -> str:
+    """
+    Return the plain text of a model reply, whatever the provider returns.
+
+    OllamaLLM (a completion model) returns a str, while chat models such as
+    the MiniMax ChatOpenAI client return an AIMessage. Calling str() on an
+    AIMessage yields its repr ("content='...' additional_kwargs=...") rather
+    than the text, which previously leaked into replies. All agents use this
+    helper so they work with both provider types.
+    """
+    content = getattr(result, "content", result)
+    if isinstance(content, list):
+        # Some chat models return a list of content blocks.
+        content = "".join(
+            block.get("text", "") if isinstance(block, dict) else str(block) for block in content
+        )
+    return str(content or "")
+
+
 def get_session_history(session_id: str) -> InMemoryChatMessageHistory:
     """Get the conversation history for a session, creating it if it doesn't exist yet."""
     if session_id not in chat_sessions:
@@ -288,10 +307,26 @@ def get_feedback_and_followup(
     language_name = _language_name(language_code)
     instructions = (
         f"{profile.instructions}\n\n"
-        f"LANGUAGE (mandatory, overrides anything above): write both the "
-        f"FEEDBACK text and the FOLLOWUP question (if used) in {language_name}, "
-        f"regardless of what language these instructions themselves are "
-        f"written in."
+        f"LANGUAGE (mandatory): Write in {language_name}.\n\n"
+        "NATURAL RESPONSE RULES (mandatory):\n"
+        "- Respond to the participant's actual words, not to an abstract "
+        "label for their answer.\n"
+        "- If the participant shares a simple personal detail, acknowledge "
+        "it naturally and briefly before returning to the interview topic.\n"
+        "- If the answer is unrelated, give a brief, suitable reaction and "
+        "then repeat the original interview question in its exact wording.\n"
+        "- Do not describe an answer as interesting, unusual, inappropriate, "
+        "inadequate, precise, or short.\n"
+        "- Never scold, judge, or sound annoyed with the participant.\n"
+        "- Avoid empty phrases such as 'That is a short confirmation of "
+        "your answer'.\n"
+        "- Preserve the original question's meaning and do not introduce "
+        "a new interview topic.\n"
+        "- Keep the response concise and natural.\n"
+        "- Ask at most one question in a single response.\n"
+        "- Do not combine a clarification question with the next fixed "
+        "interview question.\n\n"
+        f"Follow-up status: {followup_status}"
     )
 
     raw_response = chain_with_history.invoke(

@@ -1,54 +1,89 @@
-# INTERVIEW GUIDE — EXAMPLE
-# ============================
-# This is a working example of the interview guide format. Copy this file
-# and edit it to create your own guide — you never need to touch any code
-# to change wording, order, or add/remove questions.
+# INTERVIEW GUIDE — DEVELOPMENT EXAMPLE (NOT SCID CONTENT)
+# ==========================================================
+# IMPORTANT: The questions below were written by the project team for
+# software development and testing. They are NOT official SCID wording, carry
+# no SCID criteria, rating codes or skip rules, and must not be presented as
+# SCID results. The SCID-5-PD content will be added via
+# scid5pd_avoidant_TEMPLATE.yaml once APA permission has been granted.
 #
 # Field reference:
-#   guide_id          - short internal identifier for this guide (letters,
-#                        numbers, underscores; used in stored data later)
-#   title             - human-readable name, shown nowhere to participants,
-#                        just for your own orientation
-#   behavior_profile  - NOT YET ACTIVE. Will let you choose, per guide, how
-#                        strictly the assistant behaves (Step 3 of the
-#                        project plan). Leave the placeholder value for now.
-#   framing_message   - the very first thing the participant sees/hears,
-#                        before any question. Explains what this is.
-#   closing_message   - shown after the last question has been answered.
-#   sections          - one or more thematic groups of questions. If you
-#                        don't need groups, use a single section.
-#   questions         - each needs a unique "id" (for the stored data) and
-#                        the exact "text" to be presented, verbatim.
-#   allow_followup    - optional, per question, default false. If true, the
-#                        model is allowed to ask ONE short, clarifying
-#                        follow-up before moving to the next fixed question
-#                        (see Step 3 of the project plan / behavior profiles).
+#   guide_id          - short internal identifier (used in session records)
+#   title             - human-readable name for your own orientation
+#   content_source    - provenance label, copied into every session record
+#   behavior_profile  - tone of the short acknowledgements (study_content/prompts/)
+#   language          - "de" or "en" (also selects default fixed messages)
+#   default_max_clarifications
+#                     - PROJECT RULE (not SCID): how many clarification /
+#                       reformulation attempts an item gets before it is
+#                       skipped as "could not be assessed". Default 1.
+#   skip_phrases      - optional: exact explicit skip commands recognised
+#                       without the LLM (defaults exist for de/en)
+#   interaction_messages
+#                     - optional: override the fixed texts for skips and
+#                       technical problems (keys: skip_refused,
+#                       skip_unresolved, skip_cannot_answer, system_error,
+#                       paused, acknowledge, rephrase_prefix)
+#   framing_message   - first text the participant sees
+#   closing_message   - shown after the last item
+#   sections/questions:
+#     id              - unique item id (used in session records)
+#     text            - exact question wording (required)
+#     criterion_id    - short identifier of what is assessed
+#     criterion       - plain description of what the item assesses; given
+#                       to the Judgment and Question Agents so they judge and
+#                       clarify the RIGHT thing
+#     rating_scheme   - "none" (default) or "scid5pd" (? / 0 / 1 / 2)
+#     rating_anchor   - source anchor for a rating (scid5pd items only)
+#     probes          - source follow-up probes (material for clarifications)
+#     max_clarifications - per-item override of default_max_clarifications
+#     next_step       - id of the following item or END (validated at start)
 
 guide_id: depression_scid_example
-title: "Example: SCID Depression Module (shortened, for testing)"
+title: "Development example: mood/pleasure/sleep (team-written, NOT SCID)"
+content_source: "team-written development content - NOT SCID wording, not validated"
 behavior_profile: strict_clinical
+
+#emsag 18.10.2026 added features
+guide_version: "0.3"
+language: de
+interview_type: structured
+navigation_mode: sequential
+#emsag 18.10.2026 added features
+
+default_max_clarifications: 1
 
 framing_message: >
   Guten Tag und vielen Dank, dass Sie sich Zeit nehmen. Ich bin ein
   KI-gestütztes System und werde Ihnen im Rahmen dieser Studie einige
   Fragen zu Ihrem Befinden in den letzten zwei Wochen stellen. Es gibt
   keine richtigen oder falschen Antworten — antworten Sie einfach so,
-  wie es für Sie zutrifft.
+  wie es für Sie zutrifft. Sie können jede Frage überspringen, indem Sie
+  zum Beispiel „überspringen“ schreiben, und bei Unklarheiten nachfragen.
 
 closing_message: >
   Vielen Dank, das war bereits die letzte Frage. Der Interviewteil ist
   damit abgeschlossen.
 
+
 sections:
   - section_title: "Einstieg"
     questions:
       - id: dep_01
+        criterion_id: mood_description
+        criterion: "How the participant describes their mood during the last two weeks (open description; a short or negative description is a valid answer)."
         text: "Wie würden Sie Ihre Stimmung in den letzten zwei Wochen beschreiben?"
+        next_step: dep_02
+
       - id: dep_02
+        criterion_id: loss_of_pleasure
+        criterion: "Whether, during the last two weeks (timeframe from the introduction), there were times when the participant could not enjoy things in general - not whether one specific thing is disliked."
         text: "Gab es Zeiten, in denen Sie sich über nichts mehr freuen konnten?"
-        allow_followup: true
+        next_step: sleep_01
 
   - section_title: "Schlaf"
     questions:
       - id: sleep_01
+        criterion_id: sleep_description
+        criterion: "How the participant's sleep was during the last two weeks (e.g. whether there were sleep problems); a clear 'slept well / no problems' is a valid answer."
         text: "Wie war Ihr Schlaf in den letzten zwei Wochen?"
+        next_step: END

@@ -14,7 +14,6 @@
 <link rel="stylesheet" href="style.css">
 
 <!-- INHALTE: kommt aus der separaten Datei. Dein System ersetzt sie später. -->
-<script src="/api/runtime-config.js"></script>
 <script src="conversation.js"></script>
 </head>
 <body>
@@ -33,6 +32,63 @@
       <div class="starttitle" id="startTitle">Bereit fürs Interview?</div>
       <div class="startsub" id="startSub"></div>
       <ul class="startlist" id="startList"></ul>
+
+  <!-- Teilnehmeridentifikation -->
+  <div class="participant-code">
+    <label for="participantCode">Teilnehmerkennung</label>
+
+    <p>
+      Falls Sie bereits einen Teilnahmecode erhalten haben,
+      geben Sie ihn bitte hier ein.
+    </p>
+
+    <input
+      type="text"
+      id="participantCode"
+      name="participant_code"
+      placeholder="Teilnahmecode eingeben (optional)"
+      autocomplete="off"
+      maxlength="100"
+    />
+
+    <p>
+      Noch keinen Code? Sie können auch ohne Code fortfahren.
+    </p>
+  </div>
+
+  <!-- Freiwillige Einwilligung zur historischen Datennutzung -->
+  <div class="historical-consent">
+    <label>
+      <input
+        type="checkbox"
+        id="historicalConsent"
+        name="historical_retrieval_consent"
+      />
+      Ich willige ein, dass Informationen aus meinen früheren
+      Interviews zur Unterstützung dieses Interviews verwendet
+      werden dürfen.
+    </label>
+
+    <p>
+      Diese Einwilligung ist freiwillig und kann für dieses
+      Interview ausgelassen werden.
+    </p>
+  </div>
+
+  <!-- Anzeige des neu generierten Teilnahmecodes -->
+  <div class="generated-participant-code hidden" id="generatedParticipantCode">
+    <p>Ihre Teilnehmerkennung</p>
+    <strong id="generatedCodeValue"></strong>
+
+    <p>
+      Bitte bewahren Sie diesen Code auf. Sie benötigen ihn,
+      wenn Sie später an einem weiteren Interview teilnehmen möchten.
+    </p>
+
+    <button type="button" id="copyParticipantCode">
+      Code kopieren
+    </button>
+  </div>
 
       <div class="starttest">
         <div class="testcol">
@@ -962,23 +1018,110 @@
     }
 
     const btn = document.getElementById("startBtn");
-    const isReady = !!cfg.pendingOpeningMessage;
-    btn.textContent = isReady ? (cfg.startButton || "Interview starten") : (cfg.startLoadingLabel || "Bereitet sich vor – einen Moment bitte …");
-    // Erst klickbar, sobald die Eröffnungsnachricht wirklich da ist (siehe
-    // window.onOpeningMessageReady) — falls der Server schneller war als
-    // dieses Skript hier, ist sie es unter Umständen schon jetzt.
-    btn.disabled = !isReady;
+  const isReady = !!cfg.pendingOpeningMessage;
 
-    btn.addEventListener("click", function () {
-      if (btn.disabled) return;
-      stopMicTest(); // Mikrofon freigeben, falls der Test noch lief
+  let sessionCreated = false;
+
+  btn.textContent = isReady
+    ? (cfg.startButton || "Interview starten")
+    : (cfg.startLoadingLabel || "Bereitet sich vor – einen Moment bitte …");
+
+  const generatedCodePanel = document.getElementById(
+    "generatedParticipantCode"
+  );
+  const generatedCodeValue = document.getElementById(
+    "generatedCodeValue"
+  );
+  const copyCodeBtn = document.getElementById(
+    "copyParticipantCode"
+  );
+
+  // Teilnehmercode kopieren
+  copyCodeBtn.addEventListener("click", async function () {
+    const code = generatedCodeValue.textContent;
+
+    try {
+      await navigator.clipboard.writeText(code);
+      copyCodeBtn.textContent = "Kopiert!";
+    } catch (error) {
+      alert("Der Code konnte nicht kopiert werden. Bitte notieren Sie ihn manuell.");
+    }
+  });
+
+  btn.addEventListener("click", async function () {
+    if (btn.disabled) return;
+
+    // Zweiter Klick: Interview starten, ohne eine neue Session anzulegen.
+    if (sessionCreated) {
+      stopMicTest();
       ov.classList.add("hidden");
+
       if (cfg.modality === "speech") {
         window.playOpeningSpoken();
       } else {
         playOpening(cfg.pendingOpeningMessage || "");
       }
-    });
+
+      return;
+    }
+
+    btn.disabled = true;
+
+    const participantCode = (
+      document.getElementById("participantCode").value || ""
+    ).trim();
+
+    const historicalConsent = document.getElementById(
+      "historicalConsent"
+    ).checked;
+
+    try {
+      const response = await fetch("/api/interview/session", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          participant_code: participantCode || null,
+          historical_retrieval_consent: historicalConsent
+        })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Could not create interview session.");
+      }
+
+      sessionCreated = true;
+
+      // Neuen Teilnehmercode anzeigen, falls einer generiert wurde.
+      if (data.participant_code) {
+        generatedCodeValue.textContent = data.participant_code;
+        generatedCodePanel.classList.remove("hidden");
+
+        btn.textContent = "Weiter zum Interview";
+        btn.disabled = false;
+
+        return;
+      }
+
+      // Bestehender Teilnehmer: direkt mit dem Interview beginnen.
+      stopMicTest();
+      ov.classList.add("hidden");
+
+      if (cfg.modality === "speech") {
+        window.playOpeningSpoken();
+      } else {
+        playOpening(cfg.pendingOpeningMessage || "");
+      }
+
+    } catch (error) {
+      alert("Could not start the interview: " + error.message);
+      btn.disabled = false;
+    }
+  });
+
   }
 
   /* --- Gibt die Eröffnungsnachricht Wort für Wort aus, so als würde das

@@ -1,0 +1,319 @@
+V4 Database Architecture – PostgreSQL & SQLAlchemy
+1. Introduction and Objectives
+As part of the V4 architecture development, a centralized relational database infrastructure was established to support persistent storage of interview sessions, participant responses, SCID item records, AI-generated assessments, navigation decisions, and technical system events.
+In the previous architecture, the SessionRecorder stored interview records as JSON files in the local project directory. Although this approach provided a simple mechanism for recording interview progress, it presented limitations regarding structured data management, querying historical interviews, maintaining relationships between records, and supporting longitudinal assessments.
+Therefore, PostgreSQL was introduced as the primary relational database, with SQLAlchemy serving as the Object-Relational Mapping (ORM) layer and Alembic managing database schema migrations.
+The main objectives of this implementation were:
+Establish persistent and centralized data storage.
+Separate participant information, interview data, raw responses, and AI-generated assessments.
+Support multiple interview sessions per participant.
+Enable structured retrieval of current and authorized historical interview data.
+Establish a maintainable database schema that can be extended throughout V4 development.
+Preserve the existing V3 interview architecture rather than replacing its established responsibilities.
+2. PostgreSQL Database Setup
+2.1 PostgreSQL Installation and Configuration
+PostgreSQL 18.4 was installed and configured as the relational database management system.
+A dedicated database named local_talking_llm was created for the project. The database uses UTF-8 encoding and the PostgreSQL user emirs as its owner.
+The database was configured locally using:
+Configuration
+Value
+Database System
+PostgreSQL 18.4
+Database Name
+local_talking_llm
+Host
+localhost
+Port
+5432
+Database User
+emirs
+Encoding
+UTF-8
+
+Justification:
+PostgreSQL provides relational integrity, foreign key constraints, transactional operations, and structured querying capabilities. These properties are particularly important for an interview system that needs to maintain relationships between participants, multiple interview sessions, individual SCID items, and their associated assessments.
+A dedicated database also ensures that project data is logically separated from other databases hosted on the same PostgreSQL installation.
+2.2 Environment Configuration
+Database credentials and connection settings were centralized in the project-root .env file.
+The connection is configured using the DATABASE_URL environment variable.
+The following packages were added to the project dependencies:
+sqlalchemy: ORM and database interaction.
+alembic: Database schema versioning and migrations.
+psycopg[binary]: PostgreSQL database driver.
+python-dotenv: Loading environment variables from .env.
+The .env file was added to .gitignore to prevent database credentials from being committed to the Git repository. A separate .env.example file provides the configuration structure without requiring actual credentials.
+Justification:
+Centralizing configuration avoids hardcoding credentials in application code and makes it easier to configure different environments in the future. Separating sensitive configuration from source code also reduces the risk of accidentally exposing database credentials.
+3. SQLAlchemy Database Infrastructure
+3.1 Database Connection
+The file backend/database/connection.py was introduced to centralize database connection management.
+Its main responsibilities are:
+Loading the project-root .env configuration.
+Reading the DATABASE_URL.
+Initializing the SQLAlchemy database engine.
+Configuring SessionLocal for database sessions.
+Providing a connection test using SELECT 1.
+The SQLAlchemy engine uses pool_pre_ping=True to check connections before reusing them. This helps detect stale connections and improves connection reliability.
+The database connection was successfully tested using the project's Python virtual environment.
+Validation result: PostgreSQL connection returned True.
+3.2 Shared Declarative Base
+The file backend/database/base.py defines the shared SQLAlchemy declarative base.
+All database models inherit from this common Base class.
+A metadata naming convention was also introduced for database constraints and indexes, covering:
+Primary keys (pk)
+Foreign keys (fk)
+Unique constraints (uq)
+Check constraints (ck)
+Indexes (ix)
+Justification:
+A shared declarative base ensures that all database models are registered within the same SQLAlchemy metadata structure. This is essential for Alembic to discover the complete database schema.
+Consistent constraint naming also makes future migrations more predictable and easier to maintain.
+4. Database Schema Design
+The initial V4 database schema consists of seven relational tables.
+The schema was designed to separate different types of information instead of storing all interview-related data in one large JSON structure.
+4.1 Participants
+Model: backend/database/models/participant.py
+Table: participants
+This table stores pseudonymized participant records.
+Main attributes:
+id: Unique UUID-based participant identifier.
+pseudonym: Unique pseudonym assigned to the participant.
+created_at: Timestamp indicating when the participant record was created.
+Justification:
+Participant information is separated from individual interview sessions because one participant may take part in multiple interviews over time.
+Using pseudonym identifiers instead of directly storing names or contact information supports data minimization and reduces unnecessary exposure of identifying information.
+The pseudonym is protected by a unique database index to prevent duplicate assignments.
+4.2 Interview Sessions
+Model: backend/database/models/interview_session.py
+Table: interview_sessions
+This table represents individual interview sessions.
+Main attributes:
+id: Unique session identifier.
+participant_id: Foreign key referencing the associated participant.
+guide_id: Identifier of the interview guide.
+guide_version: Version of the interview guide used.
+status: Current session status.
+started_at: Session start timestamp.
+ended_at: Session completion timestamp.
+Justification:
+The separation of participants and interview sessions enables a one-to-many relationship: one participant can have multiple interview sessions.
+Recording the guide identifier and version is important because SCID questions, criteria, and branching structures may evolve. Preserving this information makes it possible to interpret historical interview records in the context of the guide version that originally produced them.
+The foreign key uses ON DELETE RESTRICT to prevent deleting a participant while associated interview sessions still exist.
+4.3 Interview Item Records
+Model: backend/database/models/interview_item_record.py
+Table: interview_item_records
+This table stores the final record of each processed SCID interview item.
+Main attributes:
+id: Unique record identifier.
+session_id: Associated interview session.
+item_id: SCID item identifier.
+criterion_id and criterion_code: Related criterion references.
+question: Original question text.
+status: Final processing status of the item.
+skip_reason: Reason for skipping, if applicable.
+clarifications_used: Number of clarification attempts.
+safety_relevant: Indicates whether the item is safety-relevant.
+provisional_rating: Provisional rating, if available.
+rating_scheme and rating_label: Rating metadata.
+closed_at: Timestamp when the item was closed.
+The following item statuses are distinguished:
+Status
+Meaning
+answered
+The item received an assessable response.
+skipped
+The item was skipped and therefore lacks sufficient assessment information.
+not_asked
+The item is not directly asked by the chatbot.
+derived
+The item's value is derived from other criteria according to the source structure.
+gate
+The item represents a source-defined SCID routing decision.
+
+Justification:
+A critical design principle is that skipped items must not be interpreted as negative answers.
+For example, an unanswered or skipped criterion does not demonstrate that the corresponding clinical feature is absent. It represents missing information.
+Furthermore, provisional ratings are stored separately from final clinical interpretations. They are intended for clinician review and do not constitute clinical diagnoses.
+4.4 Participant Turns
+Model: backend/database/models/participant_turn.py
+Table: participant_turns
+This table preserves individual conversational turns during an interview.
+Main attributes:
+id: Unique turn identifier.
+session_id: Associated interview session.
+item_id: SCID item being discussed.
+turn_number: Sequential turn number.
+question_text: Question presented to the participant.
+participant_response: Original participant response.
+recorded_at: Timestamp of the recorded turn.
+Justification:
+Participant responses are stored separately from the final SCID item records and AI-generated assessments.
+This separation preserves the original conversational evidence, including multiple responses to the same question, clarification attempts, and follow-up interactions.
+It also makes it possible to reconstruct how an assessment was derived from the original conversation.
+4.5 Judgment Assessments
+Model: backend/database/models/judgment_assessment.py
+Table: judgment_assessments
+This table stores structured assessments produced by the Judgment Agent.
+Main attributes:
+id: Unique assessment identifier.
+session_id: Associated interview session.
+item_record_id: Associated SCID item record.
+intent: Classification of the participant's response.
+sufficiency: Assessment of response sufficiency.
+provisional_rating: Provisional rating, if applicable.
+missing_information: Information that is still missing.
+evidence_quote: Relevant evidence extracted from the response.
+reasoning: Assessment reasoning.
+validation_notes: Additional validation information.
+assessed_at: Assessment timestamp.
+Justification:
+AI-generated assessments must remain distinguishable from original participant responses and clinician-confirmed conclusions.
+The Judgment Agent evaluates the response and extracts structured evidence. Its output is provisional and does not establish a clinical diagnosis.
+Keeping these assessments in a dedicated table also supports future review, comparison, and traceability.
+4.6 Navigation Decisions
+Model: backend/database/models/navigation_decision.py
+Table: navigation_decisions
+This table records recommendations and executed decisions concerning SCID interview navigation.
+Main attributes:
+id: Unique decision identifier.
+session_id: Associated interview session.
+item_record_id: Related item record, if available.
+current_item_id: Currently processed SCID item.
+recommended_next_item_id: Recommended next item.
+executed_next_item_id: Item actually selected after validation.
+action: Navigation action.
+reason: Explanation for the decision.
+validation_status: Validation outcome.
+decided_at: Decision timestamp.
+Justification:
+The V4 architecture distinguishes between an AI-generated recommendation and the actual navigation transition.
+The Diagnosis Agent may reason over SCID criteria and recommend the next item based on the source-defined SCID structure. However, the Interview Orchestrator validates the recommendation before execution, while the InterviewGuide remains responsible for the actual interview state and navigation.
+Recording both the recommended and executed next item provides an audit trail and makes it possible to identify differences between AI recommendations and executed transitions.
+Importantly, the Diagnosis Agent must follow the actual SCID branching, rating, and routing rules rather than inventing new navigation logic.
+4.7 System Events
+Model: backend/database/models/system_event.py
+Table: system_events
+This table stores technical events occurring during interview execution.
+Main attributes:
+id: Unique event identifier.
+session_id: Related session, if available.
+item_id: Related SCID item, if applicable.
+kind: Event category.
+detail: Technical event description.
+occurred_at: Event timestamp.
+Examples include model failures, database errors, and other technical execution problems.
+Justification:
+Technical failures must be distinguishable from participant responses and AI assessments.
+For example, a failed LLM request must not be interpreted as a participant response or as evidence about a SCID criterion.
+Separating system events therefore improves traceability and prevents technical errors from contaminating interview assessment data.
+5. Model Registration and Validation
+All seven database models were registered in:
+backend/database/models/__init__.py
+This ensures that SQLAlchemy metadata includes the complete set of models and that Alembic can discover their tables during automatic schema generation.
+A validation command was executed:
+.\.venv\Scripts\python.exe -c "from backend.database.base import Base; import backend.database.models; print('Registered tables:'); print(*Base.metadata.tables.keys(), sep='\n'); print('Total:', len(Base.metadata.tables))"
+The result confirmed that all seven tables were registered successfully.
+Validation result:
+Registered tables:
+participants
+interview_sessions
+interview_item_records
+participant_turns
+judgment_assessments
+navigation_decisions
+system_events
+
+Total: 7
+6. Alembic Migration Configuration
+Alembic was initialized using:
+.\.venv\Scripts\python.exe -m alembic init backend/database/migrations
+The initialization generated:
+alembic.ini
+backend/database/migrations/env.py
+backend/database/migrations/versions/
+backend/database/migrations/README
+backend/database/migrations/script.py.mako
+6.1 Environment Configuration
+The Alembic environment file was configured to:
+Load the project-root .env file.
+Read the DATABASE_URL environment variable.
+Import the shared SQLAlchemy Base.
+Register all database models.
+Set Base.metadata as Alembic's target metadata.
+Support online and offline migration execution.
+Compare database column types during migration generation.
+The database URL was removed from the active configuration in alembic.ini because the connection is loaded centrally from .env.
+Justification:
+This configuration allows Alembic to automatically compare the SQLAlchemy model definitions with the existing PostgreSQL schema.
+It also ensures that future model changes can be translated into version-controlled migration scripts.
+6.2 Initial Migration Generation
+The first migration was generated using:
+.\.venv\Scripts\python.exe -m alembic revision --autogenerate -m "create initial database schema"
+Alembic detected all seven tables and their associated indexes and foreign key constraints.
+The generated migration file was:
+942f417a7d13_create_initial_database_schema.py
+The migration includes the creation of all seven tables, their primary keys, foreign key relationships, and indexes.
+The downgrade operation was also generated to reverse the schema changes in dependency-safe order.
+7. Migration Execution and Verification
+Before applying the migration, the database connection was verified using:
+.\.venv\Scripts\python.exe -m alembic current
+Alembic successfully connected to PostgreSQL and identified the database dialect.
+The initial migration was then applied using:
+.\.venv\Scripts\python.exe -m alembic upgrade head
+The terminal confirmed successful execution:
+Running upgrade -> 942f417a7d13, create initial database schema
+Finally, the current migration revision was checked again:
+.\.venv\Scripts\python.exe -m alembic current
+The output was:
+942f417a7d13 (head)
+Result:
+The initial database migration was successfully applied to the local_talking_llm PostgreSQL database. Alembic recognizes the database as being at the latest migration revision.
+8. Architectural Decisions and Design Principles
+The initial database implementation follows several important architectural principles.
+Separation of responsibilities: Participant records, interview sessions, original responses, AI assessments, navigation decisions, and technical events are stored independently.
+Preservation of interview ownership: The database does not take over interview state management. The InterviewGuide remains responsible for SCID navigation, while the Orchestrator coordinates and validates agent recommendations.
+Traceability: The schema preserves the relationship between original participant responses, SCID item records, and corresponding AI assessments.
+Longitudinal support: Multiple interview sessions can be associated with the same pseudonymized participant, providing the foundation for authorized historical data retrieval.
+Source-defined SCID navigation: Navigation recommendations must follow the actual SCID structure, including its branching logic, criteria, and routing instructions.
+Separation of provisional and clinical assessments: AI-generated provisional ratings are not treated as clinician-confirmed diagnoses.
+Data minimization: Participant records use pseudonyms, and database credentials are kept outside version-controlled source code.
+Migration management: Alembic provides a version-controlled mechanism for evolving the database schema as the V4 architecture develops.
+9. Current Implementation Status and Next Steps
+The initial PostgreSQL infrastructure and database schema have been established successfully.
+Component
+Status
+PostgreSQL installation and database creation
+Completed
+SQLAlchemy connection infrastructure
+Completed
+Environment configuration
+Completed
+Shared declarative base
+Completed
+Seven initial database models
+Completed
+Model registration and metadata validation
+Completed
+Alembic initialization
+Completed
+Initial migration generation
+Completed
+Initial migration execution
+Completed
+Migration revision verification
+Completed
+PostgreSQL-backed SessionRecorder
+Pending
+Historical interview data retrieval
+Pending
+Diagnosis Agent integration
+Pending
+Orchestrator persistence integration
+Pending
+Clinician-facing DOCX report generation
+Pending
+
+The next development phase will focus on extending the existing SessionRecorder so that interview records can be persisted in PostgreSQL instead of relying exclusively on local JSON files.
+This transition will preserve the existing V3 interview workflow while introducing structured persistence.
+Subsequent phases will implement historical interview retrieval, Diagnosis Agent integration, validated Orchestrator interactions, and clinician-facing report generation.
+Important: The current implementation establishes the database infrastructure and initial schema. It does not yet mean that the running chatbot persists its interviews in PostgreSQL. That integration will be implemented and tested in the next phase.

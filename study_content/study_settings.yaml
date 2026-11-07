@@ -12,7 +12,9 @@ language: de
 
 # Which interview guide file (from study_content/interviews/) is currently
 # active. Just the file name, not the full path.
-interview_guide: depression_scid_example.yaml
+#   scid5pd_de.yaml               - SKID-5-PD, German UNOFFICIAL working translation
+#   depression_scid_example.yaml  - 3 team-written development questions (NOT SCID)
+interview_guide: scid5pd_de.yaml
 
 # Which Piper voice to use for spoken output (voice condition only). Must
 # be downloaded once per machine first — see backend/tts.py's module

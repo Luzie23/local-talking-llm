@@ -1,3 +1,137 @@
+## SCID-based multi-agent interview (MAGI-inspired) — research prototype
+
+> **Not a diagnostic tool.** The system supports structured interviewing for
+> research. It does not make or suggest psychiatric diagnoses, computes no
+> totals or thresholds, and does not replace a clinician. Tests in this repo are
+> software-behaviour checks, not clinical validation.
+
+### Architecture (minimal; built on the existing app)
+Every typed (or transcribed) participant message goes through
+`backend/app.py → process_answer() → agents/interview_orchestrator.handle_turn()`:
+
+| Step | Component | Role |
+|---|---|---|
+| 0 | `safety_check.py` (unchanged) | keyword check on every message, runs before and independently of the interview logic |
+| 1 | Orchestrator | deterministic check for explicit skip commands (`skip_phrases`) — works even if the model is down |
+| 2 | **Judgment Agent** `agents/judgment_agent.py` (LLM) | classifies the latest message against the current item: `intent` (answer / clarification_request / cannot_answer / refusal / off_topic / unclear) and, separately, `sufficiency` (sufficient / ambiguous / insufficient = "enough to assess", not "symptom present"); for items with a rating scheme also a **provisional** ?/0/1/2 rating + verbatim evidence quote. JSON output is schema-validated and post-checked in code |
+| 3 | **Navigation Agent** `agents/navigation_agent.py` (rules) | *proposes* advance / clarify / rephrase / skip (decision table in the file) |
+| 4 | Orchestrator | *validates* the proposal (clarification budget, existing transition target) and *executes* it on `interview_guide.py` state |
+| 5 | **Question Agent** `agents/question_agent.py` (LLM) | only for clarify/rephrase: one explanation/clarification of the SAME item (meaning, criterion, timeframe kept); output validated, deterministic fallback |
+| 6 | `session_record.py` | researcher-only JSON per interview in `session_records/` (git-ignored) |
+
+The short acknowledgement after a sufficient answer still comes from the
+behavior-profile prompt (`study_content/prompts/`), but is now generated only
+after the decision, so it cannot contradict what happens next.
+No Diagnosis Agent, no RAG, no additional agents.
+
+### Interaction rules — source-defined vs. project-specific
+* **Source-defined (SCID-5-PD):** coding ? = inadequate information, 0 = absent,
+  1 = subthreshold, 2 = threshold; per-criterion rating anchors; follow-up probes.
+  Per-disorder thresholds exist in the source but are **not executed**.
+* **Project-specific (ours, not SCID rules):** clarification budget
+  `default_max_clarifications: 1` per item (configurable per item); a refusal or
+  "skip" skips immediately; an item still unresolved after the budget is skipped
+  and recorded as `unresolved` (rating "?"); off-topic/unclear replies get one
+  neutral redirect within the same budget; "I don't understand" gets one
+  explanation + reformulation; "I don't know" gets one gentle follow-up.
+  **A skipped item is never a negative answer.**
+* **Model failures** (connection error, malformed JSON after one retry) are
+  logged as `system_events`, the participant is asked to resend, nothing is
+  advanced or recorded as a result, and after 3 consecutive failures the
+  interview pauses ("please contact the study team").
+
+### Interview content
+* `study_content/interviews/scid5pd_de.yaml` (**active**): SKID-5-PD — open
+  overview questions, then all 10 personality disorders in SCID order and Other
+  Specified PD (148 items, 135 asked; all 106 numbered SCID questions). Use is
+  covered by the project's APA permission. **The German wording is an unofficial
+  working translation of the English SCID-5-PD — to be reviewed by the project
+  psychologist before use with participants.** Criteria and rating anchors stay
+  in English (agents only). The demographic General Overview is left out.
+  * Not asked by the chatbot (recorded as "clinician rating required"):
+    "observed during interview" items, Criterion B exclusion items that depend on
+    clinical evidence, the age criterion, Other Specified PD; Schizoid A5 refers
+    to Schizotypal A8 (Q44); Schizotypal A5 is derived from Paranoid A1–A4/A7.
+  * Source routing executed: Antisocial PD Criterion C gate (≥2 Conduct Disorder
+    criteria rated "2" → adult criteria A; else → Other Specified PD), evaluated
+    on the **provisional** chatbot ratings; "IF CAN'T ANSWER, MOVE ON" for the
+    first overview question. Diagnostic thresholds are not executed.
+* `study_content/interviews/depression_scid_example.yaml`: 3 team-written
+  development questions (NOT SCID), used by the automated flow tests.
+* Switch the active guide with `interview_guide:` in `study_content/study_settings.yaml`.
+
+### Setup (Windows, text mode)
+```powershell
+cd local-talking-llm-main
+uv venv .venv
+# uv.lock pins numpy 1.26, which needs Python 3.11/3.12 for "uv sync".
+# With Python 3.13 install the current compatible versions instead:
+uv pip install --python .venv\Scripts\python.exe "faster-whisper>=1.0.0" "flask>=3.1.3" "langchain-ollama>=0.3.3" "langchain-openai>=0.3.0" "langchain>=0.3.25" "numpy>=1.26.0" "piper-tts>=1.6.0" "pyyaml>=6.0.2" "rich>=14.0.0" "scipy>=1.15.3" "setuptools>=80.9.0" "sounddevice>=0.5.2" pytest
+```
+Model (needed for real interviews — all participant text stays on this PC):
+install [Ollama](https://ollama.com), then `ollama pull gemma3` and keep Ollama
+running. (Alternative: `--provider minimax` with `MINIMAX_API_KEY` — sends
+participant text to a cloud service; not for real study data.)
+
+### Running on another PC
+Copy the `local-talking-llm-main` folder **without** `.venv` and
+`session_records`, then on the new PC: install Python ≥ 3.11 and
+[uv](https://docs.astral.sh/uv/), run the setup commands above, install Ollama
+and `ollama pull gemma3`, and launch as below. Session records are stored only
+on the PC where the interview took place.
+
+### Launch
+```powershell
+.venv\Scripts\python.exe backend\app.py --web            # http://127.0.0.1:5000
+.venv\Scripts\python.exe backend\app.py --web --port 5050 # if port 5000 is taken
+```
+Open the URL in a browser and use the text condition. Without a running model
+the app starts, but every answer returns the "technical problem" message
+(only explicit skip commands work). Voice models (Whisper/Piper) are now
+loaded only when a voice feature is used.
+
+### Tests
+```powershell
+.venv\Scripts\python.exe -m pytest -q
+```
+`tests/test_agents.py` (decision table, validation rules, guide state) and
+`tests/test_interview_flow.py` (complete flows through the Flask endpoints with
+a scripted model: positive, negative, short, ambiguous, explanation request,
+cannot answer, refusal/skip, off-topic, narrow example, budget exhaustion,
+safety keyword, malformed/failed model, provisional ratings).
+
+### Known limitations / open decisions
+* Not yet tested with a real model (Ollama); prompt quality must be checked on
+  real model output before any study use (Ollama temperature is not yet set).
+* German SCID wording is an unofficial translation pending psychologist review.
+* The Antisocial PD gate relies on provisional chatbot ratings; a wrong
+  provisional rating can route past (or into) the adult criteria — the
+  session record lists the counted criteria for the clinician to verify.
+* The SCID asks about suicidal behaviour (Borderline criterion 5). The source
+  requires a clinician to assess any current suicidal thoughts; the chatbot
+  only shows the existing safety hint and flags these items in the record.
+* Keyword safety check is unchanged and blunt (see `backend/safety_check.py`).
+* Single participant at a time (global state), as in the original design.
+
+### Next steps for development (handover, 25 Oct 2026)
+1. Install Ollama + a model and run real interviews in text mode; review the
+   Judgment/Question Agent outputs in the console trace (`[agents] trace=...`) and
+   the JSON in `session_records/`. All tests so far use a scripted fake model.
+2. Wire the `--temperature` option into the Ollama client (currently only MiniMax
+   uses it); a low temperature is advisable for the Judgment Agent.
+3. Have the project psychologist review the German wording in
+   `study_content/interviews/scid5pd_de.yaml` (unofficial translation).
+4. Decide with the supervisor/psychologist: clinician availability for the
+   suicidality items (Borderline criterion 5), and whether the Antisocial PD gate
+   may rely on provisional chatbot ratings.
+5. Before/after evidence of the fixes (old code vs. new code, same scripted
+   answers): refusal was asked twice more → now skipped immediately; "skip" was
+   ignored → now honoured even when the model is down; "I don't understand"
+   looped forever → one reformulation, then move on; unresolved answers advanced
+   silently → recorded as "skipped/unresolved", never as "no".
+
+---
+
 ## Build your own voice assistant and run it locally: Whisper + Ollama + Piper
 
 > Original article: https://blog.duy-huynh.com/build-your-own-voice-assistant-and-run-it-locally/
@@ -277,4 +411,272 @@ With Whisper for listening, Ollama (or MiniMax) for the conversational core, and
 - [Original Blog Post](https://blog.duy-huynh.com/build-your-own-voice-assistant-and-run-it-locally/)
 
 ---
+# V4 Database Architecture
+
+<!-- EMSAG: 03.11.2026 — Document the initial PostgreSQL infrastructure and its architectural decisions. -->
+
+## Overview
+
+As part of the V4 architecture development, PostgreSQL was introduced as the primary relational database for persistent interview data storage.
+
+The previous V3 implementation used a local JSON-based `SessionRecorder`. While this approach provided basic interview recording functionality, it offered limited capabilities for structured querying, relational data management, and longitudinal interview analysis.
+
+The new database infrastructure establishes the foundation for storing participant records, interview sessions, SCID item outcomes, original participant responses, AI-generated assessments, navigation decisions, and technical system events.
+
+The implementation uses:
+
+- **PostgreSQL 18.4** – Relational database management system.
+- **SQLAlchemy 2.x** – Object-Relational Mapping (ORM).
+- **Alembic** – Database schema migrations.
+- **Psycopg 3** – PostgreSQL database driver.
+- **python-dotenv** – Environment configuration.
+
+## 1. Database Configuration
+
+A dedicated PostgreSQL database named `local_talking_llm` was created.
+
+| Setting | Configuration |
+|---|---|
+| Database | `local_talking_llm` |
+| Host | `localhost` |
+| Port | `5432` |
+| Encoding | UTF-8 |
+| Database user | `emirs` |
+
+Database credentials are loaded from the project-root `.env` file using the `DATABASE_URL` environment variable.
+
+The `.env` file is excluded from Git through `.gitignore`. An `.env.example` file provides the configuration template without exposing actual credentials.
+
+**Why?**
+
+Centralized configuration avoids hardcoded credentials, supports environment-specific settings, and reduces the risk of accidentally committing sensitive connection information.
+
+## 2. SQLAlchemy Infrastructure
+
+The database infrastructure is organized under `backend/database/`.
+
+```text
+backend/database/
+├── __init__.py
+├── base.py
+├── connection.py
+├── models/
+│   ├── __init__.py
+│   ├── participant.py
+│   ├── interview_session.py
+│   ├── interview_item_record.py
+│   ├── participant_turn.py
+│   ├── judgment_assessment.py
+│   ├── navigation_decision.py
+│   └── system_event.py
+└── migrations/
+    ├── env.py
+    ├── versions/
+    └── README
+```
+
+### Database connection
+
+`connection.py` initializes the SQLAlchemy engine and `SessionLocal`.
+
+It also provides a `test_connection()` function to verify database connectivity.
+
+The engine uses `pool_pre_ping=True` to detect stale connections before reuse.
+
+### Declarative base
+
+`base.py` defines the shared SQLAlchemy `Base` class and a consistent naming convention for database constraints and indexes.
+
+All database models inherit from this base.
+
+**Why?**
+
+A shared metadata structure allows SQLAlchemy and Alembic to discover all models and manage schema changes consistently.
+
+## 3. Database Schema
+
+The initial schema consists of seven relational tables.
+
+| Table | Purpose |
+|---|---|
+| `participants` | Stores pseudonymized participant records. |
+| `interview_sessions` | Stores individual interview sessions and their lifecycle. |
+| `interview_item_records` | Stores SCID item outcomes and provisional ratings. |
+| `participant_turns` | Preserves original participant responses and conversational turns. |
+| `judgment_assessments` | Stores structured AI-generated Judgment Agent assessments. |
+| `navigation_decisions` | Records recommended and executed SCID navigation decisions. |
+| `system_events` | Stores technical events and system failures. |
+
+### 3.1 Participants
+
+The `participants` table stores pseudonymized participant identifiers.
+
+Each participant has a unique pseudonym and can be associated with multiple interview sessions.
+
+**Design rationale:** Participant identity and interview history are separated to support longitudinal data management and data minimization.
+
+### 3.2 Interview Sessions
+
+The `interview_sessions` table represents individual interview sessions.
+
+It references the participant and stores the interview guide identifier, guide version, session status, and timestamps.
+
+**Design rationale:** Preserving the guide version makes historical interviews interpretable even when SCID content changes over time.
+
+### 3.3 Interview Item Records
+
+The `interview_item_records` table stores the final processing state of each SCID item.
+
+The supported statuses are:
+
+- `answered`
+- `skipped`
+- `not_asked`
+- `derived`
+- `gate`
+
+**Design rationale:** A skipped item represents missing information, not a negative answer. Provisional ratings are retained for clinician review and must not be treated as final clinical diagnoses.
+
+### 3.4 Participant Turns
+
+The `participant_turns` table stores individual conversational turns, including the question and the original participant response.
+
+**Design rationale:** Original responses must remain separate from AI-generated interpretations. This preserves the evidence used during assessment and supports later review.
+
+### 3.5 Judgment Assessments
+
+The `judgment_assessments` table stores structured Judgment Agent outputs, including:
+
+- Response intent
+- Response sufficiency
+- Provisional rating
+- Missing information
+- Evidence quotes
+- Reasoning
+- Validation notes
+
+**Design rationale:** AI-generated assessments are stored separately from participant responses and clinician-confirmed conclusions.
+
+### 3.6 Navigation Decisions
+
+The `navigation_decisions` table records SCID navigation recommendations and the transitions actually executed.
+
+It distinguishes between:
+
+- `recommended_next_item_id`
+- `executed_next_item_id`
+
+**Design rationale:** The Diagnosis Agent can recommend the next SCID item based on SCID criteria and source-defined branching logic. The Interview Orchestrator validates the recommendation, while the InterviewGuide remains responsible for actual navigation.
+
+This separation preserves the existing architecture and prevents an AI recommendation from directly controlling interview state.
+
+### 3.7 System Events
+
+The `system_events` table stores technical events such as LLM failures, database errors, and unexpected execution problems.
+
+**Design rationale:** Technical failures must not be confused with participant responses or assessment evidence.
+
+## 4. Relationships and Data Integrity
+
+The initial schema establishes the following relationships:
+
+- One participant can have multiple interview sessions.
+- One interview session can contain multiple SCID item records.
+- One interview session can contain multiple participant turns.
+- One interview session can contain multiple Judgment Assessments.
+- One interview session can contain multiple navigation decisions.
+- One interview session can contain multiple system events.
+
+Foreign key constraints enforce relational integrity.
+
+The initial schema also defines appropriate deletion behavior:
+
+- `RESTRICT` for participant deletion when interview sessions still reference the participant.
+- `CASCADE` for session-dependent records.
+- `SET NULL` for selected optional references.
+
+## 5. Alembic Migrations
+
+Alembic was initialized under:
+
+`backend/database/migrations/`
+
+The configuration loads the database URL from `.env` and uses `Base.metadata` as its migration target.
+
+The initial migration was generated with:
+
+```powershell
+.\.venv\Scripts\python.exe -m alembic revision --autogenerate -m "create initial database schema"
+```
+
+Generated migration:
+
+`942f417a7d13_create_initial_database_schema.py`
+
+The migration was reviewed and successfully applied.
+
+```powershell
+.\.venv\Scripts\python.exe -m alembic upgrade head
+```
+
+The database revision was verified using:
+
+```powershell
+.\.venv\Scripts\python.exe -m alembic current
+```
+
+Verified revision:
+
+```text
+942f417a7d13 (head)
+```
+
+**Result:** All seven initial tables were successfully created in PostgreSQL.
+
+## 6. Architectural Principles
+
+The database design follows these principles:
+
+1. **Separation of concerns:** Participant records, original responses, AI assessments, navigation decisions, and technical events are stored independently.
+2. **Longitudinal support:** Multiple interview sessions can be associated with one pseudonymized participant.
+3. **Traceability:** AI assessments and navigation decisions can be related to their corresponding interview data.
+4. **SCID integrity:** Navigation must follow the actual SCID branching and evaluation rules.
+5. **Clinical responsibility:** AI-generated provisional ratings do not replace qualified clinician interpretation.
+6. **Data minimization:** Pseudonymization and separation of identifying information reduce unnecessary exposure.
+7. **Migration management:** Alembic provides version-controlled database schema evolution.
+
+## 7. Implementation Status
+
+| Component | Status |
+|---|---|
+| PostgreSQL installation and configuration | Completed |
+| SQLAlchemy connection infrastructure | Completed |
+| Environment configuration | Completed |
+| Seven database models | Completed |
+| Model registration and validation | Completed |
+| Alembic configuration | Completed |
+| Initial migration generation | Completed |
+| Initial migration execution | Completed |
+| PostgreSQL revision verification | Completed |
+| PostgreSQL-backed SessionRecorder | Pending |
+| Historical interview data retrieval | Pending |
+| Diagnosis Agent integration | Pending |
+| Orchestrator persistence integration | Pending |
+| Clinician-facing DOCX report generation | Pending |
+
+## 8. Next Development Phase
+
+The next phase focuses on integrating the existing `SessionRecorder` with PostgreSQL.
+
+The transition will preserve the existing V3 interview workflow and the responsibility of the `InterviewGuide` for interview state and navigation.
+
+Subsequent development will address:
+
+1. PostgreSQL-backed session persistence.
+2. Historical interview data retrieval.
+3. Diagnosis Agent integration with SCID criteria and source-defined branching logic.
+4. Orchestrator validation and persistence.
+5. Clinician-facing DOCX report generation.
+
+**Current limitation:** The PostgreSQL infrastructure and initial schema are implemented, but the running chatbot has not yet been integrated with PostgreSQL persistence. The existing JSON-based recording mechanism remains in place until the SessionRecorder integration is implemented and tested.
 

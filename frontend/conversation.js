@@ -17,7 +17,7 @@ window.CONVERSATION = {
 
   /* --- Kopfzeile der Klinikerin/des Kliniker-Agenten ---------------------- */
   clinicianName: "Mental Health Bot",
-  clinicianRole: window.RUNTIME_CONFIG?.pilot ? "Forschungspilot · Evidenzerfassung" : "Prediagnostic Interview",
+  clinicianRole: "Prediagnostic Interview",
 
   /* --- FAKTOR 1: EMBODIMENT ---------------------------------------------- */
   /* Erlaubt: "logo" | "picture" | "video" | "avatar"                        */
@@ -42,36 +42,25 @@ window.CONVERSATION = {
   /* --- FAKTOR 2: MODALITÄT ----------------------------------------------- */
   /* "text"   -> Chat-Blasen + Texteingabe                                   */
   /* "speech" -> nur Sprach-Oberfläche, KEIN Text für die teilnehmende Person */
-  modality: window.RUNTIME_CONFIG?.textOnly ? "text" : "speech",
+  modality: "speech",
 
   /* --- START-OVERLAY ------------------------------------------------------ */
   /* Wird angezeigt, bis "Interview starten" geklickt wird. Text frei anpassbar. */
-  startTitle:    "Bereit fürs Interview?",
-  startSubtitle: "Bitte prüfen Sie kurz, ob die folgenden Voraussetzungen erfüllt sind. Sobald Sie starten, beginnt das Gespräch mit einer ersten Frage.",
-  startButton:   "Interview starten",
+startTitle: "Bereit für das Interview?",
+startSubtitle: "Bitte prüfen Sie kurz die folgenden Voraussetzungen. Nach dem Start beginnt das Interview mit einer ersten Frage.",
+startButton: "Interview starten",
 
-  /* Steht auf dem Start-Button, solange er noch deaktiviert ist — das
-     System lädt im Hintergrund das Sprachmodell und vertont die
-     Eröffnungsnachricht schon einmal vorab. Das kann besonders beim ALLERERSTEN
-     Aufruf (Modell noch nicht "warmgelaufen") einen Moment dauern. */
-  startLoadingLabel: "System bereitet sich vor – einen Moment bitte …",
+startLoadingLabel: "Das System wird vorbereitet – einen Moment bitte …",
 
-  /* Beschriftungen für den optionalen Ton-/Mikrofon-Test im Start-Overlay.
-     Der Test selbst blockiert "Interview starten" nicht — reines Angebot. */
-  startSoundTestLabel: "Testton abspielen",
-  startMicTestLabel:   "Mikrofon testen",
+startSoundTestLabel: "Testton abspielen",
+startMicTestLabel: "Mikrofon testen",
 
-  /* Voraussetzungen, die vor dem Start erinnert werden. Zeilen frei anpassen,
-     hinzufügen oder löschen. */
-  startChecklist: window.RUNTIME_CONFIG?.textOnly ? [
-    "Dieser Textpilot ist für erfundene Testfälle vorgesehen.",
-    "Der Pilot erfasst Aussagen und Unsicherheiten; er erstellt keine Diagnose."
-  ] : [
-    "Sie sitzen in einer ruhigen Umgebung und werden in den nächsten Minuten nicht gestört.",
-    "Ton und Mikrofon Ihres Geräts funktionieren; Kopfhörer werden empfohlen.",
-    "Sie haben etwa 20 Minuten ununterbrochen Zeit.",
-    "Benachrichtigungen sind stummgeschaltet.",
-  ],
+startChecklist: [
+  "Sie befinden sich in einer ruhigen Umgebung und werden nicht gestört.",
+  "Ton und Mikrofon Ihres Geräts funktionieren.",
+  "Sie haben etwa 20 Minuten Zeit.",
+  "Benachrichtigungen sind stummgeschaltet."
+],
 
   /* Die Eröffnungsnachricht (Framing + erste Frage) wird schon im Hintergrund
      geladen, bevor auf "Interview starten" geklickt wird — siehe ganz unten
@@ -730,11 +719,28 @@ window.onMicToggle = function (isRecording) {
   }
 };
 
+//EMSAG: control variable is added:
+let chatRequestInProgress = false;
+//EMSAG: control variable is added
 async function sendChatMessage(text) {
+ 
+// EMSAG: the new version is down below:
+ // const trimmed = (text || "").trim();
+ // if (!trimmed || window.CONVERSATION.interviewFinished) {
+ //   return;
+ // }
+
   const trimmed = (text || "").trim();
-  if (!trimmed || window.CONVERSATION.interviewFinished) {
+  if (
+    !trimmed ||
+    window.CONVERSATION.interviewFinished ||
+    chatRequestInProgress
+  ) {
     return;
   }
+
+  chatRequestInProgress = true;
+  //End of the new version:
 
   window.CONVERSATION.messages.push({ role: "user", text: trimmed });
   window.CONVERSATION.clinicianTyping = true;
@@ -772,12 +778,14 @@ async function sendChatMessage(text) {
       text: `Network error: ${error.message}`,
     });
   } finally {
+    //emsag: preventing of sending 2 requests at the same time
+    chatRequestInProgress = false;
+    //emsag: preventing of sending 2 requests at the same time
     window.CONVERSATION.clinicianTyping = false;
     window.CONVERSATION.turnDone = true; // Verlauf-Button darf ab jetzt erscheinen
     render();
   }
 }
-
 function setupTextInput() {
   const input = document.querySelector(".field");
   const send = document.querySelector(".send");
@@ -841,14 +849,7 @@ async function loadInterviewStart() {
 
 // Wartet, bis die Seite (inkl. der Render-Logik in index.html) fertig geladen
 // ist, damit window.onOpeningMessageReady() beim Aufruf schon existiert.
-document.addEventListener("DOMContentLoaded", function () {
-  if (window.RUNTIME_CONFIG?.textOnly) {
-    document.querySelectorAll('.starttest, [data-mod="speech"]').forEach(function (el) {
-      el.style.display = "none";
-    });
-  }
-  loadInterviewStart();
-});
+document.addEventListener("DOMContentLoaded", loadInterviewStart);
 
 /* =============================================================================
    ERÖFFNUNGSNACHRICHT HÖRBAR MACHEN (Sprach-Modalität)

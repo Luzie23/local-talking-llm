@@ -1,0 +1,1164 @@
+# SKID-5-PD / SCID-5-PD — CHATBOT INTERVIEW GUIDE (GERMAN, UNOFFICIAL WORKING TRANSLATION)
+# ==========================================================================================
+# Source: First MB, Williams JBW, Benjamin LS, Spitzer RL: Structured Clinical
+# Interview for DSM-5 Personality Disorders (SCID-5-PD). APA Publishing, 2016.
+# Use in this chatbot is covered by the project's APA permission (confirmed by
+# the project team on 25 Oct 2026).
+#
+# LANGUAGE: The German question wording below is an UNOFFICIAL WORKING
+# TRANSLATION of the English edition made for this prototype. It is NOT the
+# official German SKID-5-PD (Hogrefe) and MUST be reviewed by the project
+# psychologist (Bastian Wenk) before use with participants.
+# Criteria and rating anchors are kept in English (verbatim from the source);
+# they are only given to the agents, never shown to participants.
+#
+# STRUCTURE (follows the SCID-5-PD page order):
+#   * Overview for Assessment of Personality Disorders (p. 4) — open questions,
+#     not rated. The demographic "General Overview" (p. 2–3) is left out by
+#     project decision.
+#   * 10 disorders in SCID order + Other Specified Personality Disorder.
+#   * One item per numbered SCID interview question ("id: Q<n>" = SCID
+#     question number). Where several questions belong to one criterion they
+#     share criterion_id / criterion_code; each is asked and rated separately
+#     and the clinician combines them.
+#   * The SCID-5-SPQ screening questionnaire is not used, so the question
+#     wording follows the bracketed variant for "SPQ not completed".
+#   * Bold follow-up questions from the source are listed under "probes" —
+#     the Question Agent uses them as material for its (one) clarification.
+#
+# ITEMS THAT ARE NOT ASKED BY THE CHATBOT (ask: false; recorded as
+# "not assessed by chatbot – clinician rating required"):
+#   observation   – "OBSERVED DURING INTERVIEW" items (not possible in text chat)
+#   clinician     – Criterion B exclusion items whose questions are only asked
+#                   "IF THERE IS EVIDENCE OF" a psychotic disorder / substance use /
+#                   medical condition (needs clinical information); age criterion
+#   derived       – ratings the source derives from other items
+#   same_as       – source says "previously rated in …"; not asked again
+#
+# SOURCE-DEFINED ROUTING EXECUTED BY THE APPLICATION:
+#   * Antisocial PD, Criterion C gate: "AT LEAST TWO CONDUCT DISORDER CRITERIA
+#     (C1–C15) ARE RATED 2" — YES: continue with the adult criteria A;
+#     NO: go to Other Specified PD. Uses the PROVISIONAL chatbot ratings
+#     ("?" counts as not "2"); logged in the session record.
+#   * "IF CAN'T ANSWER, MOVE ON" (overview question) — cannot_answer_moves_on.
+# Per-disorder diagnostic thresholds ("AT LEAST N CRITERIA ARE RATED 2") are
+# NOT executed: no diagnoses are produced.
+#
+# RATING (source-defined): ? = inadequate information, 0 = absent,
+# 1 = subthreshold, 2 = threshold. Chatbot ratings are provisional and for
+# clinician review only.
+
+guide_id: scid5pd_de
+title: "SKID-5-PD (German, unofficial working translation) – all PD modules"
+content_source: "SCID-5-PD (APA 2016), permission confirmed by project; German = UNOFFICIAL working translation, pending review by project psychologist"
+behavior_profile: strict_clinical
+guide_version: "1.0-draft"
+language: de
+interview_type: structured
+navigation_mode: scid_flow
+default_max_clarifications: 1
+rating_scheme: scid5pd
+
+# General PD criteria to consider for a rating of "2" (SCID-5-PD p. 5–6),
+# given to the Judgment Agent for every rated item.
+rating_guidance: >
+  A rating of "2" (threshold) requires that the trait is (A) at the extreme end
+  of the continuum compared with the person's culture, (B) pervasive across many
+  situations and people, not restricted to a single relationship, situation or
+  role, (C) has a negative impact on social interactions, close relationships or
+  functioning at work/school/home, and (D) has been frequently present over at
+  least the last 5 years with evidence going back to the late teens or early 20s;
+  (E/F) it is not better explained by another mental disorder, substance use or
+  a medical condition. Use "1" (subthreshold) when the trait is described but
+  these requirements or the item's rating anchor are not clearly met, "0" when
+  the participant clearly denies it, "?" when the information is inadequate.
+
+framing_message: >
+  Guten Tag und vielen Dank, dass Sie sich Zeit nehmen. Ich bin ein
+  KI-gestütztes System und werde Ihnen im Rahmen dieser Studie Fragen aus einem
+  strukturierten Interview stellen. Es gibt keine richtigen oder falschen
+  Antworten. Sie können jede Frage überspringen, indem Sie zum Beispiel
+  „überspringen“ schreiben, und jederzeit nachfragen, wenn etwas unklar ist.
+  Das Interview ersetzt keine fachliche Untersuchung.
+
+closing_message: >
+  Vielen Dank, das war bereits die letzte Frage. Das Interview ist damit
+  abgeschlossen. Ihre Antworten werden von einer Fachperson der Studie
+  ausgewertet.
+
+sections:
+  # ---------------------------------------------------------------- p. 4
+  - section_title: "Überblick zur Erfassung von Persönlichkeitsstörungen"
+    questions:
+      - id: OV1
+        rating_scheme: none
+        criterion_id: OVERVIEW
+        criterion: "Open overview question (not rated): how the participant describes themselves as a person - how they generally feel or behave. Any self-description is sufficient."
+        intro: "Ich möchte Ihnen jetzt einige Fragen dazu stellen, was für ein Mensch Sie sind – das heißt, wie Sie sich im Allgemeinen fühlen oder verhalten."
+        text: "Wie würden Sie sich selbst als Person beschreiben?"
+        cannot_answer_moves_on: true   # source: "IF CAN'T ANSWER, MOVE ON"
+      - id: OV2
+        rating_scheme: none
+        criterion_id: OVERVIEW
+        criterion: "Open overview question (not rated): how the participant thinks other people would describe them."
+        text: "Wie würden andere Menschen Sie als Person beschreiben?"
+      - id: OV3
+        rating_scheme: none
+        criterion_id: OVERVIEW
+        criterion: "Open overview question (not rated): who the important people in the participant's life have been."
+        text: "Wer waren die wichtigen Menschen in Ihrem Leben?"
+        probes: ["(Falls nur Familie genannt wird:) Wie ist es mit Freundinnen und Freunden?"]
+      - id: OV4
+        rating_scheme: none
+        criterion_id: OVERVIEW
+        criterion: "Open overview question (not rated): how the participant has gotten along with these important people."
+        text: "Wie sind Sie mit diesen Menschen ausgekommen?"
+      - id: OV5
+        rating_scheme: none
+        criterion_id: OVERVIEW
+        criterion: "Open overview question (not rated): whether the participant's usual way of reacting or behaving with people has caused problems with anyone (at home, school, work) and in what way."
+        text: "Glauben Sie, dass die Art, wie Sie normalerweise auf Dinge reagieren oder sich anderen gegenüber verhalten, Ihnen mit irgendjemandem Probleme bereitet hat?"
+        probes: ["(Zu Hause? In der Schule? Bei der Arbeit?)", "(Auf welche Weise?)"]
+      - id: OV6
+        rating_scheme: none
+        criterion_id: OVERVIEW
+        criterion: "Open overview question (not rated): how successful the participant considers themselves at getting what they want in life (satisfying relationship, fulfilling career, close friends)."
+        text: "Wie erfolgreich sind Sie Ihrer Meinung nach darin, das zu bekommen, was Sie sich im Leben wünschen – zum Beispiel eine erfüllende Beziehung, einen erfüllenden Beruf oder enge Freundschaften?"
+      - id: OV7
+        rating_scheme: none
+        criterion_id: OVERVIEW
+        criterion: "Open overview question (not rated): how the participant spends their free time."
+        text: "Wie verbringen Sie Ihre Freizeit?"
+      - id: OV8
+        rating_scheme: none
+        criterion_id: OVERVIEW
+        criterion: "Open overview question (not rated): with whom the participant spends their free time."
+        text: "Mit wem verbringen Sie Ihre Freizeit?"
+      - id: OV9
+        rating_scheme: none
+        criterion_id: OVERVIEW
+        criterion: "Open overview question (not rated): how the participant would want to be different if they could change their personality."
+        text: "Wenn Sie Ihre Persönlichkeit in mancher Hinsicht verändern könnten – wie wären Sie dann gerne anders?"
+
+  # ---------------------------------------------------------------- p. 7–8
+  - section_title: "Vermeidend-selbstunsichere Persönlichkeitsstörung"
+    questions:
+      - id: Q1
+        criterion_id: AVD_A1
+        criterion_code: PD1
+        intro: "Ich möchte Ihnen jetzt einige genauere Fragen stellen."
+        text: "Haben Sie Arbeitsstellen oder Aufgaben gemieden, bei denen Sie mit vielen Menschen zu tun gehabt hätten?"
+        probes:
+          - "Nennen Sie mir bitte einige Beispiele."
+          - "Was war der Grund, dass Sie diese Stellen oder Aufgaben gemieden haben? (Liegt es daran, dass Sie einfach nicht gern unter Menschen sind, oder daran, dass Sie Angst haben, kritisiert oder abgelehnt zu werden?)"
+        criterion: "Avoids occupational activities that involve significant interpersonal contact because of fears of criticism, disapproval, or rejection."
+        rating_anchor: "2 = at least two examples"
+      - id: Q2
+        criterion_id: AVD_A2
+        criterion_code: PD2
+        text: "Vermeiden Sie es, sich mit Menschen anzufreunden, wenn Sie nicht sicher sind, dass diese Sie mögen?"
+        probes:
+          - "Vermeiden Sie es, bei Gruppenaktivitäten mitzumachen, wenn Sie nicht sicher sind, dass Sie willkommen und akzeptiert sind?"
+          - "Wenn Sie nicht wissen, ob jemand Sie mag – würden Sie dann jemals den ersten Schritt machen?"
+        criterion: "Is unwilling to get involved with people unless certain of being liked."
+        rating_anchor: "2 = almost never takes the initiative in becoming involved in a social relationship"
+      - id: Q3
+        criterion_id: AVD_A3
+        criterion_code: PD3
+        text: "Fällt es Ihnen schwer, sich selbst Menschen gegenüber zu „öffnen“, die Ihnen nahestehen?"
+        probes: ["Woran liegt das? (Haben Sie Angst, ausgelacht zu werden oder sich zu blamieren?)"]
+        criterion: "Shows restraint within intimate relationships because of the fear of being shamed or ridiculed."
+        rating_anchor: "2 = true for almost all relationships"
+      - id: Q4
+        criterion_id: AVD_A4
+        criterion_code: PD4
+        text: "Machen Sie sich oft Sorgen, in sozialen Situationen kritisiert oder abgelehnt zu werden?"
+        probes: ["Nennen Sie mir bitte einige Beispiele.", "Verbringen Sie viel Zeit damit, sich darüber Sorgen zu machen?"]
+        criterion: "Is preoccupied with being criticized or rejected in social situations."
+        rating_anchor: "2 = a lot of time spent worrying about social situations"
+      - id: Q5
+        criterion_id: AVD_A5
+        criterion_code: PD5
+        text: "Sind Sie normalerweise still, wenn Sie neue Menschen kennenlernen?"
+        probes: ["Woran liegt das?", "(Liegt es daran, dass Sie sich in gewisser Weise unzulänglich oder nicht gut genug fühlen?)"]
+        criterion: "Is inhibited in new interpersonal situations because of feelings of inadequacy."
+        rating_anchor: "2 = acknowledges trait and many examples"
+      - id: Q6
+        criterion_id: AVD_A6
+        criterion_code: PD6
+        text: "Glauben Sie, dass Sie nicht so gut, so klug oder so attraktiv sind wie die meisten anderen Menschen?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "Views self as socially inept, personally unappealing, or inferior to others."
+        rating_anchor: "2 = acknowledges belief"
+      - id: Q7
+        criterion_id: AVD_A7
+        criterion_code: PD7
+        text: "Haben Sie Angst davor, Dinge zu tun, die eine Herausforderung sein könnten, oder etwas Neues auszuprobieren?"
+        probes: ["Liegt das daran, dass Sie Angst haben, sich zu blamieren?", "Nennen Sie mir bitte einige Beispiele."]
+        criterion: "Is unusually reluctant to take personal risks or to engage in any new activities because they may prove embarrassing."
+        rating_anchor: "2 = several examples of avoiding activities because of fear of embarrassment"
+
+  # ---------------------------------------------------------------- p. 9–11
+  - section_title: "Dependente Persönlichkeitsstörung"
+    questions:
+      - id: Q8
+        criterion_id: DEP_1
+        criterion_code: PD9
+        text: "Fällt es Ihnen schwer, alltägliche Entscheidungen zu treffen – zum Beispiel, was Sie anziehen oder im Restaurant bestellen –, ohne sich Rat und Bestätigung von anderen zu holen?"
+        probes: ["Können Sie mir einige Beispiele für Entscheidungen nennen, bei denen Sie um Rat oder Bestätigung bitten würden?", "(Passiert das meistens?)"]
+        criterion: "Has difficulty making everyday decisions without an excessive amount of advice and reassurance from others."
+        rating_anchor: "2 = several examples"
+      - id: Q9
+        criterion_id: DEP_2
+        criterion_code: PD10
+        text: "Sind Sie darauf angewiesen, dass andere Menschen sich um wichtige Bereiche Ihres Lebens kümmern, zum Beispiel um Finanzen, Kinderbetreuung oder Ihre Wohnsituation?"
+        probes: ["Nennen Sie mir bitte einige Beispiele. (Ist das mehr, als sich nur Rat von anderen zu holen?)", "(War das bei den MEISTEN wichtigen Bereichen Ihres Lebens so?)"]
+        criterion: "Needs others to assume responsibility for most major areas of his or her life. [Note: Do not include merely getting advice from others or subculturally expected behavior.]"
+        rating_anchor: "2 = several examples"
+      - id: Q10
+        criterion_id: DEP_3
+        criterion_code: PD11
+        text: "Fällt es Ihnen schwer, anderen zu widersprechen, selbst wenn Sie glauben, dass diese im Unrecht sind?"
+        probes: ["Nennen Sie mir bitte einige Beispiele, wann das vorgekommen ist.", "Was befürchten Sie, könnte passieren, wenn Sie widersprechen?"]
+        criterion: "Has difficulty expressing disagreement with others because of fear of loss of support or approval. (Note: Do not include realistic fears of retribution.)"
+        rating_anchor: "2 = acknowledges trait or several examples"
+      - id: Q11
+        criterion_id: DEP_4
+        criterion_code: PD12
+        text: "Fällt es Ihnen schwer, Projekte zu beginnen oder Dinge allein zu tun?"
+        probes: ["Nennen Sie mir bitte einige Beispiele.", "Woran liegt das? (Liegt es daran, dass Sie nicht sicher sind, ob Sie es richtig machen können?)", "(Können Sie es, solange jemand da ist, der Ihnen hilft?)"]
+        criterion: "Has difficulty initiating projects or doing things on his or her own (because of a lack of self-confidence in judgment or abilities rather than a lack of motivation or energy)."
+        rating_anchor: "2 = acknowledges trait"
+      - id: Q12
+        criterion_id: DEP_5
+        criterion_code: PD13
+        text: "Ist es Ihnen so wichtig, dass andere sich um Sie kümmern, dass Sie bereit sind, unangenehme oder unzumutbare Dinge für sie zu tun?"
+        probes: ["Nennen Sie mir bitte einige Beispiele für solche Dinge."]
+        criterion: "Goes to excessive lengths to obtain nurturance and support from others, to the point of volunteering to do things that are unpleasant. [Note: Do not include behavior intended to achieve goals other than being liked, such as job advancement.]"
+        rating_anchor: "2 = acknowledges trait and at least one example"
+      - id: Q13
+        criterion_id: DEP_6
+        criterion_code: PD14
+        text: "Fühlen Sie sich normalerweise unwohl, wenn Sie allein sind?"
+        probes: ["Woran liegt das? (Liegt es daran, dass Sie jemanden brauchen, der sich um Sie kümmert?)"]
+        criterion: "Feels uncomfortable or helpless when alone because of exaggerated fears of being unable to care for himself or herself."
+        rating_anchor: "2 = acknowledges trait"
+      - id: Q14
+        criterion_id: DEP_7
+        criterion_code: PD15
+        text: "Haben Sie, wenn eine enge Beziehung endet, das Gefühl, sofort jemand anderen finden zu müssen, der sich um Sie kümmert?"
+        probes: ["Erzählen Sie mir bitte davon.", "(Haben Sie meistens so reagiert, wenn enge Beziehungen zu Ende gegangen sind?)"]
+        criterion: "Urgently seeks another relationship as a source of care and support when a close relationship ends."
+        rating_anchor: "2 = happens when most close relationships end"
+      - id: Q15
+        criterion_id: DEP_8
+        criterion_code: PD16
+        text: "Machen Sie sich viele Sorgen, dass Sie allein gelassen werden und für sich selbst sorgen müssen?"
+        probes: ["Weshalb glauben Sie, dass Sie allein gelassen werden und für sich selbst sorgen müssen? (Wie realistisch ist diese Befürchtung?)", "Wie sehr machen Sie sich darüber Sorgen?"]
+        criterion: "Is unrealistically preoccupied with fears of being left to take care of himself or herself."
+        rating_anchor: "2 = worry is excessive and unrealistic"
+
+  # ---------------------------------------------------------------- p. 12–14
+  - section_title: "Zwanghafte Persönlichkeitsstörung"
+    questions:
+      - id: Q16
+        criterion_id: OCPD_1
+        criterion_code: PD18
+        text: "Sind Sie ein Mensch, der viel Zeit damit verbringt, sich auf Details, Ordnung oder Organisation zu konzentrieren oder Listen und Zeitpläne zu erstellen?"
+        probes: ["Erzählen Sie mir bitte davon.", "Verbringen Sie so viel Zeit damit, dass der eigentliche Zweck dessen, was Sie tun wollten, verloren geht? (Zum Beispiel, dass Sie so lange eine Liste der zu erledigenden Dinge schreiben, dass Ihnen keine Zeit mehr bleibt, sie zu erledigen.)"]
+        criterion: "Is preoccupied with details, rules, lists, order, organization, or schedules to the extent that the major point of the activity is lost."
+        rating_anchor: "2 = acknowledges trait and at least one example"
+      - id: Q17
+        criterion_id: OCPD_2
+        criterion_code: PD19
+        text: "Haben Sie Schwierigkeiten, Dinge fertigzustellen, weil Sie so viel Zeit damit verbringen, sie genau richtig zu machen?"
+        probes: ["Nennen Sie mir bitte einige Beispiele.", "(Wie oft kommt das vor?)"]
+        criterion: "Shows perfectionism that interferes with task completion (e.g., is unable to complete a project because his or her own overly strict standards are not met)."
+        rating_anchor: "2 = several examples of tasks not completed or significantly delayed because of perfectionism"
+      - id: Q18
+        criterion_id: OCPD_3
+        criterion_code: PD20
+        text: "Sind Sie Ihrer Arbeit oder dem Produktivsein sehr stark verschrieben?"
+        probes: ["Sind Sie so sehr darauf ausgerichtet, dass Sie selten Zeit mit Freunden verbringen, in den Urlaub fahren oder Dinge einfach nur zum Spaß tun?", "(Wenn Sie sich freinehmen, nehmen Sie dann immer Arbeit mit, weil Sie es nicht ertragen, „Zeit zu verschwenden“?)"]
+        criterion: "Is excessively devoted to work and productivity to the exclusion of leisure activities and friendships (not accounted for by obvious economic necessity). [Note: Also not accounted for by temporary job requirements.]"
+        rating_anchor: "2 = acknowledges trait or has been told by other people"
+      - id: Q19
+        criterion_id: OCPD_4
+        criterion_code: PD21
+        text: "Haben Sie sehr hohe Maßstäbe dafür, was richtig und was falsch ist?"
+        probes: ["Nennen Sie mir bitte einige Beispiele für Ihre hohen Maßstäbe.", "(Halten Sie sich buchstabengetreu an Regeln, ganz gleich, was passiert? Bestehen Sie darauf, dass sich auch andere an die Regeln halten?)", "(Falls ein religiöses Beispiel genannt wird:) Sind Sie strenger als andere Menschen, die Ihre religiösen Ansichten teilen?"]
+        criterion: "Is overconscientious, scrupulous, and inflexible about matters of morality, ethics, or values (not accounted for by cultural or religious identification)."
+        rating_anchor: "2 = several examples of holding self or others to rigidly high moral standards"
+      - id: Q20
+        criterion_id: OCPD_5
+        criterion_code: PD22
+        text: "Fällt es Ihnen schwer, Dinge wegzuwerfen, weil sie eines Tages nützlich sein könnten?"
+        probes: ["Nennen Sie mir bitte einige Beispiele für Dinge, die Sie nicht wegwerfen können. (Wie ist es mit Dingen, die abgenutzt oder wertlos sind?)"]
+        criterion: "Is unable to discard worn-out or worthless objects even when they have no sentimental value."
+        rating_anchor: "2 = several examples of worn-out or worthless objects"
+      - id: Q21
+        criterion_id: OCPD_6
+        criterion_code: PD23
+        text: "Fällt es Ihnen schwer, mit anderen zusammenzuarbeiten oder andere um etwas zu bitten, wenn diese nicht bereit sind, die Dinge genau so zu machen, wie Sie es wollen?"
+        probes: ["Erzählen Sie mir bitte davon. (Kommt das oft vor?)", "(Erledigen Sie Dinge oft am Ende selbst, um sicherzugehen, dass sie richtig gemacht werden?)"]
+        criterion: "Is reluctant to delegate tasks or to work with others unless they submit to exactly his or her way of doing things."
+        rating_anchor: "2 = acknowledges trait and at least one example"
+      - id: Q22
+        criterion_id: OCPD_7
+        criterion_code: PD24
+        text: "Fällt es Ihnen schwer, Geld für sich selbst und für andere Menschen auszugeben?"
+        probes: ["Warum? (Liegt es daran, dass Sie sich Sorgen machen, in Zukunft nicht genug zu haben, wenn Sie es wirklich brauchen? Wofür könnten Sie es brauchen?)", "Hat jemand gesagt, Sie seien „geizig“ oder „knauserig“?"]
+        criterion: "Adopts a miserly spending style toward both self and others; money is viewed as something to be hoarded for future catastrophes."
+        rating_anchor: "2 = acknowledges trait and at least one example"
+      - id: Q23
+        criterion_id: OCPD_8
+        criterion_code: PD25
+        text: "Fällt es Ihnen schwer, Änderungen vorzunehmen, wenn Sie einmal Pläne gemacht haben?"
+        probes: ["Erzählen Sie mir bitte davon.", "(Ist es Ihnen so wichtig, die Dinge auf die eine „richtige“ Art zu erledigen, dass es Ihnen schwerfällt, sich auf die Ideen anderer einzulassen?)"]
+        criterion: "Shows rigidity and stubbornness."
+        rating_anchor: "2 = acknowledges trait or has been told by other people"
+      - id: Q24
+        criterion_id: OCPD_8
+        criterion_code: PD25
+        text: "Haben andere Menschen gesagt, dass Sie stur sind?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "Shows rigidity and stubbornness."
+        rating_anchor: "2 = acknowledges trait or has been told by other people"
+
+  # ---------------------------------------------------------------- p. 15–17
+  - section_title: "Paranoide Persönlichkeitsstörung"
+    questions:
+      - id: Q25
+        criterion_id: PAR_A1
+        criterion_code: PD27
+        text: "Haben Sie oft das Gefühl, dass Menschen Sie ausnutzen, Ihnen schaden oder Sie belügen?"
+        probes: ["Was lässt Sie das denken?"]
+        criterion: "Suspects, without sufficient basis, that others are exploiting, harming, or deceiving him or her."
+        rating_anchor: "2 = acknowledges trait and at least one example"
+      - id: Q26
+        criterion_id: PAR_A2
+        criterion_code: PD28
+        text: "Sind Sie ein sehr verschlossener Mensch, der sich anderen selten anvertraut?"
+        probes: ["Liegt es daran, dass Sie Ihren Freunden oder den Menschen, mit denen Sie arbeiten, nicht vertrauen? Warum vertrauen Sie ihnen nicht?", "Verbringen Sie viel Zeit damit, darüber nachzudenken?"]
+        criterion: "Is preoccupied with unjustified doubts about the loyalty or trustworthiness of friends or associates."
+        rating_anchor: "2 = acknowledges preoccupation with trustworthiness or loyalty of other people"
+      - id: Q27
+        criterion_id: PAR_A3
+        criterion_code: PD29
+        text: "Finden Sie, dass es am besten ist, andere Menschen nicht viel über sich wissen zu lassen, weil sie es gegen Sie verwenden werden?"
+        probes: ["Wann ist das passiert?", "Erzählen Sie mir bitte davon."]
+        criterion: "Is reluctant to confide in others because of unwarranted fear that the information will be used maliciously against him or her."
+        rating_anchor: "2 = acknowledges trait"
+      - id: Q28
+        criterion_id: PAR_A4
+        criterion_code: PD30
+        text: "Haben Sie oft das Gefühl, dass Menschen Sie mit dem, was sie sagen oder tun, bedrohen oder beleidigen?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "Reads hidden demeaning or threatening meanings into benign remarks or events."
+        rating_anchor: "2 = acknowledges trait and at least one example of misinterpreting a benign remark or action"
+      - id: Q29
+        criterion_id: PAR_A5
+        criterion_code: PD31
+        text: "Sind Sie ein Mensch, der nachtragend ist oder lange braucht, um Menschen zu verzeihen, die Sie beleidigt oder herabgesetzt haben?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "Persistently bears grudges (i.e., is unforgiving of insults, injuries, or slights)."
+        rating_anchor: "2 = acknowledges trait and at least one example"
+      - id: Q30
+        criterion_id: PAR_A5
+        criterion_code: PD31
+        text: "Gibt es viele Menschen, denen Sie nicht verzeihen können, weil sie vor langer Zeit etwas getan oder gesagt haben?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "Persistently bears grudges (i.e., is unforgiving of insults, injuries, or slights)."
+        rating_anchor: "2 = acknowledges trait and at least one example"
+      - id: Q31
+        criterion_id: PAR_A6
+        criterion_code: PD32
+        text: "Werden Sie oft wütend oder gehen zum Gegenangriff über, wenn jemand Sie auf irgendeine Weise kritisiert oder beleidigt?"
+        probes: ["Nennen Sie mir bitte einige Beispiele.", "(Sagen andere, dass Sie oft zu schnell gekränkt sind?)"]
+        criterion: "Perceives attacks on his or her character or reputation that are not apparent to others and is quick to react angrily or to counterattack."
+        rating_anchor: "2 = acknowledges trait and at least one example"
+      - id: Q32
+        criterion_id: PAR_A7
+        criterion_code: PD33
+        text: "Haben Sie schon einmal vermutet, dass Ihre Ehe- oder Lebenspartnerin bzw. Ihr Ehe- oder Lebenspartner Ihnen untreu war?"
+        probes: ["Erzählen Sie mir bitte davon.", "(Welche Anhaltspunkte hatten Sie? Was haben Sie deswegen unternommen? Hatten Sie recht?)"]
+        criterion: "Has recurrent suspicions, without justification, regarding fidelity of spouse or sexual partner."
+        rating_anchor: "2 = examples of unjustified suspicions with several partners or on several occasions with the same partner OR acknowledges trait"
+      - id: PAR_B
+        ask: false
+        not_asked_reason: clinician
+        criterion_id: PAR_B
+        criterion_code: PD35
+        criterion: "B. Does not occur exclusively during the course of Schizophrenia, a Bipolar Disorder or Depressive Disorder With Psychotic Features, or another Psychotic Disorder and is not attributable to the physiological effects of another medical condition."
+        note: "Source asks follow-up questions only IF THERE IS EVIDENCE of a psychotic disorder, prolonged substance use or a medical condition – requires clinical information; rated by the clinician."
+
+  # ---------------------------------------------------------------- p. 18–21
+  - section_title: "Schizotypische Persönlichkeitsstörung"
+    questions:
+      - id: Q33
+        criterion_id: SZT_A1
+        criterion_code: PD36
+        text: "Haben Sie, wenn Sie unterwegs sind und Menschen miteinander reden sehen, oft das Gefühl, dass diese über Sie sprechen?"
+        probes: ["Erzählen Sie mir mehr darüber."]
+        criterion: "Ideas of reference (excluding delusions of reference)."
+        rating_anchor: "2 = several examples"
+      - id: Q34
+        criterion_id: SZT_A1
+        criterion_code: PD36
+        text: "Haben Sie, wenn Sie unter Menschen sind, oft das Gefühl, beobachtet oder angestarrt zu werden?"
+        probes: ["Erzählen Sie mir mehr darüber."]
+        criterion: "Ideas of reference (excluding delusions of reference)."
+        rating_anchor: "2 = several examples"
+      - id: Q35
+        criterion_id: SZT_A1
+        criterion_code: PD36
+        text: "Haben Sie oft das Gefühl, dass der Text eines Liedes oder etwas in einem Film oder im Fernsehen eine besondere Bedeutung speziell für Sie hat?"
+        probes: ["Erzählen Sie mir mehr darüber."]
+        criterion: "Ideas of reference (excluding delusions of reference)."
+        rating_anchor: "2 = several examples"
+      - id: Q36
+        criterion_id: SZT_A2
+        criterion_code: PD37
+        text: "Sind Sie ein abergläubischer Mensch?"
+        probes: ["Was sind einige Ihrer abergläubischen Vorstellungen? Wie haben sie beeinflusst, was Sie sagen oder tun?", "Kennen Sie andere Menschen, die solche Dinge tun?"]
+        criterion: "Odd beliefs or magical thinking that influences behavior and is inconsistent with subcultural norms (e.g., superstitiousness, belief in clairvoyance, telepathy, or \"sixth sense\"; in children and adolescents, bizarre fantasies or preoccupations)."
+        rating_anchor: "2 = several examples of such phenomena that influenced behavior and are inconsistent with subcultural norms"
+      - id: Q37
+        criterion_id: SZT_A2
+        criterion_code: PD37
+        text: "Hatten Sie jemals das Gefühl, dass Sie Dinge geschehen lassen können, indem Sie sie sich wünschen oder an sie denken?"
+        probes: ["Erzählen Sie mir bitte davon.", "(Wie hat sich das auf Sie ausgewirkt?)"]
+        criterion: "Odd beliefs or magical thinking that influences behavior and is inconsistent with subcultural norms (e.g., superstitiousness, belief in clairvoyance, telepathy, or \"sixth sense\")."
+        rating_anchor: "2 = several examples of such phenomena that influenced behavior and are inconsistent with subcultural norms"
+      - id: Q38
+        criterion_id: SZT_A2
+        criterion_code: PD37
+        text: "Haben Sie persönliche Erfahrungen mit Übernatürlichem gemacht?"
+        probes: ["Erzählen Sie mir bitte davon.", "(Wie hat sich das auf Sie ausgewirkt?)"]
+        criterion: "Odd beliefs or magical thinking that influences behavior and is inconsistent with subcultural norms (e.g., superstitiousness, belief in clairvoyance, telepathy, or \"sixth sense\")."
+        rating_anchor: "2 = several examples of such phenomena that influenced behavior and are inconsistent with subcultural norms"
+      - id: Q39
+        criterion_id: SZT_A2
+        criterion_code: PD37
+        text: "Glauben Sie, dass Sie einen „sechsten Sinn“ haben, mit dem Sie Dinge wissen und vorhersagen können?"
+        probes: ["Erzählen Sie mir bitte davon.", "(Wie wirkt sich das auf Sie aus?)"]
+        criterion: "Odd beliefs or magical thinking that influences behavior and is inconsistent with subcultural norms (e.g., superstitiousness, belief in clairvoyance, telepathy, or \"sixth sense\")."
+        rating_anchor: "2 = several examples of such phenomena that influenced behavior and are inconsistent with subcultural norms"
+      - id: Q40
+        criterion_id: SZT_A3
+        criterion_code: PD38
+        text: "Haben Sie oft das Gefühl, dass alles unwirklich ist, dass Sie von Ihrem Körper oder Ihrem Geist losgelöst sind oder dass Sie Ihre eigenen Gedanken oder Bewegungen von außen beobachten?"
+        probes: ["Nennen Sie mir bitte einige Beispiele.", "(Hatten Sie zu dieser Zeit Alkohol getrunken oder Drogen genommen?)"]
+        criterion: "Unusual perceptual experiences, including bodily illusions."
+        rating_anchor: "2 = several examples of unusual perceptual experiences not due to substance use"
+      - id: Q41
+        criterion_id: SZT_A3
+        criterion_code: PD38
+        text: "Sehen Sie oft Dinge, die andere Menschen nicht sehen?"
+        probes: ["Nennen Sie mir bitte einige Beispiele.", "(Hatten Sie zu dieser Zeit Alkohol getrunken oder Drogen genommen?)"]
+        criterion: "Unusual perceptual experiences, including bodily illusions."
+        rating_anchor: "2 = several examples of unusual perceptual experiences not due to substance use"
+      - id: Q42
+        criterion_id: SZT_A3
+        criterion_code: PD38
+        text: "Hören Sie oft eine Stimme, die leise Ihren Namen sagt?"
+        probes: ["Erzählen Sie mir mehr darüber.", "(Hatten Sie zu dieser Zeit Alkohol getrunken oder Drogen genommen?)"]
+        criterion: "Unusual perceptual experiences, including bodily illusions."
+        rating_anchor: "2 = several examples of unusual perceptual experiences not due to substance use"
+      - id: Q43
+        criterion_id: SZT_A3
+        criterion_code: PD38
+        text: "Hatten Sie schon einmal das Gefühl, dass eine Person oder eine Kraft um Sie herum ist, obwohl Sie niemanden sehen können?"
+        probes: ["Erzählen Sie mir mehr darüber.", "(Hatten Sie zu dieser Zeit Alkohol getrunken oder Drogen genommen?)"]
+        criterion: "Unusual perceptual experiences, including bodily illusions."
+        rating_anchor: "2 = several examples of unusual perceptual experiences not due to substance use"
+      - id: SZT_A4
+        ask: false
+        not_asked_reason: observation
+        criterion_id: SZT_A4
+        criterion_code: PD39
+        criterion: "Odd thinking and speech (e.g., vague, circumstantial, metaphorical, overelaborate, or stereotyped)."
+        note: "OBSERVED DURING INTERVIEW – not possible in a text chat; clinician rating required (may use the transcript)."
+      - id: SZT_A5
+        ask: false
+        not_asked_reason: derived
+        derived_any_rated_2_of: [PD27, PD28, PD29, PD30, PD33]
+        criterion_id: SZT_A5
+        criterion_code: PD40
+        criterion: "Suspiciousness or paranoid ideation."
+        note: "Rated from Paranoid PD criteria: 2 IF ANY OF PARANOID PD CRITERIA A1, A2, A3, A4, OR A7 ARE RATED 2 (items Q25–Q28, Q32); clinician to confirm."
+      - id: SZT_A6
+        ask: false
+        not_asked_reason: observation
+        criterion_id: SZT_A6
+        criterion_code: PD41
+        criterion: "Inappropriate or constricted affect."
+        note: "OBSERVED DURING INTERVIEW – not possible in a text chat; clinician rating required."
+      - id: SZT_A7
+        ask: false
+        not_asked_reason: observation
+        criterion_id: SZT_A7
+        criterion_code: PD42
+        criterion: "Behavior or appearance that is odd, eccentric, or peculiar."
+        note: "OBSERVED DURING INTERVIEW – not possible in a text chat; clinician rating required."
+      - id: Q44
+        criterion_id: SZT_A8
+        criterion_code: PD43
+        text: "Gibt es nur sehr wenige Menschen außerhalb Ihrer engsten Familie, denen Sie wirklich nahestehen?"
+        probes: ["Wie viele enge Freundinnen oder Freunde haben Sie?"]
+        criterion: "Lack of close friends or confidants other than first-degree relatives."
+        rating_anchor: "2 = no close friends (other than first-degree relatives)"
+      - id: Q45
+        criterion_id: SZT_A9
+        criterion_code: PD44
+        text: "Fühlen Sie sich oft nervös, wenn Sie mit Menschen zusammen sind, die Sie nicht sehr gut kennen?"
+        probes: ["Weshalb sind Sie nervös?", "Liegt es daran, dass Sie befürchten, ausgenutzt oder auf irgendeine Weise verletzt zu werden – und nicht daran, abgelehnt oder kritisiert zu werden?", "(Sind Sie immer noch ängstlich, auch wenn Sie die Menschen schon eine Weile kennen?)"]
+        criterion: "Excessive social anxiety that does not diminish with familiarity and tends to be associated with paranoid fears rather than negative judgments about self."
+        rating_anchor: "2 = acknowledges excessive anxiety that does not diminish with familiarity related to suspiciousness about other people's motives"
+      - id: SZT_B
+        ask: false
+        not_asked_reason: clinician
+        criterion_id: SZT_B
+        criterion_code: PD46
+        criterion: "B. Does not occur exclusively during the course of Schizophrenia, a Bipolar Disorder or Depressive Disorder With Psychotic Features, another Psychotic Disorder, or Autism Spectrum Disorder. [Note: rated NO if there is a preexisting diagnosis of Autism Spectrum Disorder.]"
+        note: "Source asks follow-up questions only IF THERE IS EVIDENCE of a psychotic disorder, prolonged substance use or a medical condition – rated by the clinician."
+
+  # ---------------------------------------------------------------- p. 22–24
+  - section_title: "Schizoide Persönlichkeitsstörung"
+    questions:
+      - id: Q46
+        criterion_id: SZD_A1
+        criterion_code: PD47
+        text: "Ist es Ihnen NICHT wichtig, Freundschaften oder Liebesbeziehungen zu haben oder in Ihre Familie eingebunden zu sein?"
+        probes: ["Erzählen Sie mir mehr darüber."]
+        criterion: "Neither desires nor enjoys close relationships, including being part of a family."
+        rating_anchor: "2 = acknowledges trait"
+      - id: Q47
+        criterion_id: SZD_A2
+        criterion_code: PD48
+        text: "Würden Sie fast immer lieber Dinge allein tun als mit anderen Menschen?"
+        probes: ["(Gilt das sowohl bei der Arbeit als auch in Ihrer Freizeit?)"]
+        criterion: "Almost always chooses solitary activities."
+        rating_anchor: "2 = acknowledges trait"
+      - id: Q48
+        criterion_id: SZD_A3
+        criterion_code: PD49
+        text: "Haben Sie wenig oder kein Interesse daran, sexuelle Erfahrungen mit einer anderen Person zu machen?"
+        probes: ["Erzählen Sie mir mehr darüber."]
+        criterion: "Has little, if any, interest in having sexual experiences with another person."
+        rating_anchor: "2 = acknowledges trait"
+      - id: Q49
+        criterion_id: SZD_A4
+        criterion_code: PD50
+        text: "Gibt es wirklich nur sehr wenige Dinge, die Ihnen Freude bereiten?"
+        probes: ["Erzählen Sie mir bitte davon.", "(Wie ist es mit körperlichen Dingen wie einem guten Essen oder Sex?)"]
+        criterion: "Takes pleasure in few, if any, activities. [Note: Absence of pleasure especially applies to sensory, bodily, and interpersonal experiences.]"
+        rating_anchor: "2 = acknowledges trait"
+      - id: SZD_A5
+        ask: false
+        not_asked_reason: same_as
+        same_as: Q44
+        criterion_id: SZD_A5
+        criterion_code: PD51
+        criterion: "Lacks close friends or confidants other than first-degree relatives."
+        note: "PREVIOUSLY RATED IN CRITERION A8 FOR SCHIZOTYPAL PD (question Q44); the source asks the question again only if it was not rated there."
+      - id: Q50
+        criterion_id: SZD_A6
+        criterion_code: PD52
+        text: "Ist es Ihnen gleichgültig, was andere Menschen von Ihnen denken?"
+        probes: ["Wie fühlen Sie sich, wenn Menschen Sie loben oder kritisieren?"]
+        criterion: "Appears indifferent to the praise or criticism of others."
+        rating_anchor: "2 = claims indifference to praise or criticism"
+      - id: Q51
+        criterion_id: SZD_A7
+        criterion_code: PD53
+        text: "Haben Sie selten starke Gefühle, zum Beispiel sehr wütend oder sehr fröhlich zu sein?"
+        probes: ["Erzählen Sie mir mehr darüber."]
+        criterion: "Shows emotional coldness, detachment, or flattened affectivity. (Source: ALSO CONSIDER BEHAVIOR DURING INTERVIEW - not available in text chat.)"
+        rating_anchor: "2 = not occurring exclusively during a Mood Disorder"
+      - id: SZD_B
+        ask: false
+        not_asked_reason: clinician
+        criterion_id: SZD_B
+        criterion_code: PD55
+        criterion: "B. Does not occur exclusively during the course of Schizophrenia, a Bipolar Disorder or Depressive Disorder With Psychotic Features, another Psychotic Disorder, or Autism Spectrum Disorder and is not attributable to the physiological effects of another medical condition. [Note: rated NO if there is a preexisting diagnosis of Autism Spectrum Disorder.]"
+        note: "Source asks follow-up questions only IF THERE IS EVIDENCE of a psychotic disorder, prolonged substance use or a medical condition – rated by the clinician."
+
+  # ---------------------------------------------------------------- p. 25–26
+  - section_title: "Histrionische Persönlichkeitsstörung"
+    questions:
+      - id: Q52
+        criterion_id: HST_1
+        criterion_code: PD56
+        text: "Stehen Sie gern im Mittelpunkt?"
+        probes: ["Wie fühlen Sie sich, wenn Sie es nicht sind? (Unwohl?)"]
+        criterion: "Is uncomfortable in situations in which he or she is not the center of attention."
+        rating_anchor: "2 = feels uncomfortable when not the center of attention"
+      - id: Q53
+        criterion_id: HST_2
+        criterion_code: PD57
+        text: "Flirten Sie viel?"
+        probes: ["Hat sich schon einmal jemand darüber beschwert?"]
+        criterion: "Interaction with others is often characterized by inappropriate sexually seductive or provocative behavior. (Source: ALSO CONSIDER BEHAVIOR DURING INTERVIEW - not available in text chat.)"
+        rating_anchor: "2 = acknowledges complaints, describes inappropriate behavior, or is observed to be inappropriately seductive"
+      - id: Q54
+        criterion_id: HST_2
+        criterion_code: PD57
+        text: "Ertappen Sie sich oft dabei, dass Sie sich an andere Menschen „ranmachen“?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "Interaction with others is often characterized by inappropriate sexually seductive or provocative behavior. (Source: ALSO CONSIDER BEHAVIOR DURING INTERVIEW - not available in text chat.)"
+        rating_anchor: "2 = acknowledges complaints, describes inappropriate behavior, or is observed to be inappropriately seductive"
+      - id: HST_3
+        ask: false
+        not_asked_reason: observation
+        criterion_id: HST_3
+        criterion_code: PD58
+        criterion: "Displays rapidly shifting and shallow expression of emotions."
+        note: "OBSERVED DURING INTERVIEW – not possible in a text chat; clinician rating required."
+      - id: Q55
+        criterion_id: HST_4
+        criterion_code: PD59
+        text: "Ziehen Sie gern durch Ihre Kleidung oder Ihr Aussehen Aufmerksamkeit auf sich?"
+        probes: ["Beschreiben Sie bitte, was Sie tun.", "Tun Sie so etwas meistens?"]
+        criterion: "Consistently uses physical appearance to draw attention to self."
+        rating_anchor: "2 = gives example and acknowledges that behavior occurs most of the time"
+      - id: HST_5
+        ask: false
+        not_asked_reason: observation
+        criterion_id: HST_5
+        criterion_code: PD60
+        criterion: "Has a style of speech that is excessively impressionistic and lacking in detail."
+        note: "OBSERVED DURING INTERVIEW – not possible in a text chat; clinician rating required (may use the transcript)."
+      - id: Q56
+        criterion_id: HST_6
+        criterion_code: PD61
+        text: "Neigen Sie dazu, sich in Ihrem Verhalten und in der Art, wie Sie sprechen, sehr dramatisch zu geben?"
+        probes: ["Erzählen Sie mir bitte davon.", "(Hat Sie schon einmal jemand als „Drama-Queen“ bezeichnet?)"]
+        criterion: "Shows self-dramatization, theatricality, and exaggerated expression of emotion. (Source: ALSO CONSIDER BEHAVIOR DURING INTERVIEW - not available in text chat.)"
+        rating_anchor: "2 = acknowledges trait and at least one example"
+      - id: Q57
+        criterion_id: HST_6
+        criterion_code: PD61
+        text: "Sind Sie emotionaler als die meisten anderen Menschen – weinen Sie zum Beispiel heftig, wenn Sie eine traurige Geschichte hören?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "Shows self-dramatization, theatricality, and exaggerated expression of emotion."
+        rating_anchor: "2 = acknowledges trait and at least one example"
+      - id: Q58
+        criterion_id: HST_7
+        criterion_code: PD62
+        text: "Ändern Sie oft Ihre Meinung, je nachdem, mit welchen Menschen Sie zusammen sind oder was Sie gerade gelesen oder im Fernsehen gesehen haben?"
+        probes: ["Erzählen Sie mir mehr darüber."]
+        criterion: "Is suggestible (i.e., easily influenced by others or circumstances)."
+        rating_anchor: "2 = acknowledges trait and at least one example"
+      - id: Q59
+        criterion_id: HST_8
+        criterion_code: PD63
+        text: "Haben Sie das Gefühl, selbst mit Menschen gut befreundet zu sein, die eine Dienstleistung für Sie erbringen – zum Beispiel Ihr Installateur, Ihre Autowerkstatt oder Ihre Ärztin bzw. Ihr Arzt?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "Considers relationships to be more intimate than they actually are."
+        rating_anchor: "2 = several examples"
+
+  # ---------------------------------------------------------------- p. 27–29
+  - section_title: "Narzisstische Persönlichkeitsstörung"
+    questions:
+      - id: Q60
+        criterion_id: NAR_1
+        criterion_code: PD65
+        text: "Sind Sie wichtiger, talentierter oder erfolgreicher als die meisten anderen Menschen?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "Has a grandiose sense of self-importance (e.g., exaggerates achievements and talents, expects to be recognized as superior without commensurate achievements)."
+        rating_anchor: "2 = at least one example of grandiosity"
+      - id: Q61
+        criterion_id: NAR_1
+        criterion_code: PD65
+        text: "Haben Ihnen andere Menschen gesagt, dass Sie eine zu hohe Meinung von sich haben?"
+        probes: ["Nennen Sie mir bitte einige Beispiele dafür."]
+        criterion: "Has a grandiose sense of self-importance (e.g., exaggerates achievements and talents, expects to be recognized as superior without commensurate achievements)."
+        rating_anchor: "2 = at least one example of grandiosity"
+      - id: Q62
+        criterion_id: NAR_2
+        criterion_code: PD66
+        text: "Denken Sie viel über die Macht, den Erfolg oder die Anerkennung nach, die Sie eines Tages erwarten?"
+        probes: ["Erzählen Sie mir mehr darüber.", "(Wie viel Zeit verbringen Sie damit, über diese Dinge nachzudenken?)"]
+        criterion: "Is preoccupied with fantasies of unlimited success, power, brilliance, beauty, or ideal love."
+        rating_anchor: "2 = much of time spent daydreaming or in pursuit of unrealistic goals"
+      - id: Q63
+        criterion_id: NAR_2
+        criterion_code: PD66
+        text: "Denken Sie viel über die perfekte Liebesbeziehung nach, die Sie eines Tages haben werden?"
+        probes: ["Erzählen Sie mir mehr darüber.", "(Wie viel Zeit verbringen Sie damit, darüber nachzudenken?)"]
+        criterion: "Is preoccupied with fantasies of unlimited success, power, brilliance, beauty, or ideal love."
+        rating_anchor: "2 = much of time spent daydreaming or in pursuit of unrealistic goals"
+      - id: Q64
+        criterion_id: NAR_3
+        criterion_code: PD67
+        text: "Bestehen Sie, wenn Sie ein Problem haben, fast immer darauf, mit der ranghöchsten Person zu sprechen?"
+        probes: ["Nennen Sie mir bitte einige Beispiele.", "(Warum müssen Sie mit der ranghöchsten Person sprechen? Liegt es daran, dass Sie einzigartig oder besonders sind? Inwiefern?)"]
+        criterion: "Believes that he or she is \"special\" and unique and can only be understood by, or should associate with, other special or high-status people (or institutions)."
+        rating_anchor: "2 = acknowledges that he or she is special or unique and at least one example"
+      - id: Q65
+        criterion_id: NAR_3
+        criterion_code: PD67
+        text: "Versuchen Sie, Zeit mit Menschen zu verbringen, die wichtig oder einflussreich sind?"
+        probes: ["Woran liegt das? (Liegt es daran, dass Sie zu besonders oder einzigartig sind, um Zeit mit Menschen zu verbringen, die es nicht sind?)"]
+        criterion: "Believes that he or she is \"special\" and unique and can only be understood by, or should associate with, other special or high-status people (or institutions)."
+        rating_anchor: "2 = acknowledges that he or she is special or unique and at least one example"
+      - id: Q66
+        criterion_id: NAR_4
+        criterion_code: PD68
+        text: "Ist es Ihnen wichtig, dass Menschen Ihnen Aufmerksamkeit schenken oder Sie auf irgendeine Weise bewundern?"
+        probes: ["Erzählen Sie mir mehr darüber."]
+        criterion: "Requires excessive admiration."
+        rating_anchor: "2 = acknowledges trait and at least one example"
+      - id: Q67
+        criterion_id: NAR_5
+        criterion_code: PD69
+        text: "Haben Sie das Gefühl, ein Mensch zu sein, der eine besondere Behandlung verdient oder dem andere automatisch tun sollten, was er möchte?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "Has a sense of entitlement (i.e., unreasonable expectations of especially favorable treatment or automatic compliance with his or her expectations)."
+        rating_anchor: "2 = several examples"
+      - id: Q68
+        criterion_id: NAR_6
+        criterion_code: PD70
+        text: "Müssen Sie Ihre Bedürfnisse oft über die anderer Menschen stellen?"
+        probes: ["Nennen Sie mir bitte einige Beispiele, wann das vorkommt."]
+        criterion: "Is interpersonally exploitative (i.e., takes advantage of others to achieve his or her own ends)."
+        rating_anchor: "2 = several examples in which another person is exploited"
+      - id: Q69
+        criterion_id: NAR_6
+        criterion_code: PD70
+        text: "Haben sich andere Menschen darüber beschwert, dass Sie Menschen ausnutzen?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "Is interpersonally exploitative (i.e., takes advantage of others to achieve his or her own ends)."
+        rating_anchor: "2 = several examples in which another person is exploited"
+      - id: Q70
+        criterion_id: NAR_7
+        criterion_code: PD71
+        text: "Haben Sie im Allgemeinen das Gefühl, dass die Bedürfnisse oder Gefühle anderer Menschen eigentlich nicht Ihr Problem sind?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "Lacks empathy: is unwilling to recognize or identify with the feelings and needs of others."
+        rating_anchor: "2 = acknowledges trait OR several examples"
+      - id: Q71
+        criterion_id: NAR_7
+        criterion_code: PD71
+        text: "Finden Sie die Probleme anderer Menschen oft langweilig?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "Lacks empathy: is unwilling to recognize or identify with the feelings and needs of others."
+        rating_anchor: "2 = acknowledges trait OR several examples"
+      - id: Q72
+        criterion_id: NAR_7
+        criterion_code: PD71
+        text: "Haben sich Menschen bei Ihnen beschwert, dass Sie ihnen nicht zuhören oder dass Ihnen ihre Gefühle egal sind?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "Lacks empathy: is unwilling to recognize or identify with the feelings and needs of others."
+        rating_anchor: "2 = acknowledges trait OR several examples"
+      - id: Q73
+        criterion_id: NAR_8
+        criterion_code: PD72
+        text: "Haben Sie, wenn Sie jemanden sehen, der erfolgreich ist, das Gefühl, dass Sie es mehr verdient hätten als diese Person?"
+        probes: ["Nennen Sie mir bitte einige Beispiele.", "(Wie oft empfinden Sie so?)"]
+        criterion: "Is often envious of others or believes that others are envious of him or her."
+        rating_anchor: "2 = acknowledges trait and at least one example"
+      - id: Q74
+        criterion_id: NAR_8
+        criterion_code: PD72
+        text: "Haben Sie das Gefühl, dass andere Sie oft beneiden?"
+        probes: ["Worum beneiden sie Sie?"]
+        criterion: "Is often envious of others or believes that others are envious of him or her."
+        rating_anchor: "2 = acknowledges trait and at least one example"
+      - id: Q75
+        criterion_id: NAR_9
+        criterion_code: PD73
+        text: "Finden Sie, dass es nur sehr wenige Menschen gibt, die Ihre Zeit und Aufmerksamkeit wert sind?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "Shows arrogant, haughty behaviors or attitudes. (Source: ALSO CONSIDER BEHAVIOR DURING INTERVIEW - not available in text chat.)"
+        rating_anchor: "2 = acknowledges trait or observed during interview"
+      - id: Q76
+        criterion_id: NAR_9
+        criterion_code: PD73
+        text: "Haben sich andere Menschen beschwert, dass Sie sich zu „hochnäsig“ oder arrogant verhalten?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "Shows arrogant, haughty behaviors or attitudes."
+        rating_anchor: "2 = acknowledges trait or observed during interview"
+
+  # ---------------------------------------------------------------- p. 30–33
+  - section_title: "Borderline-Persönlichkeitsstörung"
+    questions:
+      - id: Q77
+        criterion_id: BPD_1
+        criterion_code: PD75
+        text: "Sind Sie schon einmal in große Verzweiflung geraten, als Sie dachten, dass jemand, der Ihnen wirklich wichtig war, Sie verlassen würde?"
+        probes: ["Was haben Sie getan? (Haben Sie die Person bedroht oder sie angefleht?)", "Wie oft ist das vorgekommen?"]
+        criterion: "Frantic efforts to avoid real or imagined abandonment. (Note: Do not include suicidal or self-mutilating behavior covered in Criterion 5.)"
+        rating_anchor: "2 = several examples"
+      - id: Q78
+        criterion_id: BPD_2
+        criterion_code: PD76
+        text: "Haben Ihre Beziehungen zu Menschen, die Ihnen wirklich wichtig sind, viele extreme Höhen und Tiefen?"
+        probes: ["Erzählen Sie mir bitte davon.", "(Gab es Zeiten, in denen Sie dachten, diese Menschen seien perfekt oder alles, was Sie sich wünschen, und dann andere Zeiten, in denen Sie sie schrecklich fanden? Wie viele Beziehungen waren so?)"]
+        criterion: "A pattern of unstable and intense interpersonal relationships characterized by alternating between extremes of idealization and devaluation."
+        rating_anchor: "2 = either one prolonged relationship or several briefer relationships in which the alternating pattern occurs at least twice"
+      - id: Q79
+        criterion_id: BPD_3
+        criterion_code: PD77
+        text: "Ändert sich Ihr Gefühl dafür, wer Sie sind, oft dramatisch?"
+        probes: ["Erzählen Sie mir mehr darüber."]
+        criterion: "Identity disturbance: markedly and persistently unstable self-image or sense of self. [Note: Do not include normal adolescent uncertainty.]"
+        rating_anchor: "2 = acknowledges trait"
+      - id: Q80
+        criterion_id: BPD_3
+        criterion_code: PD77
+        text: "Sind Sie bei verschiedenen Menschen oder in verschiedenen Situationen so unterschiedlich, dass Sie manchmal nicht wissen, wer Sie wirklich sind?"
+        probes: ["Nennen Sie mir bitte einige Beispiele dafür.", "(Fühlen Sie sich oft so?)"]
+        criterion: "Identity disturbance: markedly and persistently unstable self-image or sense of self. [Note: Do not include normal adolescent uncertainty.]"
+        rating_anchor: "2 = acknowledges trait"
+      - id: Q81
+        criterion_id: BPD_3
+        criterion_code: PD77
+        text: "Gab es viele plötzliche Veränderungen in Ihren Zielen, Berufsplänen, religiösen Überzeugungen und Ähnlichem?"
+        probes: ["Erzählen Sie mir mehr darüber."]
+        criterion: "Identity disturbance: markedly and persistently unstable self-image or sense of self. [Note: Do not include normal adolescent uncertainty.]"
+        rating_anchor: "2 = acknowledges trait"
+      - id: Q82
+        criterion_id: BPD_3
+        criterion_code: PD77
+        text: "Gab es viele plötzliche Veränderungen in der Art von Freundinnen und Freunden, die Sie haben, oder in Ihrer sexuellen Identität?"
+        probes: ["Erzählen Sie mir mehr darüber."]
+        criterion: "Identity disturbance: markedly and persistently unstable self-image or sense of self. [Note: Do not include normal adolescent uncertainty.]"
+        rating_anchor: "2 = acknowledges trait"
+      - id: Q83
+        criterion_id: BPD_4
+        criterion_code: PD78
+        text: "Haben Sie oft Dinge impulsiv getan?"
+        probes:
+          - "Was für Dinge?"
+          - "(Wie ist es damit, … Dinge zu kaufen, die Sie sich eigentlich nicht leisten konnten? … Sex mit Menschen zu haben, die Sie kaum kannten, oder „ungeschützten Sex“? … zu viel zu trinken oder Drogen zu nehmen? … rücksichtslos Auto zu fahren? … unkontrolliert zu essen?)"
+          - "(Falls ja:) Erzählen Sie mir bitte davon. Wie oft kommt das vor?"
+        criterion: "Impulsivity in at least two areas that are potentially self-damaging (e.g., spending, sex, substance abuse, reckless driving, binge eating). (Note: Do not include suicidal or self-mutilating behavior covered in Criterion 5.)"
+        rating_anchor: "2 = several examples indicating a pattern of impulsive behavior (not necessarily limited to examples above)"
+      - id: Q84
+        criterion_id: BPD_5
+        criterion_code: PD79
+        safety_relevant: true
+        text: "Haben Sie jemals versucht, sich selbst zu verletzen oder sich das Leben zu nehmen, oder haben Sie damit gedroht?"
+        probes: ["(Falls ja:) Wann ist das zuletzt passiert?"]
+        criterion: "Recurrent suicidal behavior, gestures, or threats, or self-mutilating behavior. [Note: Any current suicidal thoughts, plans, or actions should be thoroughly assessed by the clinician and action taken if necessary.]"
+        rating_anchor: "2 = two or more events (when not in a Major Depressive Episode)"
+      - id: Q85
+        criterion_id: BPD_5
+        criterion_code: PD79
+        safety_relevant: true
+        text: "Haben Sie sich jemals absichtlich geschnitten, verbrannt oder gekratzt?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "Recurrent suicidal behavior, gestures, or threats, or self-mutilating behavior. [Note: Any current suicidal thoughts, plans, or actions should be thoroughly assessed by the clinician and action taken if necessary.]"
+        rating_anchor: "2 = two or more events (when not in a Major Depressive Episode)"
+      - id: Q86
+        criterion_id: BPD_6
+        criterion_code: PD80
+        text: "Ändert sich Ihre Stimmung oft im Laufe eines einzigen Tages, je nachdem, was in Ihrem Leben gerade passiert?"
+        probes: ["Erzählen Sie mir bitte davon. Was für Dinge lösen eine Veränderung Ihrer Stimmung aus?", "Wie lange halten Ihre „schlechten“ Stimmungen normalerweise an?"]
+        criterion: "Affective instability due to a marked reactivity of mood (e.g., intense episodic dysphoria, irritability, or anxiety usually lasting a few hours and only rarely more than a few days)."
+        rating_anchor: "2 = acknowledges trait"
+      - id: Q87
+        criterion_id: BPD_7
+        criterion_code: PD81
+        text: "Fühlen Sie sich oft innerlich leer?"
+        probes: ["Erzählen Sie mir mehr darüber."]
+        criterion: "Chronic feelings of emptiness."
+        rating_anchor: "2 = acknowledges trait"
+      - id: Q88
+        criterion_id: BPD_8
+        criterion_code: PD82
+        text: "Haben Sie oft Wutausbrüche oder werden so wütend, dass Sie die Kontrolle verlieren?"
+        probes: ["Nennen Sie mir bitte einige Beispiele."]
+        criterion: "Inappropriate, intense anger or difficulty controlling anger (e.g., frequent displays of temper, constant anger, recurrent physical fights)."
+        rating_anchor: "2 = acknowledges trait and at least one example OR several examples"
+      - id: Q89
+        criterion_id: BPD_8
+        criterion_code: PD82
+        text: "Schlagen Sie Menschen oder werfen Sie mit Gegenständen, wenn Sie wütend werden?"
+        probes: ["Nennen Sie mir bitte einige Beispiele.", "(Kommt das oft vor?)"]
+        criterion: "Inappropriate, intense anger or difficulty controlling anger (e.g., frequent displays of temper, constant anger, recurrent physical fights)."
+        rating_anchor: "2 = acknowledges trait and at least one example OR several examples"
+      - id: Q90
+        criterion_id: BPD_8
+        criterion_code: PD82
+        text: "Machen Sie selbst Kleinigkeiten sehr wütend?"
+        probes: ["Nennen Sie mir bitte einige Beispiele.", "(Kommt das oft vor?)"]
+        criterion: "Inappropriate, intense anger or difficulty controlling anger (e.g., frequent displays of temper, constant anger, recurrent physical fights)."
+        rating_anchor: "2 = acknowledges trait and at least one example OR several examples"
+      - id: Q91
+        criterion_id: BPD_9
+        criterion_code: PD83
+        text: "Werden Sie, wenn Sie sehr aufgewühlt sind, misstrauisch gegenüber anderen Menschen oder fühlen Sie sich dann von Ihrem Körper losgelöst oder so, als wären die Dinge unwirklich?"
+        probes: ["In welchen Situationen ist das vorgekommen?"]
+        criterion: "Transient, stress-related paranoid ideation or severe dissociative symptoms."
+        rating_anchor: "2 = several stress-related examples that do not occur exclusively during a Psychotic Disorder or a Mood Disorder With Psychotic Features"
+
+  # ---------------------------------------------------------------- p. 34–39
+  # [NOTE (source): FOR A "2" RATING OF ANY CRITERION, THE BEHAVIOR SHOULD NOT
+  # OCCUR EXCLUSIVELY DURING THE COURSE OF SCHIZOPHRENIA OR A BIPOLAR DISORDER.]
+  - section_title: "Antisoziale Persönlichkeitsstörung"
+    questions:
+      - id: ASPD_B
+        ask: false
+        not_asked_reason: clinician
+        criterion_id: ASPD_B
+        criterion_code: PD85
+        criterion: "B. The individual is at least age 18 years."
+        note: "Age is not asked by the chatbot (demographic overview omitted); to be filled by the clinician from study records."
+      - id: Q92
+        criterion_id: ASPD_C1
+        criterion_code: PD86
+        text: "Haben Sie, bevor Sie 15 Jahre alt waren, andere Kinder schikaniert, bedroht oder eingeschüchtert?"
+        probes: ["Nennen Sie mir bitte einige Beispiele.", "Wie oft ist das vorgekommen?"]
+        criterion: "C. Evidence of Conduct Disorder with onset before age 15: [Before the age of 15] often bullied, threatened, or intimidated others."
+      - id: Q93
+        criterion_id: ASPD_C2
+        criterion_code: PD87
+        text: "Haben Sie, bevor Sie 15 Jahre alt waren, Schlägereien angefangen?"
+        probes: ["Nennen Sie mir bitte einige Beispiele.", "Wie oft ist das vorgekommen?"]
+        criterion: "C. Evidence of Conduct Disorder with onset before age 15: [Before the age of 15] often initiated physical fights."
+      - id: Q94
+        criterion_id: ASPD_C3
+        criterion_code: PD88
+        text: "Haben Sie, bevor Sie 15 Jahre alt waren, jemanden mit einer Waffe verletzt oder bedroht – etwa mit einem Schläger, einem Ziegelstein, einer zerbrochenen Flasche, einem Messer oder einer Schusswaffe?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "C. Evidence of Conduct Disorder with onset before age 15: [Before the age of 15] has used a weapon that can cause serious physical harm to others (e.g., a bat, brick, broken bottle, knife, gun)."
+      - id: Q95
+        criterion_id: ASPD_C4
+        criterion_code: PD89
+        text: "Haben Sie, bevor Sie 15 Jahre alt waren, jemandem absichtlich grausame Dinge angetan, die ihm körperliche Schmerzen oder Leid zugefügt haben?"
+        probes: ["Was haben Sie getan?"]
+        criterion: "C. Evidence of Conduct Disorder with onset before age 15: [Before the age of 15] has been physically cruel to people."
+      - id: Q96
+        criterion_id: ASPD_C5
+        criterion_code: PD90
+        text: "Haben Sie, bevor Sie 15 Jahre alt waren, absichtlich Tiere verletzt?"
+        probes: ["Was haben Sie getan?"]
+        criterion: "C. Evidence of Conduct Disorder with onset before age 15: [Before the age of 15] has been physically cruel to animals."
+      - id: Q97
+        criterion_id: ASPD_C6
+        criterion_code: PD91
+        text: "Haben Sie, bevor Sie 15 Jahre alt waren, jemanden ausgeraubt, überfallen oder jemandem unter Drohung gewaltsam etwas weggenommen?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "C. Evidence of Conduct Disorder with onset before age 15: [Before the age of 15] has stolen while confronting a victim (e.g., mugging, purse snatching, extortion, armed robbery)."
+      - id: Q98
+        criterion_id: ASPD_C7
+        criterion_code: PD92
+        text: "Haben Sie, bevor Sie 15 Jahre alt waren, jemanden zu sexuellen Handlungen gezwungen?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "C. Evidence of Conduct Disorder with onset before age 15: [Before the age of 15] has forced someone into sexual activity."
+      - id: Q99
+        criterion_id: ASPD_C8
+        criterion_code: PD93
+        text: "Haben Sie, bevor Sie 15 Jahre alt waren, Feuer gelegt?"
+        probes: ["Erzählen Sie mir bitte davon.", "Wollten Sie damit ernsthaften Schaden anrichten?"]
+        criterion: "C. Evidence of Conduct Disorder with onset before age 15: [Before the age of 15] has deliberately engaged in fire setting with the intention of causing serious damage."
+      - id: Q100
+        criterion_id: ASPD_C9
+        criterion_code: PD94
+        text: "Haben Sie, bevor Sie 15 Jahre alt waren, absichtlich Dinge zerstört, die Ihnen nicht gehörten?"
+        probes: ["Was haben Sie getan?"]
+        criterion: "C. Evidence of Conduct Disorder with onset before age 15: [Before the age of 15] has deliberately destroyed others' property (other than by fire setting)."
+      - id: Q101
+        criterion_id: ASPD_C10
+        criterion_code: PD95
+        text: "Sind Sie, bevor Sie 15 Jahre alt waren, in Häuser, andere Gebäude oder Autos eingebrochen?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "C. Evidence of Conduct Disorder with onset before age 15: [Before the age of 15] has broken into someone else's house, building, or car."
+      - id: Q102
+        criterion_id: ASPD_C11
+        criterion_code: PD96
+        text: "Haben Sie, bevor Sie 15 Jahre alt waren, viel gelogen oder andere „reingelegt“, um etwas zu bekommen, das Sie wollten, oder um sich vor etwas zu drücken?"
+        probes: ["Nennen Sie mir bitte einige Beispiele.", "Wie oft haben Sie das getan?"]
+        criterion: "C. Evidence of Conduct Disorder with onset before age 15: [Before the age of 15] often lied to obtain goods or favors or to avoid obligations (i.e., \"cons\" others)."
+      - id: Q103
+        criterion_id: ASPD_C12
+        criterion_code: PD97
+        text: "Haben Sie, bevor Sie 15 Jahre alt waren, manchmal Ladendiebstahl begangen, etwas gestohlen oder eine Unterschrift gefälscht, um an Geld zu kommen?"
+        probes: ["Nennen Sie mir bitte einige Beispiele."]
+        criterion: "C. Evidence of Conduct Disorder with onset before age 15: [Before the age of 15] has stolen items of nontrivial value without confronting a victim (e.g., shoplifting, [stealing] but without breaking and entering; forgery)."
+      - id: Q104
+        criterion_id: ASPD_C13
+        criterion_code: PD98
+        text: "Sind Sie, bevor Sie 15 Jahre alt waren, von zu Hause weggelaufen und über Nacht weggeblieben?"
+        probes: ["War das mehr als einmal?", "(Bei wem haben Sie damals gelebt?)"]
+        criterion: "C. Evidence of Conduct Disorder with onset before age 15: [Before the age of 15] has run away from home overnight at least twice while living in the parental or parental surrogate home, or once without returning for a lengthy period."
+      - id: Q105
+        criterion_id: ASPD_C14
+        criterion_code: PD99
+        text: "Sind Sie, bevor Sie 13 Jahre alt waren, oft sehr lange draußen geblieben, lange nach der Zeit, zu der Sie zu Hause sein sollten?"
+        probes: ["Wie oft?"]
+        criterion: "C. Evidence of Conduct Disorder with onset before age 15: [Before the age of 13] often stayed out at night despite parental prohibitions."
+      - id: Q106
+        criterion_id: ASPD_C15
+        criterion_code: PD100
+        text: "Haben Sie, bevor Sie 13 Jahre alt waren, oft die Schule geschwänzt?"
+        probes: ["Wie oft?"]
+        criterion: "C. Evidence of Conduct Disorder with onset before age 15: [Before the age of 13] was often truant from school."
+      # Source-defined decision point (SCID-5-PD p. 36, PD101), executed by the app.
+      - id: ASPD_C_GATE
+        ask: false
+        criterion_id: ASPD_C
+        criterion_code: PD101
+        criterion: "AT LEAST TWO CONDUCT DISORDER CRITERIA (C1–C15) ARE RATED \"2\" (i.e., \"some symptoms of Conduct Disorder\")."
+        gate:
+          criterion_codes: [PD86, PD87, PD88, PD89, PD90, PD91, PD92, PD93, PD94, PD95, PD96, PD97, PD98, PD99, PD100]
+          min_rated_2: 2
+          if_met: ASPD_A1      # "Criterion C met; CONTINUE ON NEXT PAGE"
+          if_not_met: OSPD     # "GO TO *OTHER SPECIFIED PERSONALITY DISORDER*, page 40"
+      - id: ASPD_A1
+        criterion_id: ASPD_A1
+        criterion_code: PD102
+        intro: "Nun zu der Zeit, seit Sie 15 Jahre alt waren …"
+        text: "Haben Sie Dinge getan, die gegen das Gesetz verstoßen – auch wenn Sie nicht erwischt wurden –, zum Beispiel stehlen, Identitätsdiebstahl, ungedeckte Schecks ausstellen oder Sex gegen Geld?"
+        probes: ["(Falls nicht aus dem Überblick bekannt:) Wurden Sie jemals festgenommen?"]
+        criterion: "A. Since age 15: Failure to conform to social norms with respect to lawful behaviors, as indicated by repeatedly performing acts that are grounds for arrest."
+        rating_anchor: "2 = several examples"
+      - id: ASPD_A2a
+        criterion_id: ASPD_A2
+        criterion_code: PD103
+        text: "Lügen Sie oft, um zu bekommen, was Sie wollen, oder einfach aus Spaß?"
+        criterion: "A. Since age 15: Deceitfulness, as indicated by repeated lying, use of aliases, or conning others for personal profit or pleasure."
+        rating_anchor: "2 = several examples"
+      - id: ASPD_A2b
+        criterion_id: ASPD_A2
+        criterion_code: PD103
+        text: "Haben Sie jemals einen falschen Namen benutzt oder vorgegeben, jemand anderes zu sein?"
+        criterion: "A. Since age 15: Deceitfulness, as indicated by repeated lying, use of aliases, or conning others for personal profit or pleasure."
+        rating_anchor: "2 = several examples"
+      - id: ASPD_A2c
+        criterion_id: ASPD_A2
+        criterion_code: PD103
+        text: "Haben Sie andere „reingelegt“, um etwas zu bekommen?"
+        criterion: "A. Since age 15: Deceitfulness, as indicated by repeated lying, use of aliases, or conning others for personal profit or pleasure."
+        rating_anchor: "2 = several examples"
+      - id: ASPD_A3a
+        criterion_id: ASPD_A3
+        criterion_code: PD104
+        text: "Tun Sie oft spontan etwas, ohne darüber nachzudenken, wie es sich auf Sie oder andere Menschen auswirken wird?"
+        probes: ["Erzählen Sie mir bitte davon. Was für Dinge?"]
+        criterion: "A. Since age 15: Impulsivity or failure to plan ahead."
+        rating_anchor: "2 = several examples"
+      - id: ASPD_A3b
+        criterion_id: ASPD_A3
+        criterion_code: PD104
+        text: "Haben Sie jemals eine Arbeitsstelle aufgegeben, ohne eine andere in Aussicht zu haben?"
+        probes: ["(Wie oft?)"]
+        criterion: "A. Since age 15: Impulsivity or failure to plan ahead."
+        rating_anchor: "2 = several examples"
+      - id: ASPD_A3c
+        criterion_id: ASPD_A3
+        criterion_code: PD104
+        text: "Sind Sie jemals aus einer Wohnung ausgezogen, ohne eine andere Bleibe zu haben?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "A. Since age 15: Impulsivity or failure to plan ahead."
+        rating_anchor: "2 = several examples"
+      - id: ASPD_A4a
+        criterion_id: ASPD_A4
+        criterion_code: PD105
+        text: "Waren Sie in Schlägereien verwickelt?"
+        probes: ["(Wie oft?)"]
+        criterion: "A. Since age 15: Irritability and aggressiveness, as indicated by repeated physical fights or assaults."
+        rating_anchor: "2 = several examples"
+      - id: ASPD_A4b
+        criterion_id: ASPD_A4
+        criterion_code: PD105
+        text: "Waren Sie jemals so wütend, dass Sie andere Menschen geschlagen oder mit Gegenständen nach ihnen geworfen haben – auch nach Ihrer Partnerin oder Ihrem Partner?"
+        probes: ["(Wie oft?)"]
+        criterion: "A. Since age 15: Irritability and aggressiveness, as indicated by repeated physical fights or assaults."
+        rating_anchor: "2 = several examples"
+      - id: ASPD_A4c
+        criterion_id: ASPD_A4
+        criterion_code: PD105
+        text: "Haben Sie jemals ein Kind sehr heftig geschlagen?"
+        probes: ["Erzählen Sie mir bitte davon."]
+        criterion: "A. Since age 15: Irritability and aggressiveness, as indicated by repeated physical fights or assaults."
+        rating_anchor: "2 = several examples"
+      - id: ASPD_A4d
+        criterion_id: ASPD_A4
+        criterion_code: PD105
+        text: "Haben Sie sonst jemanden körperlich bedroht oder verletzt?"
+        probes: ["Erzählen Sie mir bitte davon.", "(Wie oft?)"]
+        criterion: "A. Since age 15: Irritability and aggressiveness, as indicated by repeated physical fights or assaults."
+        rating_anchor: "2 = several examples"
+      - id: ASPD_A5a
+        criterion_id: ASPD_A5
+        criterion_code: PD106
+        text: "Sind Sie jemals Auto gefahren, als Sie betrunken waren oder unter Drogen standen?"
+        criterion: "A. Since age 15: Reckless disregard for safety of self or others."
+        rating_anchor: "2 = several examples"
+      - id: ASPD_A5b
+        criterion_id: ASPD_A5
+        criterion_code: PD106
+        text: "Wie viele Strafzettel wegen zu schnellen Fahrens haben Sie bekommen, oder in wie viele Autounfälle waren Sie verwickelt?"
+        criterion: "A. Since age 15: Reckless disregard for safety of self or others."
+        rating_anchor: "2 = several examples"
+      - id: ASPD_A5c
+        criterion_id: ASPD_A5
+        criterion_code: PD106
+        text: "Schützen Sie sich immer, wenn Sie Sex mit jemandem haben, den Sie nicht gut kennen?"
+        criterion: "A. Since age 15: Reckless disregard for safety of self or others."
+        rating_anchor: "2 = several examples"
+      - id: ASPD_A5d
+        criterion_id: ASPD_A5
+        criterion_code: PD106
+        text: "Hat jemals jemand gesagt, dass Sie ein Kind in Gefahr gebracht haben, auf das Sie aufpassen sollten?"
+        criterion: "A. Since age 15: Reckless disregard for safety of self or others."
+        rating_anchor: "2 = several examples"
+      - id: ASPD_A6a
+        criterion_id: ASPD_A6
+        criterion_code: PD107
+        text: "Wie viel Zeit waren Sie in den letzten 5 Jahren nicht berufstätig?"
+        probes: ["(Falls über einen längeren Zeitraum:) Warum? (Gab es Arbeit?)"]
+        criterion: "A. Since age 15: Consistent irresponsibility, as indicated by repeated failure to sustain consistent work behavior or honor financial obligations."
+        rating_anchor: "2 = several examples"
+      - id: ASPD_A6b
+        criterion_id: ASPD_A6
+        criterion_code: PD107
+        text: "Haben Sie, wenn Sie berufstätig waren, viel bei der Arbeit gefehlt?"
+        probes: ["(Falls ja:) Warum?"]
+        criterion: "A. Since age 15: Consistent irresponsibility, as indicated by repeated failure to sustain consistent work behavior or honor financial obligations."
+        rating_anchor: "2 = several examples"
+      - id: ASPD_A6c
+        criterion_id: ASPD_A6
+        criterion_code: PD107
+        text: "Haben Sie jemals Menschen Geld geschuldet und es nicht zurückgezahlt?"
+        probes: ["(Wie oft?)"]
+        criterion: "A. Since age 15: Consistent irresponsibility, as indicated by repeated failure to sustain consistent work behavior or honor financial obligations."
+        rating_anchor: "2 = several examples"
+      - id: ASPD_A6d
+        criterion_id: ASPD_A6
+        criterion_code: PD107
+        text: "Wie ist es damit, keinen Unterhalt für Kinder gezahlt oder einer anderen Person, die von Ihnen abhängig war, kein Geld gegeben zu haben?"
+        criterion: "A. Since age 15: Consistent irresponsibility, as indicated by repeated failure to sustain consistent work behavior or honor financial obligations."
+        rating_anchor: "2 = several examples"
+      # Source: asked "IF THERE IS EVIDENCE OF ANTISOCIAL ACTS AND IT IS UNCLEAR
+      # WHETHER THERE IS ANY REMORSE". This item is only reached after the
+      # Criterion C gate was met (i.e. antisocial acts were reported), so it is
+      # asked; the placeholder "(ANTISOCIAL ACTS)" is replaced by a general
+      # reference (project adaptation, to be reviewed).
+      - id: ASPD_A7
+        criterion_id: ASPD_A7
+        criterion_code: PD108
+        text: "Wie stehen Sie heute zu den Dingen, die Sie eben beschrieben haben und bei denen andere zu Schaden gekommen sind?"
+        probes: ["(Glauben Sie, dass das, was Sie getan haben, in irgendeiner Weise falsch war?)", "Glauben Sie, dass Sie im Recht waren?", "(Glauben Sie, dass die andere Person es verdient hat?)"]
+        criterion: "A. Since age 15: Lack of remorse, as indicated by being indifferent to or rationalizing having hurt, mistreated, or stolen from another."
+        rating_anchor: "2 = lacks remorse about several antisocial acts"
+        next_step: OSPD
+      # The source's next decision points (PD109 "at least three A criteria",
+      # PD110 "A, B and C") are diagnostic conclusions and are not executed;
+      # both branches continue to Other Specified PD, as here.
+
+  # ---------------------------------------------------------------- p. 40
+  - section_title: "Andere näher bezeichnete Persönlichkeitsstörung"
+    questions:
+      - id: OSPD
+        ask: false
+        not_asked_reason: clinician
+        criterion_id: OSPD
+        criterion_code: PD111
+        criterion: "[A presentation] in which symptoms characteristic of a personality disorder predominate but do not meet the full criteria for any of the disorders in the Personality Disorders diagnostic class; [the presentation causes] clinically significant distress or impairment."
+        note: "Clinician decision based on the whole interview; the impairment questions on p. 40 are only asked after that decision (YES). End of SCID-5-PD."
+        next_step: END

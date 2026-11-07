@@ -23,18 +23,34 @@ import argparse
 import json
 import os
 import re
+import sys
 import threading
 import time
 from queue import Queue
+from pathlib import Path
 
+# EMSAG: 03.11.2026
+# Add the project root before local imports so backend.database is available in script mode.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+import numpy as np
 from flask import Flask, Response, jsonify, request, send_from_directory
 
 import llm_provider
 import safety_check
+import speech
 import study_settings
 from behavior_profiles import load_behavior_profile
 from interview_guide import InterviewGuide
+from session_record import SessionRecorder
+from backend.database.diagnosis_repository import DiagnosisEvidenceRepository
 
+# Agent workflow (Judgment / Navigation / Question Agents, coordinated by
+# the Orchestrator) — see backend/agents/interview_orchestrator.py.
+from agents.interview_orchestrator import handle_turn
 # --- Load study settings (see study_content/study_settings.yaml) ---------
 # Loaded before the command-line options below, so that e.g. --language has
 # a sensible default coming from the researcher-editable settings file
@@ -50,23 +66,13 @@ parser.add_argument("--api-key", type=str, default=None, help="API key for cloud
 parser.add_argument("--temperature", type=float, default=0.7, help="LLM temperature (default: 0.7)")
 parser.add_argument("--save-voice", action="store_true", help="Save generated voice samples to voices/")
 parser.add_argument("--web", action="store_true", help="Run the app as a Flask web server instead of terminal mode")
-parser.add_argument("--text-only", action="store_true", help="Web text testing without speech dependencies or voice downloads")
-parser.add_argument("--pilot", action="store_true", help="Enable experimental evidence assessment (requires --web --text-only)")
-parser.add_argument("--port", type=int, default=5000, help="Local web port (default: 5000)")
+parser.add_argument("--port", type=int, default=5000,
+                    help="Port for the web server (default: 5000; change it if another program already uses 5000)")
 parser.add_argument("--language", type=str, default=_settings.get("language", "de"),
                     help="Language code for speech transcription (default: from study_settings.yaml, else 'de')")
-args = parser.parse_args()
-if args.text_only and not args.web:
-    parser.error("--text-only requires --web")
-if args.pilot and not args.text_only:
-    parser.error("--pilot requires --web --text-only")
-if args.pilot and args.provider != "ollama":
-    parser.error("--pilot uses only the local Ollama provider")
-if not args.text_only:
-    import numpy as np
-    import speech
-    import stt
-    from tts import TextToSpeechService
+# parse_known_args (instead of parse_args) so the module can also be imported
+# by the test suite, whose own command-line arguments would otherwise abort it.
+args, _unknown_args = parser.parse_known_args()
 
 # --- Set up the language model and the voice engine -----------------------
 llm = llm_provider.create_llm(
@@ -81,7 +87,28 @@ chain_with_history = llm_provider.build_chain(llm)
 # not a command-line option — see backend/tts.py's module docstring for how
 # to download a voice the first time.
 _tts_voice = _settings.get("tts_voice", "de_DE-thorsten-high")
-tts = None if args.text_only else TextToSpeechService(voice_name=_tts_voice)
+
+# The voice models (Piper TTS, Whisper STT) are loaded LAZILY, i.e. only when
+# a voice endpoint or the terminal voice mode is actually used. Previously
+# both were loaded at import time, so the text condition could not start
+# without the voice models, and importing stt.py tried to download the
+# Whisper model from the internet even for text-only sessions.
+_tts_service = None
+
+
+def get_tts():
+    """Return the shared TextToSpeechService, loading Piper on first use."""
+    global _tts_service
+    if _tts_service is None:
+        from tts import TextToSpeechService
+        _tts_service = TextToSpeechService(voice_name=_tts_voice)
+    return _tts_service
+
+
+def get_stt():
+    """Return the speech-to-text module, loading Whisper on first use."""
+    import stt
+    return stt
 
 # --- Load the active interview guide (see study_content/interviews/) ------
 # Which guide file is active is controlled by study_content/study_settings.yaml,
@@ -90,15 +117,16 @@ tts = None if args.text_only else TextToSpeechService(voice_name=_tts_voice)
 _guide_filename = _settings.get("interview_guide", "depression_scid_example.yaml")
 interview = InterviewGuide(_guide_filename)
 
+# EMSAG: 03.11.2026
+# Initialize the recorder without creating a database session before an interview starts.
+recorder = SessionRecorder(interview, database_enabled=False)
+recorder.database_enabled = True
+
 # --- Load the behavior profile the guide asks for (see study_content/prompts/) ---
 # This decides both the tone/strictness instructions and how the next fixed
 # question is delivered (verbatim vs. naturally reworded) — see Step 3 of
 # the project plan and backend/behavior_profiles.py.
 profile = load_behavior_profile(interview.behavior_profile)
-pilot = None
-if args.pilot:
-    from pilot import PilotEngine
-    pilot = PilotEngine(interview, model=args.model or "gemma3", language=args.language)
 
 # --- Web server (used with --web) ------------------------------------------
 # The frontend/ folder (the web page the participant sees) lives one level up
@@ -120,12 +148,6 @@ STUDY_ASSETS_DIR = os.path.join(
 def index():
     """Serve the web interface's main HTML page."""
     return app.send_static_file("index.html")
-
-
-@app.route("/api/runtime-config.js")
-def runtime_config_endpoint():
-    config = {"textOnly": args.text_only, "pilot": args.pilot}
-    return Response("window.RUNTIME_CONFIG = " + json.dumps(config) + ";", mimetype="application/javascript")
 
 
 @app.route("/study-assets/<path:filename>")
@@ -172,118 +194,148 @@ def _tag_sentences(text: str, kind: str) -> list[dict]:
     return [{"text": s, "kind": kind} for s in _split_sentences(text)]
 
 
-def _response_pieces(feedback: str, next_question: dict | None) -> list[dict]:
+def _acknowledge(prompt_text: str, answer_text: str) -> str:
     """
-    Break the reply that follows a piece of feedback into the individual
-    sentences it's made of, in speaking order — this is what lets the voice
-    condition start speaking the first sentence while later ones are still
-    being synthesized (see Step 5b of the project plan). Each piece is
-    tagged with its "kind" (see _tag_sentences()).
-
-    For "natural_transition" delivery, the model blends the feedback and
-    the next question into one smoothly-worded message — there are no
-    separately-known pieces in that case, so the whole blended result is
-    tagged "question" (the closest available approximation; "Frage
-    wiederholen" will replay the blended feedback+question together for
-    this delivery style, since they can no longer be told apart).
+    Short acknowledgement after a SUFFICIENT answer, using the existing
+    behavior-profile feedback chain (study_content/prompts/). It is only
+    called once the Orchestrator has decided to advance, so the wording can
+    no longer contradict what happens next (previously it was generated
+    before the answer was judged). Follow-ups are never requested here.
     """
-    following_text = next_question["text"] if next_question is not None else interview.closing_message
-    following_kind = "question" if next_question is not None else "closing"
-
-    if profile.question_delivery == "natural_transition":
-        combined = llm_provider.get_natural_transition(llm, feedback, following_text, language_code=args.language)
-        return _tag_sentences(combined, "question")
-
-    return _tag_sentences(feedback, "feedback") + _tag_sentences(following_text, following_kind)
+    feedback, _ = llm_provider.get_feedback_and_followup(
+        chain_with_history, profile, prompt_text, answer_text,
+        followup_allowed=False, language_code=args.language,
+    )
+    return feedback
 
 
 def process_answer(answer_text: str) -> list[dict]:
     """
-    The core interview turn: given what the participant just said, decide
-    what the assistant says next, and advance the interview guide's state
-    accordingly. Shared by both web routes and the terminal mode, so the
-    behavior is identical regardless of modality.
+    Process one participant message and return the reply as tagged sentences.
 
-    Returns a list of {"text": ..., "kind": ...} dicts, in speaking order,
-    rather than one combined string — this is what backend/app.py's audio
-    endpoint streams to the browser one at a time (see Step 5b of the
-    project plan), and "kind" ("feedback" vs "question"/"closing") is what
-    lets the browser's "Frage wiederholen" replay only the question.
-    Callers that just want the full text (text condition, terminal mode)
-    can join the "text" fields with spaces.
-
-    Two cases:
-      1. The participant is answering a follow-up that was asked last turn
-         (interview.is_awaiting_followup_answer()) — no further follow-up
-         is allowed here (capped at one per question), then the guide moves on.
-      2. The participant is answering the current fixed question — a
-         follow-up may be offered if this item allows it and none has been
-         used for it yet.
-
-    Prints a short debug line to the console for every turn (visible only
-    in the terminal running this app, never sent to the participant) — this
-    is meant to make it easy to check whether the follow-up mechanism is
-    actually engaging as expected while testing, instead of having to guess
-    from the final combined text alone.
+    All interview decisions are made by the Orchestrator
+    (agents/interview_orchestrator.py): Judgment -> Navigation proposal ->
+    validation -> execution, plus the researcher-only session record. This
+    function only converts the outcome into the sentence pieces the text
+    and voice endpoints already expect.
     """
-    if pilot is not None:
-        return pilot.answer(answer_text)
+    authorized_historical_session_ids = []
 
-    if interview.is_awaiting_followup_answer():
-        print(f"[interview] answering follow-up: \"{interview.pending_followup_text}\"")
-        feedback, _ = llm_provider.get_feedback_and_followup(
-            chain_with_history, profile, interview.pending_followup_text, answer_text,
-            followup_allowed=False, language_code=args.language,
+    # EMSAG: 04.11.2026
+    # Retrieve historical sessions only with explicit consent for this session.
+    if (
+        recorder.session_id
+        and recorder.historical_retrieval_consent is True
+    ):
+        repository = DiagnosisEvidenceRepository()
+        authorized_historical_session_ids = (
+            repository.get_authorized_historical_session_ids(
+                recorder.session_id
+            )
         )
-        print(f"[interview] feedback={feedback!r}")
-        next_question = interview.advance()
-        return _response_pieces(feedback, next_question)
 
-    question = interview.current_question()
-    if question is None:
-        # The guide was already finished; nothing left to ask.
-        return _tag_sentences(interview.closing_message, "closing")
-
-    followup_allowed = question["allow_followup"] and not interview.followup_already_used()
-    print(
-        f"[interview] question={question['id']!r} "
-        f"allow_followup(guide)={question['allow_followup']} "
-        f"followup_allowed(this turn)={followup_allowed}"
+    outcome = handle_turn(
+        llm,
+        interview,
+        recorder,
+        answer_text,
+        acknowledge=_acknowledge,
+        authorized_historical_session_ids=authorized_historical_session_ids,
     )
-    feedback, followup = llm_provider.get_feedback_and_followup(
-        chain_with_history, profile, question["text"], answer_text,
-        followup_allowed=followup_allowed, language_code=args.language,
+    print(f"[agents] trace={json.dumps(outcome.trace, ensure_ascii=False, default=str)}")
+
+    pieces = _tag_sentences(outcome.feedback, "feedback")
+    if outcome.next_text:
+        if (outcome.next_kind == "question" and outcome.feedback
+                and profile.question_delivery == "natural_transition"):
+            # Flexible profile: blend acknowledgement and next question (meaning preserved).
+            combined = llm_provider.get_natural_transition(
+                llm, outcome.feedback, outcome.next_text, language_code=args.language)
+            return _tag_sentences(combined, "question")
+        pieces += _tag_sentences(outcome.next_text, outcome.next_kind)
+    return pieces
+
+
+# EMSAG: 03.11.2026
+# Create a fresh pseudonymized database session when the participant starts.
+def _start_new_session(
+    participant_code: str | None = None,
+    historical_retrieval_consent: bool = False,
+) -> None:
+    """Reset interview state and create a new researcher-only session record."""
+    interview.reset()
+
+    recorder.start(
+        participant_code=participant_code,
+        historical_retrieval_consent=historical_retrieval_consent,
     )
-    print(f"[interview] feedback={feedback!r} followup={followup!r}")
 
-    if followup:
-        interview.start_followup(followup)
-        return _tag_sentences(feedback, "feedback") + _tag_sentences(followup, "question")
+    llm_provider.chat_sessions.clear()
 
-    next_question = interview.advance()
-    return _response_pieces(feedback, next_question)
-
+    if recorder.session_id:
+        print(
+            f"[database] New interview session created: "
+            f"participant={recorder.pseudonym}, "
+            f"session_id={recorder.session_id}"
+        )
 
 @app.route("/api/interview/start", methods=["GET"])
 def interview_start_endpoint():
     """
-    Called once when the participant opens the page: returns the framing
-    message and the first fixed question, verbatim from the active
-    interview guide. No LLM call is involved — there is nothing to
-    generate yet, only fixed text to present.
-    Returns JSON: {"message": "..."}.
+    Prepare the opening message without creating a database session.
+    The actual session is created only after the participant clicks Start.
     """
     interview.reset()
-    if pilot is not None:
-        pilot.reset()
+    llm_provider.chat_sessions.clear()
+
     first_question = interview.current_question()
+
     if first_question is None:
-        # An empty guide (e.g. a guide file with no questions yet).
         message = interview.framing_message
     else:
-        message = f"{interview.framing_message} {first_question['text']}".strip()
+        message = (
+            f"{interview.framing_message} "
+            f"{interview.presentation_text(first_question)}"
+        ).strip()
+
     return jsonify({"message": message})
 
+
+@app.route("/api/interview/session", methods=["POST"])
+def create_interview_session_endpoint():
+    """
+    Create the database session after the participant submits
+    their anonymous participant code.
+    """
+    data = request.get_json(silent=True) or {}
+    participant_code = data.get("participant_code")
+    historical_retrieval_consent = data.get(
+        "historical_retrieval_consent",
+        False,
+    )
+
+    if not isinstance(historical_retrieval_consent, bool):
+        return jsonify({"error": "Invalid historical retrieval consent."}), 400
+
+    if participant_code is not None and not isinstance(participant_code, str):
+        return jsonify({"error": "Invalid participant code."}), 400
+
+    try:
+        _start_new_session(
+            participant_code=participant_code,
+            historical_retrieval_consent=historical_retrieval_consent,
+        )
+    except (ValueError, RuntimeError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception:
+        app.logger.exception("Could not create interview session.")
+        return jsonify({"error": "Could not create interview session."}), 500
+
+    return jsonify({
+        "success": True,
+        "session_id": recorder.session_id,
+        "participant_code": recorder.generated_participant_code,
+    })
 
 @app.route("/api/interview/start/audio", methods=["GET"])
 def interview_start_audio_endpoint():
@@ -305,18 +357,15 @@ def interview_start_audio_endpoint():
     wiederholen" repeat just the question, not the greeting, consistent
     with how later turns are tagged (see process_answer()).
     """
-    if args.text_only:
-        return jsonify({"error": "Audio is disabled for this text-only run."}), 503
-    interview.reset()
     first_question = interview.current_question()
 
     tagged_sentences = _tag_sentences(interview.framing_message, "framing")
     if first_question is not None:
-        tagged_sentences += _tag_sentences(first_question["text"], "question")
+        tagged_sentences += _tag_sentences(interview.presentation_text(first_question), "question")
 
     pieces = []
     for sentence in tagged_sentences:
-        sample_rate, audio_array = tts.synthesize(sentence["text"])
+        sample_rate, audio_array = get_tts().synthesize(sentence["text"])
         audio_base64 = speech.encode_wav_base64(sample_rate, audio_array)
         pieces.append({"text": sentence["text"], "audio": audio_base64, "kind": sentence["kind"]})
 
@@ -385,8 +434,6 @@ def chat_audio_endpoint():
         Sent instead of a "sentence" line if synthesizing one sentence
         fails; playback of anything already sent is unaffected.
     """
-    if args.text_only:
-        return jsonify({"error": "Audio is disabled for this text-only run."}), 503
     audio_file = request.files.get("audio")
     if not audio_file:
         return jsonify({"error": "No audio file uploaded."}), 400
@@ -397,7 +444,7 @@ def chat_audio_endpoint():
     except Exception as e:
         return jsonify({"error": f"Unable to decode audio: {e}"}), 400
 
-    transcript = stt.transcribe(audio_np, language=language)
+    transcript = get_stt().transcribe(audio_np, language=language)
     safety_flag = safety_check.check_for_safety_concern(transcript, language)
     if safety_flag:
         print("[safety] Stichwort in der Antwort der teilnehmenden Person erkannt — Hinweis wird eingeblendet.")
@@ -425,7 +472,7 @@ def chat_audio_endpoint():
             is_last = (i == len(pieces) - 1)
             sentence_text = piece["text"]
             try:
-                sample_rate, audio_array = tts.synthesize(sentence_text)
+                sample_rate, audio_array = get_tts().synthesize(sentence_text)
                 if not is_last:
                     gap = np.zeros(int(sample_rate * gap_seconds), dtype=np.float32)
                     audio_array = np.concatenate([audio_array, gap])
@@ -445,13 +492,6 @@ def chat_audio_endpoint():
                 break
 
     return Response(generate(), mimetype="application/x-ndjson")
-
-
-@app.route("/api/pilot/report", methods=["GET"])
-def pilot_report_endpoint():
-    if pilot is None:
-        return jsonify({"error": "Start with --pilot to enable evidence assessment."}), 404
-    return jsonify(pilot.report())
 
 
 # --- Terminal mode (used without --web) -------------------------------------
@@ -475,7 +515,7 @@ def run_terminal_mode():
         os.makedirs("voices", exist_ok=True)
 
     response_count = 0
-    interview.reset()
+    _start_new_session()
 
     def speak(text: str):
         """
@@ -492,7 +532,7 @@ def run_terminal_mode():
         sample_rate = None
         played_chunks = []
 
-        for sr, audio_array in tts.synthesize_streaming(text):
+        for sr, audio_array in get_tts().synthesize_streaming(text):
             sample_rate = sr
             speech.play_audio(sr, audio_array)
             if args.save_voice:
@@ -514,7 +554,7 @@ def run_terminal_mode():
             speak(interview.framing_message)
             print("(This interview guide has no questions yet.)")
             return
-        opening = f"{interview.framing_message} {first_question['text']}".strip()
+        opening = f"{interview.framing_message} {interview.presentation_text(first_question)}".strip()
         print(f"Assistant: {opening}")
         speak(opening)
 
@@ -541,7 +581,7 @@ def run_terminal_mode():
                 continue
 
             print("Transcribing...")
-            answer_text = stt.transcribe(audio_np, language=selected_language)
+            answer_text = get_stt().transcribe(audio_np, language=selected_language)
             print(f"You: {answer_text}")
 
             print("Generating response...")
