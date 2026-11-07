@@ -1,0 +1,23 @@
+{
+  "dep_01": {
+    "finding": "The participant reports low mood during the last two weeks (do not infer a depressive disorder or duration threshold).",
+    "clarification": {
+      "en": "Thinking only about the last two weeks, was your mood low, was it not low, or are you unsure? You can also leave this unanswered.",
+      "de": "Nur auf die letzten zwei Wochen bezogen: War Ihre Stimmung niedergeschlagen, nicht niedergeschlagen oder sind Sie unsicher? Sie können die Frage auch offenlassen."
+    }
+  },
+  "dep_02": {
+    "finding": "The participant reports reduced enjoyment during the last two weeks (do not infer a depressive disorder).",
+    "clarification": {
+      "en": "During the last two weeks, did you enjoy your usual activities less than before, about the same, or are you unsure? You can also leave this unanswered.",
+      "de": "Hatten Sie in den letzten zwei Wochen weniger Freude an Ihren üblichen Aktivitäten, etwa gleich viel oder sind Sie unsicher? Sie können die Frage auch offenlassen."
+    }
+  },
+  "sleep_01": {
+    "finding": "The participant reports disturbed sleep during the last two weeks (do not infer cause or diagnosis).",
+    "clarification": {
+      "en": "During the last two weeks, was your sleep disturbed, was it undisturbed, or are you unsure? You can also leave this unanswered.",
+      "de": "War Ihr Schlaf in den letzten zwei Wochen gestört, ungestört oder sind Sie unsicher? Sie können die Frage auch offenlassen."
+    }
+  }
+}

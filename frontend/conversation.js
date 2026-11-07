@@ -17,7 +17,7 @@ window.CONVERSATION = {
 
   /* --- Kopfzeile der Klinikerin/des Kliniker-Agenten ---------------------- */
   clinicianName: "Mental Health Bot",
-  clinicianRole: "Prediagnostic Interview",
+  clinicianRole: window.RUNTIME_CONFIG?.pilot ? "Forschungspilot · Evidenzerfassung" : "Prediagnostic Interview",
 
   /* --- FAKTOR 1: EMBODIMENT ---------------------------------------------- */
   /* Erlaubt: "logo" | "picture" | "video" | "avatar"                        */
@@ -42,7 +42,7 @@ window.CONVERSATION = {
   /* --- FAKTOR 2: MODALITÄT ----------------------------------------------- */
   /* "text"   -> Chat-Blasen + Texteingabe                                   */
   /* "speech" -> nur Sprach-Oberfläche, KEIN Text für die teilnehmende Person */
-  modality: "speech",
+  modality: window.RUNTIME_CONFIG?.textOnly ? "text" : "speech",
 
   /* --- START-OVERLAY ------------------------------------------------------ */
   /* Wird angezeigt, bis "Interview starten" geklickt wird. Text frei anpassbar. */
@@ -63,7 +63,10 @@ window.CONVERSATION = {
 
   /* Voraussetzungen, die vor dem Start erinnert werden. Zeilen frei anpassen,
      hinzufügen oder löschen. */
-  startChecklist: [
+  startChecklist: window.RUNTIME_CONFIG?.textOnly ? [
+    "Dieser Textpilot ist für erfundene Testfälle vorgesehen.",
+    "Der Pilot erfasst Aussagen und Unsicherheiten; er erstellt keine Diagnose."
+  ] : [
     "Sie sitzen in einer ruhigen Umgebung und werden in den nächsten Minuten nicht gestört.",
     "Ton und Mikrofon Ihres Geräts funktionieren; Kopfhörer werden empfohlen.",
     "Sie haben etwa 20 Minuten ununterbrochen Zeit.",
@@ -838,7 +841,14 @@ async function loadInterviewStart() {
 
 // Wartet, bis die Seite (inkl. der Render-Logik in index.html) fertig geladen
 // ist, damit window.onOpeningMessageReady() beim Aufruf schon existiert.
-document.addEventListener("DOMContentLoaded", loadInterviewStart);
+document.addEventListener("DOMContentLoaded", function () {
+  if (window.RUNTIME_CONFIG?.textOnly) {
+    document.querySelectorAll('.starttest, [data-mod="speech"]').forEach(function (el) {
+      el.style.display = "none";
+    });
+  }
+  loadInterviewStart();
+});
 
 /* =============================================================================
    ERÖFFNUNGSNACHRICHT HÖRBAR MACHEN (Sprach-Modalität)

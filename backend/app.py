@@ -27,17 +27,13 @@ import threading
 import time
 from queue import Queue
 
-import numpy as np
 from flask import Flask, Response, jsonify, request, send_from_directory
 
 import llm_provider
 import safety_check
-import speech
-import stt
 import study_settings
 from behavior_profiles import load_behavior_profile
 from interview_guide import InterviewGuide
-from tts import TextToSpeechService
 
 # --- Load study settings (see study_content/study_settings.yaml) ---------
 # Loaded before the command-line options below, so that e.g. --language has
@@ -54,9 +50,23 @@ parser.add_argument("--api-key", type=str, default=None, help="API key for cloud
 parser.add_argument("--temperature", type=float, default=0.7, help="LLM temperature (default: 0.7)")
 parser.add_argument("--save-voice", action="store_true", help="Save generated voice samples to voices/")
 parser.add_argument("--web", action="store_true", help="Run the app as a Flask web server instead of terminal mode")
+parser.add_argument("--text-only", action="store_true", help="Web text testing without speech dependencies or voice downloads")
+parser.add_argument("--pilot", action="store_true", help="Enable experimental evidence assessment (requires --web --text-only)")
+parser.add_argument("--port", type=int, default=5000, help="Local web port (default: 5000)")
 parser.add_argument("--language", type=str, default=_settings.get("language", "de"),
                     help="Language code for speech transcription (default: from study_settings.yaml, else 'de')")
 args = parser.parse_args()
+if args.text_only and not args.web:
+    parser.error("--text-only requires --web")
+if args.pilot and not args.text_only:
+    parser.error("--pilot requires --web --text-only")
+if args.pilot and args.provider != "ollama":
+    parser.error("--pilot uses only the local Ollama provider")
+if not args.text_only:
+    import numpy as np
+    import speech
+    import stt
+    from tts import TextToSpeechService
 
 # --- Set up the language model and the voice engine -----------------------
 llm = llm_provider.create_llm(
@@ -71,7 +81,7 @@ chain_with_history = llm_provider.build_chain(llm)
 # not a command-line option — see backend/tts.py's module docstring for how
 # to download a voice the first time.
 _tts_voice = _settings.get("tts_voice", "de_DE-thorsten-high")
-tts = TextToSpeechService(voice_name=_tts_voice)
+tts = None if args.text_only else TextToSpeechService(voice_name=_tts_voice)
 
 # --- Load the active interview guide (see study_content/interviews/) ------
 # Which guide file is active is controlled by study_content/study_settings.yaml,
@@ -85,6 +95,10 @@ interview = InterviewGuide(_guide_filename)
 # question is delivered (verbatim vs. naturally reworded) — see Step 3 of
 # the project plan and backend/behavior_profiles.py.
 profile = load_behavior_profile(interview.behavior_profile)
+pilot = None
+if args.pilot:
+    from pilot import PilotEngine
+    pilot = PilotEngine(interview, model=args.model or "gemma3", language=args.language)
 
 # --- Web server (used with --web) ------------------------------------------
 # The frontend/ folder (the web page the participant sees) lives one level up
@@ -106,6 +120,12 @@ STUDY_ASSETS_DIR = os.path.join(
 def index():
     """Serve the web interface's main HTML page."""
     return app.send_static_file("index.html")
+
+
+@app.route("/api/runtime-config.js")
+def runtime_config_endpoint():
+    config = {"textOnly": args.text_only, "pilot": args.pilot}
+    return Response("window.RUNTIME_CONFIG = " + json.dumps(config) + ";", mimetype="application/javascript")
 
 
 @app.route("/study-assets/<path:filename>")
@@ -206,6 +226,9 @@ def process_answer(answer_text: str) -> list[dict]:
     actually engaging as expected while testing, instead of having to guess
     from the final combined text alone.
     """
+    if pilot is not None:
+        return pilot.answer(answer_text)
+
     if interview.is_awaiting_followup_answer():
         print(f"[interview] answering follow-up: \"{interview.pending_followup_text}\"")
         feedback, _ = llm_provider.get_feedback_and_followup(
@@ -251,6 +274,8 @@ def interview_start_endpoint():
     Returns JSON: {"message": "..."}.
     """
     interview.reset()
+    if pilot is not None:
+        pilot.reset()
     first_question = interview.current_question()
     if first_question is None:
         # An empty guide (e.g. a guide file with no questions yet).
@@ -280,6 +305,8 @@ def interview_start_audio_endpoint():
     wiederholen" repeat just the question, not the greeting, consistent
     with how later turns are tagged (see process_answer()).
     """
+    if args.text_only:
+        return jsonify({"error": "Audio is disabled for this text-only run."}), 503
     interview.reset()
     first_question = interview.current_question()
 
@@ -358,6 +385,8 @@ def chat_audio_endpoint():
         Sent instead of a "sentence" line if synthesizing one sentence
         fails; playback of anything already sent is unaffected.
     """
+    if args.text_only:
+        return jsonify({"error": "Audio is disabled for this text-only run."}), 503
     audio_file = request.files.get("audio")
     if not audio_file:
         return jsonify({"error": "No audio file uploaded."}), 400
@@ -416,6 +445,13 @@ def chat_audio_endpoint():
                 break
 
     return Response(generate(), mimetype="application/x-ndjson")
+
+
+@app.route("/api/pilot/report", methods=["GET"])
+def pilot_report_endpoint():
+    if pilot is None:
+        return jsonify({"error": "Start with --pilot to enable evidence assessment."}), 404
+    return jsonify(pilot.report())
 
 
 # --- Terminal mode (used without --web) -------------------------------------
@@ -524,10 +560,10 @@ def run_terminal_mode():
 if __name__ == "__main__":
     if args.web:
         print("\U0001F916 Starting Flask web server for Local Voice Assistant")
-        print("Open http://127.0.0.1:5000 in your browser to connect.")
+        print(f"Open http://127.0.0.1:{args.port} in your browser to connect.")
         # threaded=True so the streamed /api/chat/audio response (Step 5b)
         # is served promptly rather than potentially waiting behind other
         # requests (e.g. the browser's static-file polling).
-        app.run(host="127.0.0.1", port=5000, threaded=True)
+        app.run(host="127.0.0.1", port=args.port, threaded=True)
     else:
         run_terminal_mode()
