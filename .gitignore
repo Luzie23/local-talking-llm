@@ -177,9 +177,3 @@ cython_debug/
 # EMSAG: 02.11.2026
 # Prevent committing local database credentials.
 .env
-
-# Local macOS environments and private configuration
-.DS_Store
-.venv*/
-.env.*
-!.env.example

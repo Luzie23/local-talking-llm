@@ -1,0 +1,3424 @@
+﻿CLARIFICATION FLOW REVIEW - 11/02/2026 20:23:13
+
+
+==========================================================================================
+FILE: backend\agents\navigation_agent.py
+==========================================================================================
+
+"""
+NAVIGATION AGENT
+================
+Deterministic interview navigation.
+
+The agent proposes an action. The Orchestrator validates and executes it.
+Interaction limits are tracked per item by the Orchestrator.
+
+Policy:
+- A participant who does not understand the question receives another
+  explanation/rephrasing; this intent alone never causes an automatic skip.
+- Off-topic or unclear replies get one redirect; a second unsuccessful
+  attempt skips the item.
+- Cannot-answer replies get one gentle follow-up; a second one skips,
+  unless the guide says to move on immediately.
+- A refusal gets one non-pressuring offer to help or skip; a second refusal
+  skips. An explicit skip command should still be honoured immediately
+  by the Orchestrator.
+- Sufficient answers advance normally.
+"""
+from typing import Literal
+
+from pydantic import BaseModel
+
+NavigationAction = Literal["advance", "branch", "clarify", "rephrase", "skip"]
+SkipReason = Literal["refused", "cannot_answer", "unresolved"]
+ClarifyMode = Literal["clarify", "gentle", "redirect", "rephrase"]
+
+
+class NavigationDecision(BaseModel):
+    """A proposed next action plus the rule that produced it."""
+
+    action: NavigationAction
+    reason: str
+    next_step: str | None = None
+    skip_reason: SkipReason | None = None
+    question_mode: ClarifyMode | None = None
+
+
+def decide_next_action(
+    intent: str,
+    sufficiency: str,
+    clarification_count: int,
+    max_clarifications: int,
+    next_step: str | None = None,
+    cannot_answer_moves_on: bool = False,
+) -> NavigationDecision:
+    """Propose the next action; clarification is not limited by a numeric budget."""
+
+    valid_intents = {
+        "answer",
+        "clarification_request",
+        "cannot_answer",
+        "refusal",
+        "off_topic",
+        "unclear",
+    }
+    valid_sufficiency = {"sufficient", "ambiguous", "insufficient"}
+
+    if intent not in valid_intents:
+        raise ValueError(f"Unknown intent: {intent!r}")
+    if sufficiency not in valid_sufficiency:
+        raise ValueError(f"Unknown sufficiency: {sufficiency!r}")
+
+    # EMSAG: Keep the item-specific SCID rule for cannot-answer responses.
+    if intent == "cannot_answer" and cannot_answer_moves_on:
+        return NavigationDecision(
+            action="skip",
+            skip_reason="cannot_answer",
+            reason="Source rule for this item: if the participant cannot answer, move on.",
+        )
+
+    if intent == "answer" and sufficiency == "sufficient":
+        return NavigationDecision(
+            action="advance",
+            next_step=next_step,
+            reason="Enough information to assess the item.",
+        )
+
+    # EMSAG: Allow repeated clarification and rephrasing without a numeric limit.
+    if intent == "clarification_request":
+        return NavigationDecision(
+            action="rephrase",
+            question_mode="rephrase",
+            reason="Participant requests clarification; rephrasing is allowed.",
+        )
+
+    if intent == "refusal":
+        return NavigationDecision(
+            action="skip",
+            skip_reason="refused",
+            reason="Participant declined to answer.",
+        )
+
+    if intent == "cannot_answer":
+        return NavigationDecision(
+            action="clarify",
+            question_mode="gentle",
+            reason="Offer a gentle follow-up when the participant cannot answer.",
+        )
+
+    if intent in ("off_topic", "unclear"):
+        return NavigationDecision(
+            action="clarify",
+            question_mode="redirect",
+            reason=f"Redirect the participant to the current item after a {intent} response.",
+        )
+
+    return NavigationDecision(
+        action="clarify",
+        question_mode="clarify",
+        reason=f"Answer is {sufficiency}; ask about the missing information.",
+    )
+
+==========================================================================================
+FILE: backend\agents\interview_orchestrator.py
+==========================================================================================
+"""
+INTERVIEW ORCHESTRATOR
+========================
+Coordinates one participant turn. It is the ONLY component that changes the
+interview state (InterviewGuide) — the agents only return proposals/text:
+
+  participant text
+     │
+     ├─ 0. paused?  → fixed "paused" message (after repeated technical failures)
+     ├─ 1. deterministic explicit-skip check (skip_phrases) → refusal, no LLM needed
+     ├─ 2. Judgment Agent  → intent + sufficiency (+ provisional rating, evidence)
+     │        └─ failure → technical-error path (no advance, no budget used)
+     ├─ 3. Navigation Agent → PROPOSED action
+     ├─ 4. validate proposal against the guide (budget, transition target)
+     ├─ 5. execute:
+     │        clarify/rephrase → Question Agent text (validated, fallback) and
+     │                           one unit of the clarification budget
+     │        advance          → item record "answered", short acknowledgement,
+     │                           configured successor
+     │        skip             → item record "skipped" + reason, fixed neutral
+     │                           message, configured successor
+     └─ 6. save the session record
+
+Safety: the keyword safety check runs in app.py BEFORE this function on every
+message and is independent of everything here; refusal/clarification handling
+can therefore never disable it.
+
+Model/validation failures are kept apart from participant behaviour: they
+are logged as system events, the participant is asked to resend, the
+clarification budget is not used, and after MAX_CONSECUTIVE_SYSTEM_ERRORS the
+interview pauses instead of skipping content.
+"""
+import re
+from dataclasses import dataclass, field
+
+from agents.judgment_agent import JudgmentError, judge_answer
+from agents.navigation_agent import NavigationDecision, decide_next_action
+from agents.question_agent import generate_clarification_question
+from session_record import build_item_record
+
+MAX_CONSECUTIVE_SYSTEM_ERRORS = 3
+
+LANGUAGE_NAMES = {"de": "German", "en": "English"}
+
+
+@dataclass
+class TurnOutcome:
+    """What the application should show after a turn.
+
+    feedback:   acknowledgement / skip notice / error message (may be "")
+    next_text:  the next prompt (item, clarification or closing), or None
+    next_kind:  "question" | "closing" | None (used for "repeat question")
+    trace:      decision details for the console log
+    """
+    feedback: str
+    next_text: str | None
+    next_kind: str | None
+    trace: dict = field(default_factory=dict)
+
+
+def is_explicit_skip(answer_text: str, skip_phrases: list[str]) -> bool:
+    """
+    Deterministic detection of an explicit skip command such as
+    "überspringen" or "Bitte überspringen." (exact phrase, optionally with
+    "bitte"/"please"). Kept strict on purpose so that ordinary answers
+    containing these words are not mistaken for a skip; anything less
+    explicit is left to the Judgment Agent (intent "refusal").
+    """
+    text = re.sub(r"[^\w\s]", " ", answer_text.lower())
+    text = re.sub(r"\b(bitte|please|einfach|ich möchte|i want to|let's|lass uns)\b", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text in skip_phrases
+
+
+
+def validate_decision(decision, guide):
+    # EMSAG: RT01: Allow unlimited clarification, but respect explicit item-level restrictions.
+    if decision.action in ("clarify", "rephrase"):
+        question = guide.current_question()
+        if question is not None and not question.get("allow_clarification", True):
+            return NavigationDecision(
+                action="skip",
+                skip_reason="unresolved",
+                reason="Clarification is disabled for this SCID item.",
+            )
+
+    if decision.action == "advance":
+        return decision.model_copy(
+            update={"next_step": guide.next_item_id()}
+        )
+
+    if decision.action == "branch":
+        if (
+            decision.next_step is None
+            or not guide.has_item(decision.next_step)
+        ):
+            raise ValueError(
+                f"Invalid branch target: {decision.next_step}"
+            )
+
+    return decision
+
+
+def handle_turn(llm, guide, recorder, answer_text: str, acknowledge=None) -> TurnOutcome:
+    """
+    Process one participant message for the current item.
+
+    Args:
+        llm: The model used by the Judgment and Question Agents.
+        guide: InterviewGuide (state; changed only here).
+        recorder: SessionRecorder (researcher-only JSON record).
+        answer_text: The participant's message.
+        acknowledge: Optional callable (prompt_text, answer_text) -> str that
+            produces a short acknowledgement after a sufficient answer (the
+            existing behavior-profile feedback chain). Falls back to a fixed text.
+
+    Returns:
+        TurnOutcome for the application to display.
+    """
+    item = guide.current_question()
+    if item is None:
+        return TurnOutcome("", guide.closing_message, "closing", {"action": "finished"})
+    if guide.paused:
+        return TurnOutcome(guide.messages["paused"], None, None, {"action": "paused"})
+
+    #EMSAG: RT07: what if user wants to end the conversation?
+    # Explicit request to end the entire interview.
+    normalized_answer = " ".join(
+        re.sub(r"[^\w\s]", " ", answer_text.casefold()).split()
+    )
+
+    stop_phrases = {
+        "de": {
+            "ich möchte das gespräch beenden",
+            "ich will das gespräch beenden",
+            "ich möchte aufhören",
+            "ich möchte das interview beenden",
+            "beende das gespräch",
+        },
+        "en": {
+            "i want to end the conversation",
+            "i want to end the interview",
+            "i would like to stop",
+            "please end the conversation",
+        },
+    }
+
+    if normalized_answer in stop_phrases.get(guide.language, set()):
+        guide.record_participant_turn(answer_text)
+        guide._move_to(None)
+        recorder.save()
+
+        return TurnOutcome(
+            "Natürlich. Wir beenden das Gespräch hier. Vielen Dank für Ihre Zeit."
+            if guide.language == "de"
+            else "Of course. We will end the conversation here. Thank you for your time.",
+            "",
+            "closing",
+            {"action": "end_interview"},
+        )
+    #EMSAG: RT07: what if user wants to end the conversation?
+    language = LANGUAGE_NAMES.get(guide.language, "German")
+    guide.record_participant_turn(answer_text)
+
+    # 1. Deterministic skip command: honoured even if the model is down.
+    judgment = None
+    if is_explicit_skip(answer_text, guide.skip_phrases):
+        decision = NavigationDecision(action="skip", skip_reason="refused",
+                                      reason="Explicit skip command (deterministic check).")
+    else:
+        # 2. Judgment.
+        try:
+            judgment = judge_answer(llm, item, guide.item_turns)
+        except JudgmentError as exc:
+            return _technical_failure(guide, recorder, item, str(exc))
+        # 3. Navigation proposal.
+        decision = decide_next_action(
+            intent=judgment.intent,
+            sufficiency=judgment.sufficiency,
+            clarification_count=guide.current_clarification_count(),
+            max_clarifications=guide.max_clarifications(),
+            next_step=item.get("next_step"),
+            cannot_answer_moves_on=item.get("cannot_answer_moves_on", False),
+        )
+    guide.consecutive_system_errors = 0
+
+    # 4. Validation of the proposal.
+    proposed = decision
+    decision = validate_decision(decision, guide)
+    trace = {
+        "item": item["id"],
+        "judgment": judgment.model_dump() if judgment else None,
+        "proposed": proposed.model_dump(),
+        "executed": decision.model_dump(),
+        "clarifications_used": guide.current_clarification_count(),
+    }
+
+    # 5. Execution.
+    if decision.action in ("clarify", "rephrase"):
+        text = generate_clarification_question(
+            llm, item, guide.item_turns,
+            judgment.missing_information if judgment else [],
+            mode=decision.question_mode or "clarify", language=language,
+        )
+        # EMSAG: Changed fallback handling to prevent valid Question Agent responses
+        # from being overwritten by hardcoded text.
+        if text is None:
+            # Deterministic fallback when the Question Agent fails twice.
+            recorder.log_system_event(
+                item["id"],
+                "question_agent_fallback",
+                "invalid or failed output",
+            )
+            #EMSAG: RT02: "anders gefragt:" ist not used anymore
+            if decision.question_mode == "rephrase":
+                text = (
+                    "Ich meine, ob Sie die Frage in Ihren eigenen Worten "
+                    "beschreiben können. Was bedeutet das für Sie?"
+                    if guide.language == "de"
+                    else "I mean, could you describe the question in your own words? "
+                        "What does it mean to you?"
+                )
+            elif decision.question_mode == "redirect":
+                text = (
+                    "Lassen Sie uns zu meiner Frage zurückkommen: "
+                    f"{item['text']}"
+                    if guide.language == "de"
+                    else "Let us return to my question: "
+                        f"{item['text']}"
+                )
+            elif decision.question_mode == "gentle":
+                text = (
+                    "Sie können sich gern etwas Zeit nehmen. "
+                    "Was fällt Ihnen dazu ein?"
+                    if guide.language == "de"
+                    else "Take your time. What comes to mind?"
+                )
+            else:
+                text = (
+                    item["text"]
+                )
+            #EMSAG: RT02: "anders gefragt:" ist not used anymore
+            trace["question_fallback"] = True
+        else:
+            trace["question_fallback"] = False
+
+        print(
+            f"[orchestrator] mode={decision.question_mode}, "
+            f"fallback={trace['question_fallback']}, response={text!r}"
+        )
+
+        # EMSAG: Changed fallback handling to prevent valid Question Agent responses
+        # from being overwritten by hardcoded text.
+        guide.start_clarification(text, kind=decision.question_mode or decision.action)
+        recorder.save()
+        return TurnOutcome("", text, "question", trace)
+
+    clarifications_used = guide.current_clarification_count()
+    if decision.action in ("advance", "branch"):
+        record = build_item_record(item, list(guide.item_turns), "answered", judgment=judgment,
+                                   decision=decision, clarifications_used=clarifications_used)
+        feedback = _acknowledgement(acknowledge, guide, answer_text)
+        next_item = guide.finish_item(record, decision.next_step)
+    #EMSAG: RT04: Skip Refusal Conditions were improved
+    else:  # skip
+        record = build_item_record(
+            item,
+            list(guide.item_turns),
+            "skipped",
+            judgment=judgment,
+            skip_reason=decision.skip_reason,
+            decision=decision,
+            clarifications_used=clarifications_used,
+        )
+
+        if decision.skip_reason == "refused":
+            feedback = (
+                "Das ist völlig in Ordnung. "
+                "Wir können zur nächsten Frage übergehen."
+                if guide.language == "de"
+                else "That's completely fine. "
+                    "We can move on to the next question."
+            )
+        else:
+            feedback = _acknowledgement(
+                acknowledge, guide, answer_text
+            )
+
+        next_item = guide.finish_item(record, guide.next_item_id())
+    #EMSAG: RT04: Skip Refusal Conditions were improved
+
+    recorder.save()
+    if next_item is None:
+        return TurnOutcome(feedback, guide.closing_message, "closing", trace)
+    return TurnOutcome(feedback, guide.presentation_text(next_item), "question", trace)
+
+
+def _default_prefix(guide) -> str:
+    """Lead-in for the deterministic fallback reformulation (used only when the
+    Question Agent fails twice): the original item is shown again with this prefix."""
+    return "Anders gefragt:" if guide.language == "de" else "To put it differently:"
+
+#EMSAG: RT04: not only saying danke but also give more empathy and acknowladgement
+def _acknowledgement(acknowledge, guide, answer_text: str) -> str:
+    """Return a meaningful acknowledgement without generic thanks alone."""
+    if acknowledge is None:
+        return guide.messages["acknowledge"]
+
+    try:
+        text = (acknowledge(guide.active_prompt_text(), answer_text) or "").strip()
+    except Exception:
+        text = ""
+
+    # An acknowledgement must not contain a follow-up question.
+    if not text or "?" in text:
+        text = ""
+
+    # Reject generic thanks as the entire acknowledgement.
+    normalized = " ".join(text.casefold().split()).strip(" .!,:;")
+    generic_thanks = {
+        "danke",
+        "vielen dank",
+        "danke für ihre antwort",
+        "danke für ihre offenheit",
+        "thank you",
+        "thanks",
+        "thank you for your answer",
+        "thanks for sharing",
+    }
+
+    if normalized in generic_thanks:
+        text = ""
+
+    if text:
+        return text
+
+    # Use a context-sensitive fallback for clearly emotional disclosures.
+    answer_lower = answer_text.casefold()
+    emotional_terms = (
+        "einsam", "allein", "niemand", "traurig", "tod",
+        "gestorben", "hoffnungslos", "wertlos", "misshandelt",
+        "gewalt", "verletzt", "verzweifelt",
+    )
+
+    if any(term in answer_lower for term in emotional_terms):
+        return "Es klingt belastend, was Sie beschreiben."
+
+    # Preserve the existing fallback for other answers.
+    return guide.messages["acknowledge"]
+#EMSAG: RT04: not only saying danke but also give more empathy and acknowladgement
+
+
+def _technical_failure(guide, recorder, item, detail: str) -> TurnOutcome:
+    """
+    Handle a failed/malformed model response: do not advance, do not spend
+    budget, do not keep the unjudged message as evidence; ask to resend;
+    pause after repeated failures.
+    """
+    guide.item_turns.pop()  # the message will be judged again when resent
+    guide.consecutive_system_errors += 1
+    recorder.log_system_event(item["id"], "judgment_failure", detail)
+    if guide.consecutive_system_errors >= MAX_CONSECUTIVE_SYSTEM_ERRORS:
+        guide.paused = True
+        recorder.save()
+        return TurnOutcome(guide.messages["paused"], None, None, {"action": "paused", "detail": detail})
+    recorder.save()
+    return TurnOutcome(guide.messages["system_error"], guide.active_prompt_text(), "question",
+                       {"action": "system_error", "detail": detail})
+
+==========================================================================================
+FILE: backend\interview_guide.py
+==========================================================================================
+"""
+INTERVIEW GUIDE
+=================
+Reads one interview guide file from study_content/interviews/*.yaml and
+keeps the explicit INTERVIEW STATE for the current participant: which item
+is active, what the participant has said about it so far, how much of the
+clarification budget is used, and the finished per-item records.
+
+This file deliberately knows nothing about the LLM, audio, or the web
+server. It is the state store that the Orchestrator
+(backend/agents/interview_orchestrator.py) reads and changes. The
+Navigation Agent only PROPOSES actions; the Orchestrator validates them and
+then calls the state-changing methods here (begin_clarification(),
+finish_item(), ...). Nothing in this file decides what an answer means.
+
+Per the project's core principle "the LLM presents, it does not invent":
+question wording always comes from the YAML file. The Question Agent may
+explain or reformulate the CURRENT item, but never adds new items.
+
+Item fields (all optional except id/text — see the example guide's header):
+  id, text, criterion_id     as before
+  criterion                  human-readable description of what the item
+                             assesses (passed to the Judgment/Question Agents)
+  rating_scheme              "none" (default) or "scid5pd" (? / 0 / 1 / 2)
+  rating_anchor              the source's threshold anchor, e.g. what a "2"
+                             requires; only used with a rating scheme
+  probes                     source follow-up probes for this item (context
+                             for the Question Agent; not asked automatically)
+  max_clarifications         per-item clarification budget; falls back to the
+                             guide's default_max_clarifications (default 1).
+                             0 means "do not clarify, move on".
+  next_step                  id of the item that follows, or "END". Validated
+                             at load time. Missing = the next item in order.
+
+SCID-5-PD support (see study_content/interviews/scid5pd_de.yaml header):
+  criterion_code             source code, e.g. "PD27" (shared by questions of one criterion)
+  intro                      source introduction shown before the item
+  ask: false                 item not asked by the chatbot (observation /
+                             clinician-only / derived / same_as / gate);
+                             recorded automatically when reached
+  gate                       source-defined decision point:
+                             {criterion_codes, min_rated_2, if_met, if_not_met}
+  cannot_answer_moves_on     source rule "IF CAN'T ANSWER, MOVE ON"
+  safety_relevant            item concerns suicidality/self-harm (flag in record)
+
+Guide-level fields added for the agent workflow:
+  default_max_clarifications  project rule, default 1
+  skip_phrases                exact explicit skip commands (deterministic,
+                              works even if the LLM fails)
+  interaction_messages        fixed texts for skips/technical problems
+
+Used by: backend/app.py, backend/agents/interview_orchestrator.py.
+"""
+import os
+
+import yaml
+
+INTERVIEWS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "study_content", "interviews"
+)
+
+# Value used by next_step to mark the end of the interview.
+END_MARKER = "END"
+
+# Rating schemes the application understands. "scid5pd" is the coding of
+# the SCID-5-PD (source-defined): ? = inadequate information, 0 = absent,
+# 1 = subthreshold, 2 = threshold.
+RATING_SCHEMES = {
+    "none": [],
+    "scid5pd": ["?", "0", "1", "2"],
+}
+
+# Fallback fixed texts (project-specific wording, not SCID). A guide can
+# override any of them under "interaction_messages". They are deliberately
+# fixed rather than LLM-generated so that a refusal can never be answered
+# with persuasion, and so that they still work when the model fails.
+DEFAULT_MESSAGES = {
+    "de": {
+        "skip_refused": "Das ist völlig in Ordnung, wir lassen diese Frage aus.",
+        "skip_unresolved": "Danke. Wir gehen zur nächsten Frage weiter.",
+        "skip_cannot_answer": "Das ist in Ordnung. Wir gehen zur nächsten Frage weiter.",
+        "system_error": "Entschuldigung, bei der Verarbeitung gab es ein technisches Problem. "
+                        "Könnten Sie Ihre Antwort bitte noch einmal senden?",
+        "paused": "Es gibt gerade ein anhaltendes technisches Problem. Das Interview ist pausiert. "
+                  "Bitte wenden Sie sich an das Studienteam.",
+        "acknowledge": "Danke für Ihre Antwort.",
+    },
+    "en": {
+        "skip_refused": "That is completely fine, we will leave this question out.",
+        "skip_unresolved": "Thank you. Let's move on to the next question.",
+        "skip_cannot_answer": "That's fine. Let's move on to the next question.",
+        "system_error": "Sorry, there was a technical problem processing your answer. "
+                        "Could you please send it again?",
+        "paused": "There is an ongoing technical problem. The interview is paused. "
+                  "Please contact the study team.",
+        "acknowledge": "Thank you for your answer.",
+    },
+}
+
+DEFAULT_SKIP_PHRASES = {
+    "de": [
+        "überspringen",
+        "frage überspringen",
+        "überspringe diese frage",
+        "nächste frage",
+        "weiter",
+        "keine angabe",
+    ],
+    "en": ["skip", "skip this", "skip this question", "next question", "pass"],
+}
+
+
+class GuideConfigError(ValueError):
+    """Raised when a guide file is incomplete or inconsistent (e.g. an
+    unfilled template item or a next_step pointing to a missing item)."""
+
+
+class InterviewGuide:
+    """Tracks one participant's progress through one interview guide file."""
+
+    def __init__(self, guide_filename: str):
+        """
+        Load a guide file, flatten its items into one ordered list and
+        validate the configured transitions.
+
+        Args:
+            guide_filename: File name inside study_content/interviews/,
+                e.g. "depression_scid_example.yaml".
+
+        Raises:
+            GuideConfigError: if an item has no question text (e.g. an
+                unfilled SCID template) or a next_step target does not exist.
+        """
+        path = os.path.join(INTERVIEWS_DIR, guide_filename)
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+
+        self.guide_id = data.get("guide_id", guide_filename)
+        self.title = data.get("title", "")
+        self.behavior_profile = data.get("behavior_profile")
+
+        #emsag 18.10.2026 extra changes:
+        # Optional metadata for future interview-guide formats.
+        # Defaults preserve compatibility with existing YAML files.
+        self.guide_version = data.get("guide_version", "1.0")
+        self.language = data.get("language", "de")
+        self.interview_type = data.get("interview_type", "structured")
+        self.navigation_mode = data.get("navigation_mode", "sequential")
+        #emsag 18.10.2026 extra changes:
+
+        # Content provenance label (e.g. "team-written mock, NOT SCID").
+        # Copied into every session record so that results from mock content
+        # can never be mistaken for SCID results.
+        self.content_source = data.get("content_source", "unspecified")
+
+        self.framing_message = (data.get("framing_message") or "").strip()
+        self.closing_message = (data.get("closing_message") or "").strip()
+
+        # Project rule (not a SCID rule): one clarification/reformulation
+        # attempt per item unless the guide says otherwise.
+        self.default_max_clarifications = max(0, int(data.get("default_max_clarifications", 1)))
+
+        lang = self.language if self.language in DEFAULT_MESSAGES else "de"
+        self.messages = dict(DEFAULT_MESSAGES[lang])
+        self.messages.update(data.get("interaction_messages") or {})
+        phrases = data.get("skip_phrases") or DEFAULT_SKIP_PHRASES.get(lang, [])
+        self.skip_phrases = [str(p).strip().lower() for p in phrases if str(p).strip()]
+
+        self.questions = []
+        for section in data.get("sections", []):
+            section_title = section.get("section_title")
+            for question in section.get("questions", []):
+                text = (question.get("text") or "").strip()
+                ask = bool(question.get("ask", True))
+                if ask and not text:
+                    raise GuideConfigError(
+                        f"Item {question.get('id')!r} in {guide_filename} has no question text. "
+                        "Template items must be filled from the licensed source before use."
+                    )
+                rating_scheme = question.get("rating_scheme", data.get("rating_scheme", "none")) or "none"
+                if rating_scheme not in RATING_SCHEMES:
+                    raise GuideConfigError(
+                        f"Item {question.get('id')!r}: unknown rating_scheme {rating_scheme!r}."
+                    )
+                self.questions.append({
+                    "id": question["id"],
+                    "text": text,
+                    "section_title": section_title,
+                    # Legacy single-follow-up switch (kept for compatibility;
+                    # the agent workflow uses the clarification budget below).
+                    "allow_followup": bool(question.get("allow_followup", False)),
+
+                    # EMSAG 18.10.2026 Optional fields for future SCID-compatible guides.
+                    "criterion_id": question.get("criterion_id", question["id"]),
+                    # Clarification is allowed by default; the budget decides
+                    # how often (max_clarifications: 0 disables it).
+                    "allow_clarification": bool(question.get("allow_clarification", True)),
+                    "max_clarifications": max(0, int(question.get(
+                        "max_clarifications", self.default_max_clarifications))),
+                    "next_step": question.get("next_step"),
+                    # EMSAG 18.10.2026 Optional fields for future SCID-compatible guides.
+
+                    "criterion": (question.get("criterion") or "").strip(),
+                    "rating_scheme": rating_scheme,
+                    "rating_anchor": (question.get("rating_anchor") or "").strip(),
+                    "probes": [str(p).strip() for p in (question.get("probes") or []) if str(p).strip()],
+
+                    # --- SCID-5-PD support -------------------------------------
+                    # Source criterion code (e.g. "PD27"); several questions can
+                    # share one code when the source asks several questions
+                    # for one criterion.
+                    "criterion_code": question.get("criterion_code"),
+                    # Source introduction sentence shown once before the item.
+                    "intro": (question.get("intro") or "").strip(),
+                    # ask: false = item is NOT asked by the chatbot (observation
+                    # items, clinician-only exclusion criteria, derived ratings,
+                    # source decision points). It is processed automatically
+                    # when reached, see _process_non_interactive().
+                    "ask": ask,
+                    "not_asked_reason": question.get("not_asked_reason"),
+                    "note": (question.get("note") or "").strip(),
+                    "same_as": question.get("same_as"),
+                    "derived_any_rated_2_of": list(question.get("derived_any_rated_2_of") or []),
+                    "gate": question.get("gate"),
+                    # Source rule "IF CAN'T ANSWER, MOVE ON" for this item.
+                    "cannot_answer_moves_on": bool(question.get("cannot_answer_moves_on", False)),
+                    # Item touches suicidality/self-harm: flagged in the record
+                    # for the clinician (the keyword safety check runs anyway).
+                    "safety_relevant": bool(question.get("safety_relevant", False)),
+                    # General guidance for ratings (e.g. SCID-5-PD p. 5-6),
+                    # given to the Judgment Agent for rated items.
+                    "rating_guidance": (data.get("rating_guidance") or "").strip(),
+                })
+
+        # Transitions are validated once at load time so that a typo in
+        # next_step fails loudly here instead of silently ending or
+        # misrouting an interview later.
+        self._index_by_id = {q["id"]: i for i, q in enumerate(self.questions)}
+        if len(self._index_by_id) != len(self.questions):
+            raise GuideConfigError(f"Duplicate item ids in {guide_filename}.")
+        for q in self.questions:
+            target = q["next_step"]
+            if target not in (None, END_MARKER) and target not in self._index_by_id:
+                raise GuideConfigError(
+                    f"Item {q['id']!r}: next_step {target!r} does not exist in {guide_filename}."
+                )
+            gate = q["gate"]
+            if gate:
+                for key in ("if_met", "if_not_met"):
+                    if gate.get(key) not in (END_MARKER,) and gate.get(key) not in self._index_by_id:
+                        raise GuideConfigError(
+                            f"Gate {q['id']!r}: {key} target {gate.get(key)!r} does not exist.")
+                if not gate.get("criterion_codes") or int(gate.get("min_rated_2", 0)) < 1:
+                    raise GuideConfigError(f"Gate {q['id']!r} needs criterion_codes and min_rated_2.")
+            if q["same_as"] and q["same_as"] not in self._index_by_id:
+                raise GuideConfigError(f"Item {q['id']!r}: same_as {q['same_as']!r} does not exist.")
+
+        self.reset()
+
+    # ------------------------------------------------------------------
+    # Current position
+    # ------------------------------------------------------------------
+    def current_question(self) -> dict | None:
+        """Return the item that should be asked right now, or None if the guide is finished."""
+        if self._current_index >= len(self.questions):
+            return None
+        return self.questions[self._current_index]
+
+    def is_finished(self) -> bool:
+        """True once the interview has reached its end (all items or next_step END)."""
+        return self._current_index >= len(self.questions)
+
+    def next_item_id(self) -> str | None:
+        """
+        The configured successor of the current item: its next_step if set,
+        otherwise the next item in file order. Returns None for the end.
+        Used by the Orchestrator to validate a proposed advance/branch.
+        """
+        question = self.current_question()
+        if question is None:
+            return None
+        target = question.get("next_step")
+        if target == END_MARKER:
+            return None
+        if target:
+            return target
+        nxt = self._current_index + 1
+        return self.questions[nxt]["id"] if nxt < len(self.questions) else None
+
+    def has_item(self, item_id: str) -> bool:
+        """True if item_id exists in this guide (transition validation)."""
+        return item_id in self._index_by_id
+
+    def advance(self) -> dict | None:
+        """
+        Move to the configured next item (next_step, else file order) and
+        reset all per-item state.
+
+        Returns:
+            The new current item, or None if the guide is now finished.
+        """
+        return self._move_to(self.next_item_id())
+
+    def _move_to(self, item_id: str | None) -> dict | None:
+        """
+        Jump to item_id (None = end of interview), reset per-item state and
+        automatically process any items the chatbot does not ask (see
+        _process_non_interactive()). Returns the next item to ASK, or None.
+        """
+        self._current_index = self._index_by_id[item_id] if item_id else len(self.questions)
+        self._reset_item_state()
+        self._skip_non_interactive()
+        return self.current_question()
+
+    def _skip_non_interactive(self) -> None:
+        """Record and pass over every consecutive ask:false item / source gate."""
+        guard = 0
+        while self.current_question() is not None and not self.current_question()["ask"]:
+            item = self.current_question()
+            record, target = self._process_non_interactive(item)
+            self.records.append(record)
+            self._current_index = self._index_by_id[target] if target else len(self.questions)
+            self._reset_item_state()
+            guard += 1
+            if guard > len(self.questions):  # defensive: a misconfigured loop of gates
+                raise GuideConfigError("Non-interactive items form a loop.")
+
+    def _successor_of(self, item: dict) -> str | None:
+        """Configured successor of an item (next_step or file order; None = end)."""
+        target = item.get("next_step")
+        if target == END_MARKER:
+            return None
+        if target:
+            return target
+        nxt = self._index_by_id[item["id"]] + 1
+        return self.questions[nxt]["id"] if nxt < len(self.questions) else None
+
+    def criterion_has_rating_2(self, criterion_code: str) -> bool:
+        """
+        True if any answered question recorded for criterion_code has a
+        provisional rating of "2". Several SCID questions can belong to one
+        criterion; the criterion is treated as "2" if one of its questions
+        established the threshold ("?" and skipped items never count).
+        """
+        for rec in self.records:
+            if rec.get("criterion_code") == criterion_code and rec.get("status") == "answered":
+                if (rec.get("provisional_rating") or {}).get("value") == "2":
+                    return True
+        return False
+
+    def _process_non_interactive(self, item: dict) -> tuple[dict, str | None]:
+        """
+        Build the record for an item the chatbot does not ask and return
+        (record, next item id).
+
+        * gate: SOURCE-DEFINED decision point (e.g. SCID-5-PD Antisocial PD
+          "at least two Conduct Disorder criteria rated 2"). Evaluated on the
+          PROVISIONAL chatbot ratings; the counted criteria are stored in the
+          record so the clinician can verify the routing.
+        * derived: rating derived from other criteria as stated in the source.
+        * same_as / observation / clinician: recorded as
+          "not assessed by chatbot – clinician rating required".
+        """
+        record = {
+            "item_id": item["id"],
+            "criterion_id": item.get("criterion_id"),
+            "criterion_code": item.get("criterion_code"),
+            "criterion": item.get("criterion"),
+            "status": "not_asked",
+            "not_asked_reason": item.get("not_asked_reason"),
+            "note": item.get("note"),
+        }
+        gate = item.get("gate")
+        if gate:
+            codes = gate["criterion_codes"]
+            rated_2 = [c for c in codes if self.criterion_has_rating_2(c)]
+            met = len(rated_2) >= int(gate["min_rated_2"])
+            target = gate["if_met"] if met else gate["if_not_met"]
+            record.update({
+                "status": "gate",
+                "gate_met": met,
+                "criteria_rated_2": rated_2,
+                "min_rated_2": int(gate["min_rated_2"]),
+                "routed_to": target,
+                "note": ("Source-defined routing evaluated on PROVISIONAL chatbot ratings "
+                         "('?' counts as not '2'); clinician to verify."),
+            })
+            return record, (None if target == END_MARKER else target)
+
+        if item.get("derived_any_rated_2_of"):
+            sources = item["derived_any_rated_2_of"]
+            hit = [c for c in sources if self.criterion_has_rating_2(c)]
+            record["status"] = "derived"
+            record["provisional_rating"] = {
+                "value": "2" if hit else "?", "scheme": "scid5pd",
+                "label": "provisional – for clinician review",
+                "derived_from": sources, "rated_2": hit,
+            }
+        elif item.get("rating_scheme", "none") != "none":
+            record["provisional_rating"] = {"value": "?", "scheme": item["rating_scheme"],
+                                            "label": "not assessed by chatbot – clinician rating required"}
+        if item.get("same_as"):
+            record["same_as"] = item["same_as"]
+        return record, self._successor_of(item)
+
+    def presentation_text(self, item: dict | None = None) -> str:
+        """Text shown when an item is first presented: optional source intro + question."""
+        item = item or self.current_question()
+        if item is None:
+            return ""
+        return f"{item['intro']} {item['text']}".strip() if item.get("intro") else item["text"]
+
+    def _reset_item_state(self) -> None:
+        """Clear everything that belongs to the current item only."""
+        self._awaiting_followup_answer = False
+        self._followup_used_for_current = False
+        self.pending_followup_text = None
+        #EMSAG new parameters were added:
+        self._clarifications_used_for_current = 0
+        self._pending_followup_kind = None
+        #EMSAG new parameters were added:
+        # What the participant has said about the CURRENT item, in order,
+        # paired with the prompt they were answering. Given to the Judgment
+        # Agent so a clarification answer is judged together with the first
+        # answer, not in isolation.
+        self.item_turns: list[dict] = []
+        self.consecutive_system_errors = 0
+
+    # ------------------------------------------------------------------
+    # Legacy single follow-up (kept for compatibility with older code/tests)
+    # ------------------------------------------------------------------
+    def start_followup(self, followup_text: str) -> None:
+        """Record that a (legacy) follow-up question was asked for the current item."""
+        self._awaiting_followup_answer = True
+        self._followup_used_for_current = True
+        self.pending_followup_text = followup_text
+        self._pending_followup_kind = "followup"
+
+    def is_awaiting_followup_answer(self) -> bool:
+        """True if the participant's next answer responds to a follow-up/clarification."""
+        return self._awaiting_followup_answer
+
+    def followup_already_used(self) -> bool:
+        """True if the legacy follow-up has already been used for the current item."""
+        return self._followup_used_for_current
+
+    # ------------------------------------------------------------------
+    # Clarification budget
+    # ------------------------------------------------------------------
+    def max_clarifications(self) -> int:
+        """Configured clarification budget of the current item (0 if clarification is disabled)."""
+        question = self.current_question()
+        if question is None or not question.get("allow_clarification", True):
+            return 0
+        return question.get("max_clarifications", self.default_max_clarifications)
+
+    def current_clarification_count(self) -> int:
+        """Number of clarifications/reformulations already used for the current item."""
+        return self._clarifications_used_for_current
+
+    def clarification_limit_reached(self) -> bool:
+        """True if no further clarification is permitted for the current item."""
+        return self._clarifications_used_for_current >= self.max_clarifications()
+
+    #EMSAG: RT01: Clarification Request should not cut the budget
+    # EMSAG: RT01: Allow unlimited clarification and rephrasing.
+    def start_clarification(self, clarification_text: str, kind: str = "clarification") -> bool:
+        """
+        Store a clarification or rephrasing for the current item.
+        Clarification count is tracked for documentation, not as a limit.
+        """
+        question = self.current_question()
+
+        if question is None:
+            return False
+
+        # EMSAG: Respect explicit item-level clarification restrictions.
+        if not question.get("allow_clarification", True):
+            return False
+
+        # EMSAG: Count every clarification, including rephrasing.
+        self._clarifications_used_for_current += 1
+
+        self._awaiting_followup_answer = True
+        self._pending_followup_kind = kind
+        self.pending_followup_text = clarification_text
+        return True
+
+    #EMSAG: RT01: Clarification Request should not cut the budget
+    def pending_kind(self) -> str | None:
+        """Kind of the pending clarification (public accessor; replaces reading _pending_followup_kind)."""
+        return self._pending_followup_kind
+
+    def clear_followup(self) -> None:
+        """Clear the pending follow-up/clarification without advancing."""
+        self._awaiting_followup_answer = False
+        self.pending_followup_text = None
+        self._pending_followup_kind = None
+
+    # ------------------------------------------------------------------
+    # Per-item evidence and records
+    # ------------------------------------------------------------------
+    def active_prompt_text(self) -> str:
+        """The text the participant is currently answering (clarification if pending, else the item)."""
+        question = self.current_question()
+        if question is None:
+            return ""
+        return self.pending_followup_text or self.presentation_text(question)
+
+    def record_participant_turn(self, answer_text: str) -> None:
+        """Store one participant message for the current item, with the prompt it answered."""
+        self.item_turns.append({"prompt": self.active_prompt_text(), "answer": answer_text})
+
+    def finish_item(self, record: dict, next_item_id: str | None) -> dict | None:
+        """
+        Close the current item with a record and move to next_item_id.
+
+        The Orchestrator must have validated next_item_id already (it must
+        be None for the end, or an existing item id).
+
+        Args:
+            record: The item outcome (see session_record.build_item_record()).
+            next_item_id: The validated successor.
+
+        Returns:
+            The new current item or None at the end.
+        """
+        self.records.append(record)
+        return self._move_to(next_item_id)
+
+    def reset(self) -> None:
+        """Start the guide over from the first item (e.g. for a new participant)."""
+        self._current_index = 0
+        self.records: list[dict] = []
+        self.paused = False
+        self._reset_item_state()
+        self._skip_non_interactive()
+
+
+==========================================================================================
+FILE: backend\app.py
+==========================================================================================
+"""
+APP — MAIN ENTRY POINT
+========================
+This is the file you run to start the assistant. It does NOT contain the
+"real" logic itself — it just reads the command-line options, sets up the
+web server (or the terminal loop), and calls out to the other files in this
+folder:
+
+  - llm_provider.py  -> generates the assistant's text reply
+  - stt.py           -> turns speech into text (voice condition only)
+  - tts.py           -> turns text into speech (voice condition only)
+  - speech.py        -> recording/playback/audio-format glue (voice condition only)
+
+How to run it:
+    python backend/app.py            (terminal mode, asks for microphone input)
+    python backend/app.py --web      (starts a local web server, open in browser)
+
+See the project's README for the full list of command-line options
+(model choice, language, etc.), and for how to download a Piper voice
+before running the voice condition for the first time.
+"""
+import argparse
+import json
+import os
+import re
+import threading
+import time
+from queue import Queue
+
+import numpy as np
+from flask import Flask, Response, jsonify, request, send_from_directory
+
+import llm_provider
+import safety_check
+import speech
+import study_settings
+from behavior_profiles import load_behavior_profile
+from interview_guide import InterviewGuide
+from session_record import SessionRecorder
+
+# Agent workflow (Judgment / Navigation / Question Agents, coordinated by
+# the Orchestrator) — see backend/agents/interview_orchestrator.py.
+from agents.interview_orchestrator import handle_turn
+
+
+# --- Load study settings (see study_content/study_settings.yaml) ---------
+# Loaded before the command-line options below, so that e.g. --language has
+# a sensible default coming from the researcher-editable settings file
+# instead of being hardcoded here.
+_settings = study_settings.load_study_settings()
+
+# --- Command-line options -------------------------------------------------
+parser = argparse.ArgumentParser(description="Local Voice Assistant")
+parser.add_argument("--model", type=str, default=None, help="LLM model name (default: gemma3 for ollama, MiniMax-M2.7 for minimax)")
+parser.add_argument("--provider", type=str, default="ollama", choices=["ollama", "minimax"],
+                    help="LLM provider: 'ollama' for local models, 'minimax' for MiniMax cloud API (default: ollama)")
+parser.add_argument("--api-key", type=str, default=None, help="API key for cloud LLM providers (or set MINIMAX_API_KEY env var)")
+parser.add_argument("--temperature", type=float, default=0.7, help="LLM temperature (default: 0.7)")
+parser.add_argument("--save-voice", action="store_true", help="Save generated voice samples to voices/")
+parser.add_argument("--web", action="store_true", help="Run the app as a Flask web server instead of terminal mode")
+parser.add_argument("--port", type=int, default=5000,
+                    help="Port for the web server (default: 5000; change it if another program already uses 5000)")
+parser.add_argument("--language", type=str, default=_settings.get("language", "de"),
+                    help="Language code for speech transcription (default: from study_settings.yaml, else 'de')")
+# parse_known_args (instead of parse_args) so the module can also be imported
+# by the test suite, whose own command-line arguments would otherwise abort it.
+args, _unknown_args = parser.parse_known_args()
+
+# --- Set up the language model and the voice engine -----------------------
+llm = llm_provider.create_llm(
+    provider=args.provider,
+    model=args.model,
+    api_key=args.api_key,
+    temperature=args.temperature,
+)
+chain_with_history = llm_provider.build_chain(llm)
+
+# Which Piper voice to use is a researcher setting (study_content/study_settings.yaml),
+# not a command-line option — see backend/tts.py's module docstring for how
+# to download a voice the first time.
+_tts_voice = _settings.get("tts_voice", "de_DE-thorsten-high")
+
+# The voice models (Piper TTS, Whisper STT) are loaded LAZILY, i.e. only when
+# a voice endpoint or the terminal voice mode is actually used. Previously
+# both were loaded at import time, so the text condition could not start
+# without the voice models, and importing stt.py tried to download the
+# Whisper model from the internet even for text-only sessions.
+_tts_service = None
+
+
+def get_tts():
+    """Return the shared TextToSpeechService, loading Piper on first use."""
+    global _tts_service
+    if _tts_service is None:
+        from tts import TextToSpeechService
+        _tts_service = TextToSpeechService(voice_name=_tts_voice)
+    return _tts_service
+
+
+def get_stt():
+    """Return the speech-to-text module, loading Whisper on first use."""
+    import stt
+    return stt
+
+# --- Load the active interview guide (see study_content/interviews/) ------
+# Which guide file is active is controlled by study_content/study_settings.yaml,
+# not by anything here — the fallback name below is only used if that
+# setting is missing entirely.
+_guide_filename = _settings.get("interview_guide", "depression_scid_example.yaml")
+interview = InterviewGuide(_guide_filename)
+
+# Researcher-only JSON record of each interview (session_records/, git-ignored).
+recorder = SessionRecorder(interview)
+
+# --- Load the behavior profile the guide asks for (see study_content/prompts/) ---
+# This decides both the tone/strictness instructions and how the next fixed
+# question is delivered (verbatim vs. naturally reworded) — see Step 3 of
+# the project plan and backend/behavior_profiles.py.
+profile = load_behavior_profile(interview.behavior_profile)
+
+# --- Web server (used with --web) ------------------------------------------
+# The frontend/ folder (the web page the participant sees) lives one level up
+# from this file, so we point Flask there explicitly.
+FRONTEND_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend")
+app = Flask(__name__, static_folder=FRONTEND_DIR, static_url_path="")
+
+# study_content/assets/ — researcher-supplied images/videos (e.g. a logo for
+# the "logo" embodiment condition, or picture/video files). Deliberately only
+# this one subfolder is made reachable via URL, not all of study_content/ —
+# the interview guides and prompts in the other subfolders have no reason to
+# be linkable from the browser.
+STUDY_ASSETS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "study_content", "assets"
+)
+
+
+@app.route("/")
+def index():
+    """Serve the web interface's main HTML page."""
+    return app.send_static_file("index.html")
+
+
+@app.route("/study-assets/<path:filename>")
+def study_assets(filename):
+    """
+    Serves files from study_content/assets/ (logo, embodiment pictures/videos,
+    etc.) — set pictureSrc/videoSrc in frontend/conversation.js to
+    "/study-assets/<filename>" to use a file placed here. See
+    study_content/assets/SOURCES.md for documenting where each file came from.
+    """
+    return send_from_directory(STUDY_ASSETS_DIR, filename)
+
+
+def _split_sentences(text: str) -> list[str]:
+    """
+    Split a piece of text into individual sentences, so each one can be
+    streamed to the browser (and spoken) as soon as it's ready, instead of
+    waiting for the whole piece. This matters because "the feedback" or "a
+    question" are not guaranteed to always be exactly one sentence — if a
+    prompt in study_content/prompts/ is edited later to allow a longer,
+    multi-sentence feedback, this still splits it up correctly instead of
+    silently becoming one large, slower chunk.
+
+    This is a simple, punctuation-based split (not aware of abbreviations
+    like "Dr." or "z.B.") — good enough for short interview responses. Piper
+    does its own, more careful sentence splitting internally for the actual
+    audio; this split only decides how text is grouped for streaming.
+    """
+    text = text.strip()
+    if not text:
+        return []
+    parts = re.split(r'(?<=[.!?])\s+', text)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _tag_sentences(text: str, kind: str) -> list[dict]:
+    """
+    Like _split_sentences(), but each sentence is paired with a "kind"
+    label ("feedback", "question", or "closing"). This is what lets the
+    browser's "Frage wiederholen" (repeat question) feature replay only
+    the actual question, not the feedback that came before it — see
+    frontend/conversation.js's replayLastQuestion() and readStreamedReply().
+    """
+    return [{"text": s, "kind": kind} for s in _split_sentences(text)]
+
+
+def _acknowledge(prompt_text: str, answer_text: str) -> str:
+    """
+    Short acknowledgement after a SUFFICIENT answer, using the existing
+    behavior-profile feedback chain (study_content/prompts/). It is only
+    called once the Orchestrator has decided to advance, so the wording can
+    no longer contradict what happens next (previously it was generated
+    before the answer was judged). Follow-ups are never requested here.
+    """
+    feedback, _ = llm_provider.get_feedback_and_followup(
+        chain_with_history, profile, prompt_text, answer_text,
+        followup_allowed=False, language_code=args.language,
+    )
+    return feedback
+
+
+def process_answer(answer_text: str) -> list[dict]:
+    """
+    Process one participant message and return the reply as tagged sentences.
+
+    All interview decisions are made by the Orchestrator
+    (agents/interview_orchestrator.py): Judgment -> Navigation proposal ->
+    validation -> execution, plus the researcher-only session record. This
+    function only converts the outcome into the sentence pieces the text
+    and voice endpoints already expect.
+    """
+    outcome = handle_turn(llm, interview, recorder, answer_text, acknowledge=_acknowledge)
+    print(f"[agents] trace={json.dumps(outcome.trace, ensure_ascii=False, default=str)}")
+
+    pieces = _tag_sentences(outcome.feedback, "feedback")
+    if outcome.next_text:
+        if (outcome.next_kind == "question" and outcome.feedback
+                and profile.question_delivery == "natural_transition"):
+            # Flexible profile: blend acknowledgement and next question (meaning preserved).
+            combined = llm_provider.get_natural_transition(
+                llm, outcome.feedback, outcome.next_text, language_code=args.language)
+            return _tag_sentences(combined, "question")
+        pieces += _tag_sentences(outcome.next_text, outcome.next_kind)
+    return pieces
+
+
+def _start_new_session() -> None:
+    """Reset interview state, start a new session record and forget the
+    previous participant's acknowledgement-chat history."""
+    interview.reset()
+    recorder.start()
+    llm_provider.chat_sessions.clear()
+
+
+@app.route("/api/interview/start", methods=["GET"])
+def interview_start_endpoint():
+    """
+    Called once when the participant opens the page: returns the framing
+    message and the first fixed question, verbatim from the active
+    interview guide. No LLM call is involved — there is nothing to
+    generate yet, only fixed text to present.
+    Returns JSON: {"message": "..."}.
+    """
+    _start_new_session()
+    first_question = interview.current_question()
+    if first_question is None:
+        # An empty guide (e.g. a guide file with no questions yet).
+        message = interview.framing_message
+    else:
+        message = f"{interview.framing_message} {interview.presentation_text(first_question)}".strip()
+    return jsonify({"message": message})
+
+
+@app.route("/api/interview/start/audio", methods=["GET"])
+def interview_start_audio_endpoint():
+    """
+    Voice-condition only: pre-synthesizes the opening message (framing +
+    first question) as audio, sentence by sentence. Called in the
+    background while the start overlay is still showing (see
+    frontend/conversation.js), so spoken playback can begin immediately
+    once "Interview starten" is clicked, instead of only starting to
+    synthesize at that point.
+
+    Unlike /api/chat/audio, this is returned as one plain JSON object, not
+    a stream — the whole point of fetching it in the background is that it
+    is ready and waiting well before it's actually needed, so there's no
+    time-to-first-sound pressure here the way there is for a live reply.
+
+    Returns JSON: {"pieces": [{"text": "...", "audio": "...base64...", "kind": "..."}, ...]}.
+    "kind" is "framing" or "question" — lets the browser's "Frage
+    wiederholen" repeat just the question, not the greeting, consistent
+    with how later turns are tagged (see process_answer()).
+    """
+    first_question = interview.current_question()
+
+    tagged_sentences = _tag_sentences(interview.framing_message, "framing")
+    if first_question is not None:
+        tagged_sentences += _tag_sentences(interview.presentation_text(first_question), "question")
+
+    pieces = []
+    for sentence in tagged_sentences:
+        sample_rate, audio_array = get_tts().synthesize(sentence["text"])
+        audio_base64 = speech.encode_wav_base64(sample_rate, audio_array)
+        pieces.append({"text": sentence["text"], "audio": audio_base64, "kind": sentence["kind"]})
+
+    return jsonify({"pieces": pieces})
+
+
+@app.route("/api/chat", methods=["POST"])
+def chat_endpoint():
+    """
+    Text-condition endpoint: the participant typed an answer in the browser.
+    Expects JSON: {"text": "..."}.
+    Returns JSON: {"response": "...", "finished": bool} — see process_answer()
+    for what "response" might contain (feedback + next question, feedback +
+    a follow-up, or the closing message). "finished" is true once the
+    entire guide has been completed (the closing message was just given,
+    or already had been before this call) — the frontend uses this to stop
+    offering further answers instead of silently repeating the closing
+    message. "safety_flag" is true if the participant's own answer matched
+    a configured safety keyword (see backend/safety_check.py) — the
+    frontend shows a calm, non-blocking hint with support resources when
+    true; the interview is not interrupted.
+    """
+    data = request.get_json(silent=True) or {}
+    answer_text = (data.get("text") or "").strip()
+    if not answer_text:
+        return jsonify({"error": "Kein Text eingegeben."}), 400
+
+    safety_flag = safety_check.check_for_safety_concern(answer_text, args.language)
+    if safety_flag:
+        print("[safety] Stichwort in der Antwort der teilnehmenden Person erkannt — Hinweis wird eingeblendet.")
+
+    pieces = process_answer(answer_text)
+    response = " ".join(p["text"] for p in pieces).strip()
+    print(f"[interview] final response sent to browser: {response!r}")
+    return jsonify({"response": response, "finished": interview.is_finished(), "safety_flag": safety_flag})
+
+
+@app.route("/api/chat/audio", methods=["POST"])
+def chat_audio_endpoint():
+    """
+    Voice-condition endpoint: the participant spoke into the browser's microphone.
+    Expects multipart/form-data with an "audio" file and optional "language" field.
+
+    Streams the reply back as NDJSON (one JSON object per line), instead of
+    waiting for the whole reply to be synthesized before responding — this
+    is what Step 5b of the project plan is for: the browser can start
+    playing the first sentence while later ones are still being
+    synthesized. Line types:
+
+      {"type": "transcript", "transcript": "..."}
+        Sent first, as soon as speech-to-text is done.
+      {"type": "transcript", "transcript": "...", "safety_flag": bool}
+        Sent first, as soon as speech-to-text is done. "safety_flag" is
+        true if the participant's own words matched a configured safety
+        keyword (see backend/safety_check.py) — the frontend shows a
+        calm, non-blocking hint with support resources when true; the
+        interview is not interrupted.
+      {"type": "sentence", "text": "...", "audio": "...base64 wav...", "kind": "...", "is_last": bool, "finished": bool}
+        One per sentence, in speaking order. "kind" is "feedback",
+        "question", or "closing" — see process_answer() — and is what lets
+        the browser's "Frage wiederholen" replay only the question later.
+        "finished" is true once the entire guide has been completed —
+        the frontend uses this to stop offering further answers instead
+        of silently repeating the closing message.
+      {"type": "error", "message": "..."}
+        Sent instead of a "sentence" line if synthesizing one sentence
+        fails; playback of anything already sent is unaffected.
+    """
+    audio_file = request.files.get("audio")
+    if not audio_file:
+        return jsonify({"error": "No audio file uploaded."}), 400
+
+    language = request.form.get("language") or args.language
+    try:
+        audio_np = speech.decode_uploaded_wav(audio_file.read())
+    except Exception as e:
+        return jsonify({"error": f"Unable to decode audio: {e}"}), 400
+
+    transcript = get_stt().transcribe(audio_np, language=language)
+    safety_flag = safety_check.check_for_safety_concern(transcript, language)
+    if safety_flag:
+        print("[safety] Stichwort in der Antwort der teilnehmenden Person erkannt — Hinweis wird eingeblendet.")
+
+    pieces = process_answer(transcript)
+    finished = interview.is_finished()
+    print(f"[interview] final response sent to browser: {' '.join(p['text'] for p in pieces)!r}")
+
+    def generate():
+        turn_start = time.time()
+
+        def elapsed():
+            return f"{time.time() - turn_start:.2f}s"
+
+        print(f"[stream] transcript sent at +{elapsed()}")
+        yield json.dumps({"type": "transcript", "transcript": transcript, "safety_flag": safety_flag}) + "\n"
+
+        # Short pause appended after every sentence except the last, so
+        # consecutive audio pieces played back-to-back in the browser still
+        # sound like natural speech instead of running into each other —
+        # same reasoning as the pause between sentences in backend/tts.py.
+        gap_seconds = 0.3
+
+        for i, piece in enumerate(pieces):
+            is_last = (i == len(pieces) - 1)
+            sentence_text = piece["text"]
+            try:
+                sample_rate, audio_array = get_tts().synthesize(sentence_text)
+                if not is_last:
+                    gap = np.zeros(int(sample_rate * gap_seconds), dtype=np.float32)
+                    audio_array = np.concatenate([audio_array, gap])
+                audio_base64 = speech.encode_wav_base64(sample_rate, audio_array)
+                print(f"[stream] sentence {i + 1}/{len(pieces)} ({piece['kind']}) sent at +{elapsed()}: {sentence_text!r}")
+                yield json.dumps({
+                    "type": "sentence",
+                    "text": sentence_text,
+                    "audio": audio_base64,
+                    "kind": piece["kind"],
+                    "is_last": is_last,
+                    "finished": finished,
+                }) + "\n"
+            except Exception as e:
+                print(f"[stream] error at +{elapsed()}: {e}")
+                yield json.dumps({"type": "error", "message": str(e)}) + "\n"
+                break
+
+    return Response(generate(), mimetype="application/x-ndjson")
+
+
+# --- Terminal mode (used without --web) -------------------------------------
+def run_terminal_mode():
+    """
+    A simple command-line loop: press Enter to record, speak, press Enter
+    again to stop, and the assistant replies out loud. Useful for quick local
+    testing without opening a browser.
+    """
+    print("\U0001F916 Local Voice Assistant")
+    print("\u2500" * 42)
+    selected_language = input("Which language should I use for transcription? (e.g. de, en, fr): ").strip().lower() or "en"
+
+    print(f"TTS voice: {_tts_voice}")
+    print(f"LLM model: {args.model or ('gemma3' if args.provider == 'ollama' else 'MiniMax-M2.7')}")
+    print(f"LLM provider: {args.provider}")
+    print("\u2500" * 42)
+    print("Press Ctrl+C to exit.\n")
+
+    if args.save_voice:
+        os.makedirs("voices", exist_ok=True)
+
+    response_count = 0
+    _start_new_session()
+
+    def speak(text: str):
+        """
+        Synthesize and play text out loud, sentence by sentence — the
+        first sentence starts playing as soon as it's ready, while later
+        sentences are still being synthesized, instead of waiting for the
+        whole reply (see the project plan, Step 5 "reduce latency").
+
+        Honors --save-voice by collecting the sentences actually played
+        and writing them to disk afterwards as one file, instead of
+        synthesizing everything a second time just for saving.
+        """
+        nonlocal response_count
+        sample_rate = None
+        played_chunks = []
+
+        for sr, audio_array in get_tts().synthesize_streaming(text):
+            sample_rate = sr
+            speech.play_audio(sr, audio_array)
+            if args.save_voice:
+                played_chunks.append(audio_array)
+
+        if args.save_voice and played_chunks:
+            response_count += 1
+            filename = f"voices/response_{response_count:03d}.wav"
+            full_audio = np.concatenate(played_chunks)
+            speech.write_wav_file(filename, sample_rate, full_audio)
+            print(f"Voice saved to: {filename}")
+
+    try:
+        # The framing message and the first fixed question open the
+        # interview — presented verbatim, no LLM call needed.
+        first_question = interview.current_question()
+        if first_question is None:
+            print(f"Assistant: {interview.framing_message}")
+            speak(interview.framing_message)
+            print("(This interview guide has no questions yet.)")
+            return
+        opening = f"{interview.framing_message} {interview.presentation_text(first_question)}".strip()
+        print(f"Assistant: {opening}")
+        speak(opening)
+
+        while not interview.is_finished():
+            input("\U0001F3A4 Press Enter to start recording your answer, then press Enter again to stop.")
+
+            data_queue: Queue = Queue()
+            stop_event = threading.Event()
+            recording_thread = threading.Thread(
+                target=speech.record_audio,
+                args=(stop_event, data_queue),
+            )
+            recording_thread.start()
+
+            input()
+            stop_event.set()
+            recording_thread.join()
+
+            audio_data = b"".join(list(data_queue.queue))
+            audio_np = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+
+            if audio_np.size == 0:
+                print("No audio recorded. Please ensure your microphone is working.")
+                continue
+
+            print("Transcribing...")
+            answer_text = get_stt().transcribe(audio_np, language=selected_language)
+            print(f"You: {answer_text}")
+
+            print("Generating response...")
+            pieces = process_answer(answer_text)
+            combined = " ".join(p["text"] for p in pieces).strip()
+
+            print(f"Assistant: {combined}")
+            speak(combined)
+
+    except KeyboardInterrupt:
+        print("\nExiting...")
+
+    print("Session ended. Thank you for using the assistant!")
+
+
+if __name__ == "__main__":
+    if args.web:
+        print("\U0001F916 Starting Flask web server for Local Voice Assistant")
+        print(f"Open http://127.0.0.1:{args.port} in your browser to connect.")
+        # threaded=True so the streamed /api/chat/audio response (Step 5b)
+        # is served promptly rather than potentially waiting behind other
+        # requests (e.g. the browser's static-file polling).
+        app.run(host="127.0.0.1", port=args.port, threaded=True)
+    else:
+        run_terminal_mode()
+
+
+==========================================================================================
+FILE: tests\test_agents.py
+==========================================================================================
+"""Unit tests for the agent workflow: Navigation decision table, Judgment
+validation rules, Question Agent output contract, guide state/transitions and
+the deterministic skip check. All model calls use scripted fakes — these are
+software-behaviour checks, not clinical validation."""
+
+import json
+import os
+import sys
+import tempfile
+import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
+
+from langchain_core.runnables import RunnableLambda
+
+from agents.interview_orchestrator import is_explicit_skip, validate_decision
+from agents.judgment_agent import JudgmentError, JudgmentResult, enforce_rules, judge_answer
+from agents.navigation_agent import NavigationDecision, decide_next_action
+from agents.question_agent import generate_clarification_question, validate_question
+from interview_guide import GuideConfigError, INTERVIEWS_DIR, InterviewGuide
+
+ITEM = {"id": "q1", "text": "Wie war Ihr Schlaf in den letzten zwei Wochen?",
+        "criterion": "sleep last two weeks", "rating_scheme": "none"}
+PD_ITEM = {"id": "PD1", "text": "Synthetic test item?", "criterion": "synthetic",
+           "rating_scheme": "scid5pd", "rating_anchor": "2 = two examples"}
+
+
+def write_guide(test, yaml_text):
+    """Write a temporary guide into the interviews folder and return its file name."""
+    fd, path = tempfile.mkstemp(suffix=".yaml", dir=INTERVIEWS_DIR)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(yaml_text)
+    test.addCleanup(os.remove, path)
+    return os.path.basename(path)
+
+
+def judgment(**kw):
+    """Build a schema-valid JudgmentResult with sensible defaults, overridden by kw."""
+    base = {"intent": "answer", "sufficiency": "sufficient", "missing_information": [],
+            "provisional_rating": None, "evidence_quote": "", "reasoning": "r"}
+    base.update(kw)
+    return JudgmentResult.model_validate(base)
+
+
+class TestNavigation(unittest.TestCase):
+    """The decision table in navigation_agent.py, row by row."""
+
+    def nav(self, intent, suff, used=0, budget=1):
+        """Call the Navigation Agent for the current item (successor 'q2')."""
+        return decide_next_action(intent, suff, used, budget, next_step="q2")
+
+    def test_sufficient_answer_advances(self):
+        """Sufficient answer advances."""
+        d = self.nav("answer", "sufficient")
+        self.assertEqual((d.action, d.next_step), ("advance", "q2"))
+
+    def test_sufficient_answer_advances_even_without_budget(self):
+        """Sufficient answer advances even without budget."""
+        self.assertEqual(self.nav("answer", "sufficient", used=1).action, "advance")
+
+    # EMSAG: RT01: Clarification remains available after repeated attempts.
+    def test_ambiguous_can_be_clarified_repeatedly(self):
+        """Ambiguous answers can be clarified without a numeric limit."""
+        for used in (0, 1, 5, 20):
+            d = self.nav("answer", "ambiguous", used=used)
+            self.assertEqual((d.action, d.question_mode), ("clarify", "clarify"))
+
+    def test_refusal_skips_immediately_regardless_of_budget(self):
+        """Refusal skips immediately regardless of budget."""
+        for used in (0, 1):
+            d = self.nav("refusal", "insufficient", used=used)
+            self.assertEqual((d.action, d.skip_reason), ("skip", "refused"))
+
+    def test_clarification_request_rephrases(self):
+        """Clarification request rephrases."""
+        d = self.nav("clarification_request", "insufficient")
+        self.assertEqual((d.action, d.question_mode), ("rephrase", "rephrase"))
+
+    # EMSAG: RT01: Cannot-answer follow-ups are not numerically limited.
+    def test_cannot_answer_gets_repeated_gentle_followups(self):
+        """Cannot-answer responses get gentle follow-ups unless the item says otherwise."""
+        for used in (0, 1, 5):
+            d = self.nav("cannot_answer", "insufficient", used=used)
+            self.assertEqual((d.action, d.question_mode), ("clarify", "gentle"))
+
+    def test_off_topic_and_unclear_redirect(self):
+        """Off topic and unclear redirect."""
+        for intent in ("off_topic", "unclear"):
+            self.assertEqual(self.nav(intent, "insufficient").question_mode, "redirect")
+
+    # EMSAG: RT01: Numeric zero budget does not disable clarification.
+    def test_zero_budget_still_allows_clarification(self):
+        """Clarification is allowed even when the legacy numeric budget is zero."""
+        self.assertEqual(
+            self.nav("answer", "ambiguous", budget=0).action,
+            "clarify",
+        )
+
+    def test_invalid_labels_raise(self):
+        """Invalid labels raise."""
+        with self.assertRaises(ValueError):
+            self.nav("yes", "sufficient")
+        with self.assertRaises(ValueError):
+            self.nav("answer", "present")
+
+
+class TestJudgmentRules(unittest.TestCase):
+    """Deterministic post-validation of the model output."""
+
+    def test_non_answer_cannot_be_sufficient(self):
+        """Non answer cannot be sufficient."""
+        r = enforce_rules(judgment(intent="refusal"), "none", ["nein danke"])
+        self.assertEqual(r.sufficiency, "insufficient")
+        self.assertTrue(r.validation_notes)
+
+    def test_rating_removed_for_items_without_scheme(self):
+        """Rating removed for items without scheme."""
+        r = enforce_rules(judgment(provisional_rating="2"), "none", ["x"])
+        self.assertIsNone(r.provisional_rating)
+
+    def test_rating_kept_with_verbatim_evidence(self):
+        """Rating kept with verbatim evidence."""
+        r = enforce_rules(judgment(provisional_rating="2", evidence_quote="ich meide Gruppen"),
+                          "scid5pd", ["Ja, ich meide Gruppen fast immer."])
+        self.assertEqual(r.provisional_rating, "2")
+
+    def test_rating_forced_to_unknown_when_not_sufficient(self):
+        """Rating forced to unknown when not sufficient."""
+        r = enforce_rules(judgment(sufficiency="ambiguous", provisional_rating="0",
+                                   evidence_quote="manchmal"), "scid5pd", ["manchmal"])
+        self.assertEqual(r.provisional_rating, "?")
+
+    def test_invented_evidence_is_dropped_and_rating_unknown(self):
+        """Invented evidence is dropped and rating unknown."""
+        r = enforce_rules(judgment(provisional_rating="2", evidence_quote="I always avoid people"),
+                          "scid5pd", ["Ich weiß nicht genau."])
+        self.assertEqual((r.evidence_quote, r.provisional_rating), ("", "?"))
+
+    def test_clear_negative_can_be_rated_absent(self):
+        """Clear negative can be rated absent."""
+        r = enforce_rules(judgment(provisional_rating="0", evidence_quote="Nein"), "scid5pd", ["Nein."])
+        self.assertEqual(r.provisional_rating, "0")
+
+
+class TestJudgmentAgentCalls(unittest.TestCase):
+    """judge_answer() with scripted model replies."""
+
+    def run_with(self, replies, item=ITEM):
+        """Call judge_answer() with a fake model that returns the scripted replies in order; returns (result, prompts sent)."""
+        calls = []
+
+        def fake(prompt):
+            """Scripted fake model used in this test."""
+            calls.append(prompt.to_string())
+            reply = replies[min(len(calls), len(replies)) - 1]
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+        result = judge_answer(RunnableLambda(fake), item, [{"prompt": item["text"], "answer": "Gut."}])
+        return result, calls
+
+    def test_parses_fenced_json(self):
+        """Parses fenced json."""
+        reply = "```json\n" + json.dumps({"intent": "answer", "sufficiency": "sufficient",
+                                          "missing_information": [], "reasoning": "ok"}) + "\n```"
+        result, calls = self.run_with([reply])
+        self.assertEqual(result.intent, "answer")
+        self.assertEqual(len(calls), 1)
+
+    def test_retries_once_then_succeeds(self):
+        """Retries once then succeeds."""
+        good = json.dumps({"intent": "answer", "sufficiency": "sufficient", "reasoning": "ok"})
+        result, calls = self.run_with(["not json at all", good])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(result.sufficiency, "sufficient")
+
+    def test_disallowed_values_rejected(self):
+        """Disallowed values rejected."""
+        bad = json.dumps({"intent": "yes", "sufficiency": "sufficient", "reasoning": "ok"})
+        with self.assertRaises(JudgmentError):
+            self.run_with([bad, bad])
+
+    def test_extra_fields_rejected(self):
+        """Extra fields rejected."""
+        bad = json.dumps({"intent": "answer", "sufficiency": "sufficient", "reasoning": "ok",
+                          "diagnosis": "depression"})
+        with self.assertRaises(JudgmentError):
+            self.run_with([bad, bad])
+
+    def test_provider_exception_becomes_judgment_error(self):
+        """Provider exception becomes judgment error."""
+        with self.assertRaises(JudgmentError):
+            self.run_with([ConnectionError("ollama down")])
+
+    def test_prompt_contains_item_context(self):
+        """Prompt contains item context."""
+        good = json.dumps({"intent": "answer", "sufficiency": "sufficient", "reasoning": "ok"})
+        _, calls = self.run_with([good])
+        self.assertIn("sleep last two weeks", calls[0])
+        self.assertIn("<<<Gut.>>>", calls[0])
+
+
+class TestQuestionAgent(unittest.TestCase):
+    """Output contract of the Question Agent."""
+
+    def test_rejects_verbatim_repeat(self):
+        """Rejects verbatim repeat."""
+        self.assertIsNone(validate_question(ITEM["text"], ITEM["text"]))
+
+    def test_rejects_multiple_questions(self):
+        """Rejects multiple questions."""
+        self.assertIsNone(validate_question("Wie lange? Und wie oft?", ITEM["text"]))
+
+    def test_strips_label_and_quotes(self):
+        """Strips label and quotes."""
+        self.assertEqual(validate_question('Frage: "Wie haben Sie geschlafen?"', ITEM["text"]),
+                         "Wie haben Sie geschlafen?")
+
+    def test_invalid_output_twice_returns_none(self):
+        """Invalid output twice returns none."""
+        llm = RunnableLambda(lambda p: "Keine Frage hier.")
+        self.assertIsNone(generate_clarification_question(llm, ITEM, [], [], "clarify"))
+
+    def test_mode_instruction_reaches_prompt(self):
+        """Mode instruction reaches prompt."""
+        seen = []
+
+        def fake(p):
+            """Scripted fake model used in this test."""
+            seen.append(p.to_string())
+            return "Wie haben Sie in den letzten zwei Wochen geschlafen?"
+        out = generate_clarification_question(RunnableLambda(fake), ITEM, [], ["duration"], "rephrase")
+        self.assertTrue(out.endswith("?"))
+        self.assertIn("did not understand", seen[0])
+
+
+class TestGuideState(unittest.TestCase):
+    """Validation and transitions in InterviewGuide."""
+
+    GUIDE = """
+guide_id: g
+language: de
+sections:
+  - questions:
+      - {id: a, text: "A?", next_step: c}
+      - {id: b, text: "B?"}
+      - {id: c, text: "C?", max_clarifications: 0}
+"""
+
+    def test_next_step_jump_and_default_budget(self):
+        """Next step jump and default budget."""
+        g = InterviewGuide(write_guide(self, self.GUIDE))
+        self.assertEqual(g.max_clarifications(), 1)  # project default
+        self.assertEqual(g.next_item_id(), "c")
+        self.assertEqual(g.finish_item({"x": 1}, "c")["id"], "c")
+        self.assertEqual(g.max_clarifications(), 0)
+        self.assertEqual(len(g.records), 1)
+
+    # EMSAG: RT01: Guide accepts repeated clarification requests.
+    def test_clarifications_are_unlimited(self):
+        """Multiple clarification requests are accepted and counted."""
+        g = InterviewGuide(write_guide(self, self.GUIDE))
+
+        self.assertTrue(g.start_clarification("x?"))
+        self.assertTrue(g.start_clarification("y?"))
+        self.assertTrue(g.start_clarification("z?", kind="rephrase"))
+
+        self.assertEqual(g.current_clarification_count(), 3)
+
+    # EMSAG: RT01: Explicit item-level restriction must remain effective.
+    def test_explicitly_disabled_clarification_is_rejected(self):
+        """Items with allow_clarification false reject clarification."""
+        guide_text = self.GUIDE.replace(
+            '{id: a, text: "A?", next_step: c}',
+            '{id: a, text: "A?", next_step: c, allow_clarification: false}',
+        )
+        g = InterviewGuide(write_guide(self, guide_text))
+
+        self.assertFalse(g.start_clarification("Could you explain?"))
+        self.assertEqual(g.current_clarification_count(), 0)
+
+    def test_unknown_next_step_rejected(self):
+        """Unknown next step rejected."""
+        bad = self.GUIDE.replace("next_step: c", "next_step: zz")
+        with self.assertRaises(GuideConfigError):
+            InterviewGuide(write_guide(self, bad))
+
+    def test_empty_text_rejected(self):
+        """Empty text rejected."""
+        with self.assertRaises(GuideConfigError):
+            InterviewGuide(write_guide(self, self.GUIDE.replace('"A?"', '""')))
+
+    def test_ask_false_items_need_no_text(self):
+        """Ask false items need no text."""
+        guide = self.GUIDE.replace('{id: b, text: "B?"}', '{id: b, ask: false, not_asked_reason: observation}')
+        g = InterviewGuide(write_guide(self, guide))
+        self.assertEqual(g.finish_item({"x": 1}, "b")["id"], "c")  # b is recorded and passed over
+        self.assertEqual(g.records[-1]["status"], "not_asked")
+
+    def test_active_example_guide_loads_with_budget_one(self):
+        """Active example guide loads with budget one."""
+        g = InterviewGuide("depression_scid_example.yaml")
+        self.assertEqual([q["max_clarifications"] for q in g.questions], [1, 1, 1])
+        self.assertIn("NOT SCID", g.content_source)
+
+    # EMSAG: RT01: Orchestrator validation does not enforce a numeric limit.
+    def test_validate_decision_keeps_clarify_after_repeated_requests(self):
+        """Clarify decisions remain valid after repeated clarification requests."""
+        g = InterviewGuide(write_guide(self, self.GUIDE))
+        g.start_clarification("x?")
+        g.start_clarification("y?")
+
+        d = validate_decision(
+            NavigationDecision(action="clarify", reason="r"),
+            g,
+        )
+
+        self.assertEqual(d.action, "clarify")
+    # EMSAG: RT01: Orchestrator must enforce explicit item-level restrictions.
+    def test_validate_decision_rejects_clarification_when_disabled(self):
+        """Orchestrator rejects clarification for explicitly disabled items."""
+        guide_text = self.GUIDE.replace(
+            '{id: a, text: "A?", next_step: c}',
+            '{id: a, text: "A?", next_step: c, allow_clarification: false}',
+        )
+        g = InterviewGuide(write_guide(self, guide_text))
+
+        d = validate_decision(
+            NavigationDecision(action="clarify", reason="r"),
+            g,
+        )
+
+        self.assertEqual((d.action, d.skip_reason), ("skip", "unresolved"))
+
+class TestExplicitSkip(unittest.TestCase):
+    """Deterministic recognition of explicit skip commands (works without the model)."""
+    PHRASES = ["überspringen", "frage überspringen", "nächste frage", "skip"]
+
+    def test_matches_explicit_commands(self):
+        """Matches explicit commands."""
+        for text in ("überspringen", "Bitte überspringen.", "Frage überspringen!", "skip please"):
+            self.assertTrue(is_explicit_skip(text, self.PHRASES), text)
+
+    def test_ordinary_answers_do_not_match(self):
+        """Ordinary answers do not match."""
+        for text in ("Ich schlafe schlecht", "Ich würde manche Tage gern überspringen, weil sie schwer sind"):
+            self.assertFalse(is_explicit_skip(text, self.PHRASES), text)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+==========================================================================================
+FILE: tests\test_interview_flow.py
+==========================================================================================
+"""End-to-end flow tests through the actual Flask application.
+
+The participant talks to /api/interview/start and /api/chat exactly as the
+browser does. Only the language model is replaced by a scripted fake that
+returns what a competent model is expected to return for each message, so
+these tests verify the application's control flow (state, branching,
+budget, skips, records, safety, failure handling). They do NOT measure the
+quality of a real model and are not clinical validation.
+"""
+
+import json
+import os
+import re
+import shutil
+import sys
+import tempfile
+import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
+
+from langchain_core.runnables import RunnableLambda
+
+import app as app_module
+import llm_provider
+from agents.interview_orchestrator import handle_turn
+from interview_guide import INTERVIEWS_DIR, InterviewGuide
+from session_record import SessionRecorder
+
+Q1 = "Wie würden Sie Ihre Stimmung in den letzten zwei Wochen beschreiben?"
+Q2 = "Gab es Zeiten, in denen Sie sich über nichts mehr freuen konnten?"
+Q3 = "Wie war Ihr Schlaf in den letzten zwei Wochen?"
+
+# Expected classification for each scripted participant message:
+# (intent, sufficiency, missing_information, evidence_quote, provisional_rating)
+SCRIPT = {
+    "Sehr schlecht, ich bin fast jeden Tag niedergeschlagen.": ("answer", "sufficient", [], "fast jeden Tag niedergeschlagen", None),
+    "Nein.": ("answer", "sufficient", [], "Nein", None),
+    "Nein, ich schlafe gut, keine Probleme.": ("answer", "sufficient", [], "ich schlafe gut", None),
+    "Gut.": ("answer", "sufficient", [], "Gut", None),
+    "Manchmal komisch.": ("answer", "ambiguous", ["what 'komisch' means"], "komisch", None),
+    "Ich meine eher müde und gereizt.": ("answer", "sufficient", [], "müde und gereizt", None),
+    "Ich verstehe die Frage nicht.": ("clarification_request", "insufficient", ["meaning of the question"], "", None),
+    "Weiß ich nicht.": ("cannot_answer", "insufficient", ["mood description"], "", None),
+    "Dazu möchte ich nichts sagen.": ("refusal", "insufficient", [], "", None),
+    "Ich habe Hotdogs gegessen.": ("off_topic", "insufficient", ["mood description"], "", None),
+    "Hm.": ("unclear", "insufficient", ["mood description"], "", None),
+    "Hotdogs machen mich nicht glücklich.": ("answer", "ambiguous", ["whether pleasure is reduced in general, not only for one food"], "Hotdogs", None),
+    "Ich denke manchmal an Suizid.": ("answer", "sufficient", [], "Ich denke manchmal an Suizid", None),
+    "Ich will nicht darüber reden, ich denke an Suizid.": ("refusal", "insufficient", [], "", None),
+    # synthetic SCID-format test items
+    "Ja, ich meide große Gruppen fast immer, zum Beispiel bei der Arbeit und im Verein.": ("answer", "sufficient", [], "ich meide große Gruppen fast immer", "2"),
+    "Ja, ich bin sehr selbstbewusst.": ("answer", "sufficient", [], "I am never anxious", "0"),
+    "Ich verstehe die Frage immer noch nicht.": ("clarification_request", "insufficient", ["meaning of the question"], "", None,),
+    "Heute habe ich Pizza gegessen.": ("off_topic", "insufficient", ["mood description"], "", None, ),
+    "Ich habe oft Konflikte mit meiner Familie, und das belastet mich.": ( "answer", "ambiguous", ["what happens during family conflicts"], "Konflikte mit meiner Familie", None,),
+}
+
+QUESTION_AGENT_REPLIES = {
+    "did not understand": "Gemeint ist, wie Sie sich gefühlsmäßig meistens gefühlt haben: Wie ging es Ihnen in den letzten zwei Wochen?",
+    "missing detail": "Was meinen Sie genau mit diesem Gefühl?",
+    "cannot answer": "Wenn Sie nur an die letzten Tage denken, wie war Ihre Stimmung da?",
+    "unrelated": "Lassen Sie uns zur Frage zurückkehren: Wie haben Sie sich in den letzten zwei Wochen gefühlt?",
+}
+
+
+class ScriptedModel:
+    """Fake model: routes each prompt to the scripted reply of its agent."""
+
+    def __init__(self):
+        """Start in normal mode and keep every prompt each agent received, so tests can inspect them."""
+        self.mode = "ok"  # "ok" | "garbage" | "raise"
+        self.judgment_prompts = []
+        self.question_prompts = []
+        self.ack_prompts = []
+
+    def __call__(self, prompt):
+        """Route the prompt to the scripted reply of the agent it belongs to (Judgment / Question / acknowledgement)."""
+        text = prompt.to_string() if hasattr(prompt, "to_string") else str(prompt)
+        if "You are the Judgment Agent" in text:
+            self.judgment_prompts.append(text)
+            if self.mode == "garbage":
+                return "Sure! The participant seems fine."
+            if self.mode == "raise":
+                raise ConnectionError("model server not reachable")
+            latest = re.findall(r"<<<(.*?)>>>", text, re.S)[-1]
+            intent, suff, missing, quote, rating = SCRIPT[latest]
+            return json.dumps({"intent": intent, "sufficiency": suff, "missing_information": missing,
+                               "evidence_quote": quote, "provisional_rating": rating,
+                               "reasoning": "scripted"})
+        if "You are the Question Agent" in text:
+            self.question_prompts.append(text)
+            for key, reply in QUESTION_AGENT_REPLIES.items():
+                if key in text:
+                    return reply
+            return "Können Sie das bitte genauer beschreiben?"
+        self.ack_prompts.append(text)
+        return "FEEDBACK: Danke für Ihre Antwort.\nFOLLOWUP: NONE"
+
+
+class FlowTestBase(unittest.TestCase):
+    """Starts a fresh interview on the 3-question development guide through the real Flask app, with a scripted model and a temporary record folder."""
+    def setUp(self):
+        """Prepare a fresh interview, scripted model and temporary record location for each test."""
+        self.model = ScriptedModel()
+        fake = RunnableLambda(self.model)
+        app_module.llm = fake
+        app_module.chain_with_history = llm_provider.build_chain(fake)
+        self.records_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.records_dir, ignore_errors=True)
+        # These flows use the 3-question development guide regardless of the
+        # guide that is active in study_settings.yaml.
+        app_module.interview = InterviewGuide("depression_scid_example.yaml")
+        app_module.recorder = SessionRecorder(app_module.interview, directory=self.records_dir)
+        self.client = app_module.app.test_client()
+        opening = self.client.get("/api/interview/start").get_json()["message"]
+        self.assertIn(Q1, opening)
+
+    def say(self, text):
+        """Send one participant message to /api/chat and return the JSON reply."""
+        res = self.client.post("/api/chat", json={"text": text})
+        self.assertEqual(res.status_code, 200)
+        return res.get_json()
+
+    def current(self):
+        """Id of the item that is currently being asked (None at the end)."""
+        q = app_module.interview.current_question()
+        return q["id"] if q else None
+
+    def records(self):
+        """The item records collected so far."""
+        return app_module.interview.records
+
+    def saved_record(self):
+        """Load the single session-record JSON file written during the test."""
+        files = os.listdir(self.records_dir)
+        self.assertEqual(len(files), 1)
+        with open(os.path.join(self.records_dir, files[0]), encoding="utf-8") as f:
+            return json.load(f)
+
+
+class TestClearAnswers(FlowTestBase):
+    """Clear positive, clear negative and short-but-sufficient answers."""
+    def test_positive_negative_and_short_answers_complete_the_interview(self):
+        """Positive negative and short answers complete the interview."""
+        r = self.say("Sehr schlecht, ich bin fast jeden Tag niedergeschlagen.")
+        self.assertIn(Q2, r["response"])
+        r = self.say("Nein.")  # clear negative: no probing for a symptom
+        self.assertIn(Q3, r["response"])
+        r = self.say("Gut.")   # short but sufficient
+        self.assertTrue(r["finished"])
+        self.assertIn("letzte Frage", r["response"])
+        self.assertEqual([x["status"] for x in self.records()], ["answered"] * 3)
+        self.assertEqual([x["clarifications_used"] for x in self.records()], [0, 0, 0])
+        self.assertEqual(self.model.question_prompts, [])
+        saved = self.saved_record()
+        self.assertTrue(saved["finished"])
+        self.assertIn("NOT SCID", saved["content_source"])
+        self.assertIn("Not a diagnosis", saved["notice"])
+
+    def test_clear_negative_sleep_answer_is_accepted(self):
+        """Clear negative sleep answer is accepted."""
+        self.say("Gut.")
+        self.say("Nein.")
+        r = self.say("Nein, ich schlafe gut, keine Probleme.")
+        self.assertTrue(r["finished"])
+        self.assertEqual(self.records()[-1]["status"], "answered")
+        self.assertEqual(self.records()[-1]["judgment"]["sufficiency"], "sufficient")
+
+
+class TestClarifications(FlowTestBase):
+    """Ambiguous answers, explanation requests, inability to answer, off-topic replies, narrow examples and budget exhaustion."""
+    def test_ambiguous_answer_gets_one_focused_clarification(self):
+        """Ambiguous answer gets one focused clarification."""
+        r = self.say("Manchmal komisch.")
+        self.assertEqual(self.current(), "dep_01")
+        self.assertEqual(r["response"], QUESTION_AGENT_REPLIES["missing detail"])
+        self.assertIn("what 'komisch' means", self.model.question_prompts[0])
+        r = self.say("Ich meine eher müde und gereizt.")
+        self.assertIn(Q2, r["response"])
+        # The clarification answer was judged together with the first answer.
+        self.assertIn("<<<Manchmal komisch.>>>", self.model.judgment_prompts[-1])
+        rec = self.records()[0]
+        self.assertEqual((rec["status"], rec["clarifications_used"], len(rec["turns"])), ("answered", 1, 2))
+
+    # EMSAG: RT01: Repeated ambiguous answers do not trigger a numeric-limit skip.
+    def test_repeated_ambiguous_answers_keep_current_item_active(self):
+        """Repeated ambiguous answers keep the current item active."""
+        self.say("Manchmal komisch.")
+        r = self.say("Manchmal komisch.")
+
+        self.assertEqual(self.current(), "dep_01")
+        self.assertEqual(r["response"], QUESTION_AGENT_REPLIES["missing detail"])
+        self.assertEqual(self.records(), [])
+        self.assertEqual(app_module.interview.current_clarification_count(), 2)
+
+    # EMSAG: RT01: Repeated explanation requests remain on the same item.
+    def test_repeated_explanation_requests_keep_rephrasing(self):
+        """Repeated explanation requests do not force the interview to skip."""
+        for _ in range(3):
+            r = self.say("Ich verstehe die Frage nicht.")
+            self.assertEqual(self.current(), "dep_01")
+            self.assertNotIn(Q1, r["response"])
+            self.assertEqual(
+                r["response"],
+                QUESTION_AGENT_REPLIES["did not understand"],
+            )
+
+        self.assertEqual(self.records(), [])
+        self.assertEqual(app_module.interview.current_clarification_count(), 3)
+
+    # EMSAG: RT01: Repeated cannot-answer responses allow further gentle follow-ups.
+    def test_repeated_cannot_answer_responses_keep_current_item_active(self):
+        """Cannot-answer responses allow repeated gentle follow-ups."""
+        for _ in range(3):
+            r = self.say("Weiß ich nicht.")
+            self.assertEqual(
+                r["response"],
+                QUESTION_AGENT_REPLIES["cannot answer"],
+            )
+            self.assertEqual(self.current(), "dep_01")
+
+        self.assertEqual(self.records(), [])
+        self.assertEqual(app_module.interview.current_clarification_count(), 3)
+
+    # EMSAG: RT01: Repeated off-topic and unclear responses allow further redirects.
+    def test_repeated_off_topic_responses_keep_current_item_active(self):
+        """Repeated off-topic responses are redirected without a numeric limit."""
+        for _ in range(3):
+            r = self.say("Ich habe Hotdogs gegessen.")
+            self.assertEqual(
+                r["response"],
+                QUESTION_AGENT_REPLIES["unrelated"],
+            )
+            self.assertEqual(self.current(), "dep_01")
+
+        self.assertEqual(self.records(), [])
+        self.assertEqual(app_module.interview.current_clarification_count(), 3)
+
+    def test_narrow_example_is_not_treated_as_general_loss_of_pleasure(self):
+        """Narrow example is not treated as general loss of pleasure."""
+        self.say("Gut.")
+        self.say("Hotdogs machen mich nicht glücklich.")
+        self.assertEqual(self.current(), "dep_02")  # not advanced on a narrow example
+        self.assertIn("not only for one food", self.model.question_prompts[-1])
+
+
+class TestRefusalAndSkip(FlowTestBase):
+    """Refusals and explicit skip commands."""
+    def test_refusal_skips_immediately_without_persuasion(self):
+        """Refusal skips immediately without persuasion."""
+        r = self.say("Dazu möchte ich nichts sagen.")
+        self.assertIn("völlig in Ordnung", r["response"])
+        self.assertIn(Q2, r["response"])
+        self.assertEqual(self.model.question_prompts, [])
+        rec = self.records()[0]
+        self.assertEqual((rec["status"], rec["skip_reason"]), ("skipped", "refused"))
+
+    def test_explicit_skip_command_needs_no_model(self):
+        """Explicit skip command needs no model."""
+        self.model.mode = "raise"  # even with the model down
+        r = self.say("Bitte überspringen.")
+        self.assertIn(Q2, r["response"])
+        self.assertEqual(self.model.judgment_prompts, [])
+        self.assertEqual(self.records()[0]["skip_reason"], "refused")
+
+    def test_skip_during_pending_clarification(self):
+        """Skip during pending clarification."""
+        self.say("Manchmal komisch.")
+        self.say("überspringen")
+        self.assertEqual(self.current(), "dep_02")
+        self.assertEqual(self.records()[0]["skip_reason"], "refused")
+
+
+class TestSafety(FlowTestBase):
+    """The keyword safety check stays active alongside the agent workflow."""
+    def test_safety_flag_is_raised_and_interview_continues(self):
+        """Safety flag is raised and interview continues."""
+        r = self.say("Ich denke manchmal an Suizid.")
+        self.assertTrue(r["safety_flag"])
+        self.assertIn(Q2, r["response"])
+
+    def test_refusal_does_not_disable_safety_check(self):
+        """Refusal does not disable safety check."""
+        r = self.say("Ich will nicht darüber reden, ich denke an Suizid.")
+        self.assertTrue(r["safety_flag"])
+        self.assertEqual(self.records()[0]["skip_reason"], "refused")
+
+
+class TestModelFailures(FlowTestBase):
+    """Malformed or failed model responses must never advance the interview."""
+    def test_malformed_output_does_not_advance_or_use_budget_and_pauses_after_three(self):
+        """Malformed output does not advance or use budget and pauses after three."""
+        self.model.mode = "garbage"
+        for _ in range(2):
+            r = self.say("Gut.")
+            self.assertIn("technisches Problem", r["response"])
+            self.assertIn(Q1, r["response"])
+            self.assertEqual(self.current(), "dep_01")
+            self.assertEqual(app_module.interview.current_clarification_count(), 0)
+        r = self.say("Gut.")
+        self.assertIn("pausiert", r["response"])
+        self.assertEqual(self.records(), [])  # nothing recorded as a participant result
+        events = self.saved_record()["system_events"]
+        self.assertEqual(len(events), 3)
+        self.assertTrue(all(e["kind"] == "judgment_failure" for e in events))
+        # Recovery: model back, interview still paused until restarted.
+        self.model.mode = "ok"
+        self.assertIn("pausiert", self.say("Gut.")["response"])
+
+    def test_temporary_failure_then_success_continues_normally(self):
+        """Temporary failure then success continues normally."""
+        self.model.mode = "raise"
+        self.say("Gut.")
+        self.model.mode = "ok"
+        r = self.say("Gut.")
+        self.assertIn(Q2, r["response"])
+        rec = self.records()[0]
+        self.assertEqual(len(rec["turns"]), 1)  # the failed attempt is not stored as evidence
+
+
+class TestProvisionalRatings(unittest.TestCase):
+    """Rating path with SYNTHETIC test items in SCID-5-PD format (not SCID wording)."""
+
+    GUIDE = """
+guide_id: synthetic_pd
+language: de
+rating_scheme: scid5pd
+sections:
+  - questions:
+      - {id: T1, text: "Synthetische Testfrage eins?", criterion: "synthetic avoidance", rating_anchor: "2 = several examples"}
+      - {id: T2, text: "Synthetische Testfrage zwei?", criterion: "synthetic"}
+      - {id: T3, text: "Synthetische Testfrage drei?", criterion: "synthetic"}
+"""
+
+    def setUp(self):
+        """Prepare a fresh interview, scripted model and temporary record location for each test."""
+        fd, path = tempfile.mkstemp(suffix=".yaml", dir=INTERVIEWS_DIR)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(self.GUIDE)
+        self.addCleanup(os.remove, path)
+        self.guide = InterviewGuide(os.path.basename(path))
+        self.recorder = SessionRecorder(self.guide, enabled=False)
+        self.llm = RunnableLambda(ScriptedModel())
+
+    def test_ratings_are_provisional_and_skips_are_unknown(self):
+        """Ratings are provisional and skips are unknown."""
+        handle_turn(self.llm, self.guide, self.recorder,
+                    "Ja, ich meide große Gruppen fast immer, zum Beispiel bei der Arbeit und im Verein.")
+        handle_turn(self.llm, self.guide, self.recorder, "Ja, ich bin sehr selbstbewusst.")
+        handle_turn(self.llm, self.guide, self.recorder, "überspringen")
+        ratings = [r["provisional_rating"] for r in self.guide.records]
+        self.assertEqual(ratings[0]["value"], "2")
+        self.assertIn("provisional", ratings[0]["label"])
+        # invented evidence ("I am never anxious") -> rating forced to "?"
+        self.assertEqual(ratings[1]["value"], "?")
+        self.assertEqual(ratings[2]["value"], "?")  # skipped is never "0"
+        self.assertNotIn("total", json.dumps(self.recorder.to_dict()).lower())
+
+# EMSAG: Regression test to ensure that starting a speech interview
+    # creates only one session. The audio startup endpoint must not reset
+    # the interview or create a second session record. It must reuse the
+    # existing interview state and synthesize the opening question.
+class TestSessionStartup(unittest.TestCase):
+    """Session must start only once when the speech interview is opened."""
+
+    def setUp(self):
+        self.client = app_module.app.test_client()
+        self.records_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.records_dir, ignore_errors=True)
+
+        app_module.interview = InterviewGuide("depression_scid_example.yaml")
+        app_module.recorder = SessionRecorder(
+            app_module.interview,
+            directory=self.records_dir
+        )
+
+    def test_audio_start_does_not_start_a_second_session(self):
+        start_calls = []
+        original_start = app_module._start_new_session
+
+        def tracked_start():
+            start_calls.append(True)
+            original_start()
+
+        app_module._start_new_session = tracked_start
+        self.addCleanup(
+            setattr,
+            app_module,
+            "_start_new_session",
+            original_start
+        )
+
+        start_response = self.client.get("/api/interview/start")
+        self.assertEqual(start_response.status_code, 200)
+
+        first_question = app_module.interview.current_question()
+        self.assertIsNotNone(first_question)
+
+        class FakeTTS:
+            def synthesize(self, text):
+                # EMSAG: Use dummy audio data because the encoder is mocked in this test.
+                #return 22050, np.zeros(100, dtype=np.float32)
+                 return 22050, [0.0] * 100
+                # EMSAG: Use dummy audio data because the encoder is mocked in this test.
+
+
+        original_get_tts = app_module.get_tts
+        original_encode = app_module.speech.encode_wav_base64
+
+        app_module.get_tts = lambda: FakeTTS()
+        app_module.speech.encode_wav_base64 = lambda sr, audio: "fake-audio"
+
+        self.addCleanup(setattr, app_module, "get_tts", original_get_tts)
+        self.addCleanup(
+            setattr,
+            app_module.speech,
+            "encode_wav_base64",
+            original_encode
+        )
+
+        audio_response = self.client.get("/api/interview/start/audio")
+        self.assertEqual(audio_response.status_code, 200)
+
+        pieces = audio_response.get_json()["pieces"]
+
+        self.assertEqual(len(start_calls), 1)
+        self.assertEqual(
+            app_module.interview.current_question()["id"],
+            first_question["id"]
+        )
+        self.assertTrue(any(p["kind"] == "question" for p in pieces))
+        self.assertTrue(all(p["audio"] == "fake-audio" for p in pieces))
+        # EMSAG: Verify session startup count directly; JSON files are created only when save() is called.
+        #self.assertEqual(len(os.listdir(self.records_dir)), 1)
+        # EMSAG: Verify session startup count directly; JSON files are created only when save() is called.
+# EMSAG: Regression test to ensure that starting a speech interview
+    # creates only one session. The audio startup endpoint must not reset
+    # the interview or create a second session record. It must reuse the
+    # existing interview state and synthesize the opening question.
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+==========================================================================================
+FILE: tests\test_live_RT01_A_Clarification_Budget_Reset.py
+==========================================================================================
+from tests.test_interview_flow import FlowTestBase
+
+
+class TestLiveRT01ClarificationBudget(FlowTestBase):
+    """
+    RT01: Clarification requests must not consume the budget.
+    The first off-topic answer should trigger a redirection.
+    The second consecutive off-topic answer may exhaust the budget
+    and advance the interview.
+    """
+
+    GENERIC_NEXT = "Danke. Wir gehen zur nächsten Frage weiter."
+
+    def test_clarifications_do_not_consume_budget_and_off_topic_is_limited(self):
+        # ---------------------------------------------------------
+        # Step 1: First clarification request
+        # ---------------------------------------------------------
+        response1 = self.say("Ich verstehe die Frage nicht.")
+        item1 = self.current()
+
+        assert response1.get("response", "").strip()
+        assert self.current() == item1
+        assert self.GENERIC_NEXT not in response1["response"]
+
+        # ---------------------------------------------------------
+        # Step 2: Second clarification request
+        # Clarification/rephrasing must not consume the budget.
+        # ---------------------------------------------------------
+        response2 = self.say("Ich verstehe die Frage immer noch nicht.")
+        
+        assert response2.get("response", "").strip()
+        assert self.current() == item1
+        assert self.GENERIC_NEXT not in response2["response"]
+
+        # ---------------------------------------------------------
+        # Step 3: First off-topic answer
+        # The chatbot should redirect the participant to the topic.
+        # It must not skip the current item yet.
+        # ---------------------------------------------------------
+        response3 = self.say("Ich habe Hotdogs gegessen.")
+
+        assert response3.get("response", "").strip()
+        assert self.current() == item1, (
+            "The first off-topic answer must not skip the current item."
+        )
+        assert self.GENERIC_NEXT not in response3["response"], (
+            "The chatbot must not immediately say 'Danke, nächste Frage' "
+            "after the first off-topic answer."
+        )
+
+        # ---------------------------------------------------------
+        # Step 4: Second consecutive off-topic answer
+        # The off-topic allowance is now exhausted; the interview
+        # may move to the next item.
+        # ---------------------------------------------------------
+        response4 = self.say("Heute habe ich Pizza gegessen.")
+
+        assert response4.get("response", "").strip()
+        assert self.current() != item1, (
+            "After the second consecutive off-topic answer, "
+            "the current item should be skipped."
+        )
+
+
+==========================================================================================
+FILE: tests\test_live_RT04_Emotional_Acknowledgement.py
+==========================================================================================
+
+import os
+import sys
+from unittest.mock import patch
+
+import pytest
+
+# Make backend modules importable.
+BACKEND_DIR = os.path.join(os.path.dirname(__file__), "..", "backend")
+sys.path.insert(0, os.path.abspath(BACKEND_DIR))
+
+# Reuse the deterministic interview test setup.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import app as app_module
+import llm_provider
+from test_interview_flow import FlowTestBase, SCRIPT
+
+
+@pytest.fixture(scope="module")
+def real_llm():
+    """Use the configured real LLM, defaulting to local Gemma3."""
+    return llm_provider.create_llm(
+        provider=os.getenv("RT01_LLM_PROVIDER", "ollama"),
+        model=os.getenv("RT01_LLM_MODEL", "gemma3"),
+        temperature=0.0,
+    )
+
+
+EMOTIONAL_CASES = [
+    (
+        "Ich fühle mich sehr allein und habe das Gefühl, "
+        "dass sich niemand für mich interessiert.",
+        "loneliness",
+    ),
+    (
+        "Seit dem Tod eines Menschen, der mir sehr nahestand, "
+        "bin ich sehr traurig.",
+        "bereavement",
+    ),
+    (
+        "Ich fühle mich wertlos und habe kaum noch Hoffnung.",
+        "hopelessness",
+    ),
+]
+
+
+def is_generic_thanks_only(text):
+    """Detect an acknowledgement consisting only of generic thanks."""
+    normalized = " ".join(
+        (text or "").casefold().split()
+    ).strip(" .!,:;")
+
+    generic_responses = {
+        "danke",
+        "danke für ihre antwort",
+        "vielen dank",
+        "vielen dank für ihre antwort",
+    }
+
+    return normalized in generic_responses
+
+
+def is_mechanical_transition(text):
+    """Detect known generic-thanks transitions."""
+    normalized = " ".join((text or "").casefold().split())
+
+    mechanical_phrases = (
+        "danke. wir gehen zur nächsten frage weiter",
+        "danke für ihre antwort. wir gehen zur nächsten frage weiter",
+        "vielen dank. wir gehen zur nächsten frage weiter",
+        "vielen dank für ihre antwort. wir gehen zur nächsten frage weiter",
+    )
+
+    return any(
+        phrase in normalized
+        for phrase in mechanical_phrases
+    )
+
+
+def assert_empathetic_response(test_case, visible_text, scenario):
+    """Shared quality checks for emotional acknowledgement."""
+    normalized = " ".join((visible_text or "").casefold().split())
+
+    test_case.assertTrue(
+        visible_text and visible_text.strip(),
+        f"{scenario}: the visible response must not be empty.",
+    )
+
+    test_case.assertFalse(
+        is_mechanical_transition(normalized),
+        f"{scenario}: a mechanical transition was shown: "
+        f"{visible_text!r}",
+    )
+
+    test_case.assertNotIn(
+        "danke für ihre antwort",
+        normalized,
+        f"{scenario}: a generic acknowledgement was shown: "
+        f"{visible_text!r}",
+    )
+
+
+# -------------------------------------------------------------------
+# RT04a: Test acknowledgement quality directly with the real LLM.
+# -------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("answer", "scenario"),
+    EMOTIONAL_CASES,
+    ids=["loneliness", "bereavement", "hopelessness"],
+)
+def test_emotional_answer_gets_human_acknowledgement(
+    real_llm, monkeypatch, answer, scenario
+):
+    """RT04a: Emotional answers should not receive thanks alone."""
+    monkeypatch.setattr(
+        app_module,
+        "chain_with_history",
+        llm_provider.build_chain(real_llm),
+    )
+
+    prompt_text = (
+        "Wie würden Sie Ihre Stimmung in den letzten zwei Wochen "
+        "beschreiben?"
+    )
+
+    response = app_module._acknowledge(prompt_text, answer)
+    acknowledgement = (response or "").strip()
+
+    print(f"\nRT04a | Scenario: {scenario}")
+    print(f"RT04a | Answer: {answer}")
+    print(f"RT04a | Acknowledgement: {acknowledgement!r}")
+
+    assert acknowledgement, (
+        f"RT04a ({scenario}): acknowledgement is empty."
+    )
+
+    assert not is_generic_thanks_only(acknowledgement), (
+        f"RT04a ({scenario}): the model returned only generic thanks: "
+        f"{acknowledgement!r}"
+    )
+
+
+# -------------------------------------------------------------------
+# RT04b: Test the actual /api/chat flow with the real LLM.
+# -------------------------------------------------------------------
+
+class TestEmotionalAnswerFullFlow(FlowTestBase):
+
+    def test_emotional_answer_is_acknowledged_before_next_question(self):
+        """RT04b: A sufficient emotional answer gets an acknowledgement."""
+        answer = (
+            "Ich fühle mich sehr allein und habe das Gefühl, "
+            "dass sich niemand für mich interessiert."
+        )
+
+        script_patch = pytest.MonkeyPatch()
+        script_patch.setitem(
+            SCRIPT,
+            answer,
+            ("answer", "sufficient", [], answer, None),
+        )
+        self.addCleanup(script_patch.undo)
+
+        # Use the real LLM for acknowledgement generation.
+        real_llm = llm_provider.create_llm(
+            provider=os.getenv("RT01_LLM_PROVIDER", "ollama"),
+            model=os.getenv("RT01_LLM_MODEL", "gemma3"),
+            temperature=0.0,
+        )
+        app_module.chain_with_history = llm_provider.build_chain(real_llm)
+
+        response = self.say(answer)
+        visible_text = (response.get("response") or "").strip()
+        normalized = " ".join(visible_text.casefold().split())
+
+        print("\nRT04b | Scenario: loneliness")
+        print(f"RT04b | Answer: {answer}")
+        print(f"RT04b | Full response: {visible_text!r}")
+
+        self.assertTrue(
+            visible_text,
+            "RT04b: the visible response must not be empty.",
+        )
+
+        self.assertEqual(
+            self.current(),
+            "dep_02",
+            "RT04b: the interview should advance to dep_02.",
+        )
+
+        self.assertFalse(
+            is_mechanical_transition(normalized),
+            "RT04b: generic thanks followed by a mechanical transition: "
+            f"{visible_text!r}",
+        )
+
+        self.assertNotIn(
+            "danke für ihre antwort",
+            normalized,
+            "RT04b: the response contains a generic acknowledgement: "
+            f"{visible_text!r}",
+        )
+
+    # ---------------------------------------------------------------
+    # RT04c: Detect generic thanks in the normal advance flow.
+    # ---------------------------------------------------------------
+
+    def test_generic_acknowledgement_is_detected_in_full_flow(self):
+        """
+        RT04c: Generic 'Danke.' must not be passed through as the
+        acknowledgement for an emotional answer.
+        """
+        answer = (
+            "Ich fühle mich einsam, sogar wenn ich mit anderen "
+            "Menschen zusammen bin."
+        )
+
+        script_patch = pytest.MonkeyPatch()
+        script_patch.setitem(
+            SCRIPT,
+            answer,
+            ("answer", "sufficient", [], answer, None),
+        )
+        self.addCleanup(script_patch.undo)
+
+        with patch.object(
+            app_module.llm_provider,
+            "get_feedback_and_followup",
+            return_value=("Danke.", None),
+        ):
+            response = self.say(answer)
+
+        visible_text = (response.get("response") or "").strip()
+        normalized = " ".join(visible_text.casefold().split())
+
+        print("\nRT04c | Forced acknowledgement: 'Danke.'")
+        print(f"RT04c | Full response: {visible_text!r}")
+
+        self.assertTrue(
+            visible_text,
+            "RT04c: the visible response must not be empty.",
+        )
+
+        self.assertFalse(
+            is_mechanical_transition(normalized),
+            "RT04c: a mechanical transition was shown: "
+            f"{visible_text!r}",
+        )
+
+        self.assertNotIn(
+            "danke.",
+            normalized,
+            "RT04c: generic thanks was passed through to the user.",
+        )
+
+        self.assertEqual(
+            self.current(),
+            "dep_02",
+            "RT04c: the interview should advance to dep_02.",
+        )
+
+    # ---------------------------------------------------------------
+    # RT04d: Clarification budget exhausted with an ambiguous answer.
+    # ---------------------------------------------------------------
+
+    def test_ambiguous_emotional_answer_after_clarification_limit(self):
+        """
+        RT04d: If an emotional answer remains ambiguous after the
+        clarification budget is exhausted, acknowledge the emotion
+        empathetically and continue to the next interview question.
+
+        This test intentionally fails until the application implements
+        the required behaviour.
+        """
+        first_answer = (
+            "Ich weiß es nicht, ich fühle mich so fern von denen."
+        )
+        emotional_answer = (
+            "Ich fühle mich einsam, sogar wenn ich mit denen bin."
+        )
+        empathetic_feedback = (
+            "Es klingt belastend, sich selbst in Gesellschaft "
+            "einsam zu fühlen."
+        )
+
+        script_patch = pytest.MonkeyPatch()
+        script_patch.setitem(
+            SCRIPT,
+            first_answer,
+            (
+                "answer",
+                "ambiguous",
+                ["Specific feelings about the relationships"],
+                first_answer,
+                None,
+            ),
+        )
+        script_patch.setitem(
+            SCRIPT,
+            emotional_answer,
+            (
+                "answer",
+                "ambiguous",
+                ["Specific feelings about the relationships"],
+                emotional_answer,
+                None,
+            ),
+        )
+        self.addCleanup(script_patch.undo)
+
+        # First answer should consume the clarification opportunity.
+        first_response = self.say(first_answer)
+        first_text = (
+            first_response.get("response") or ""
+        ).strip()
+
+        self.assertTrue(
+            first_text,
+            "RT04d: the first response must not be empty.",
+        )
+
+        # Force a deterministic empathetic acknowledgement for the
+        # second answer. The application should use it even if it
+        # decides to skip the unresolved item.
+        with patch.object(
+            app_module.llm_provider,
+            "get_feedback_and_followup",
+            return_value=(empathetic_feedback, None),
+        ) as acknowledgement_mock:
+            response = self.say(emotional_answer)
+
+        visible_text = (response.get("response") or "").strip()
+        normalized = " ".join(visible_text.casefold().split())
+
+        print("\nRT04d | Scenario: ambiguous emotional answer after limit")
+        print(f"RT04d | First answer response: {first_text!r}")
+        print(f"RT04d | Final response: {visible_text!r}")
+
+        self.assertTrue(
+            visible_text,
+            "RT04d: the final response must not be empty.",
+        )
+
+        self.assertIn(
+            empathetic_feedback.casefold(),
+            normalized,
+            "RT04d: the configured empathetic acknowledgement must "
+            "reach the user after the clarification limit.",
+        )
+
+        self.assertFalse(
+            is_mechanical_transition(normalized),
+            "RT04d: the mechanical unresolved-skip message must not "
+            "be shown.",
+        )
+
+        self.assertNotIn(
+            "danke.",
+            normalized,
+            "RT04d: generic thanks must not replace empathy.",
+        )
+
+        acknowledgement_mock.assert_called_once()
+
+        self.assertEqual(
+            self.current(),
+            "dep_02",
+            "RT04d: the interview must continue to dep_02.",
+        )
+
+
+==========================================================================================
+FILE: tests\test_live_RT05_Contextual_Followup.py
+==========================================================================================
+"""RT05 — Regression tests: Follow-up and next-question exclusivity.
+
+Objective:
+    The chatbot must not ask a follow-up question and advance to the next
+    interview item in the same response.
+
+Test approach:
+    - Exercise the real Flask /api/chat endpoint.
+    - Use the existing ScriptedModel to make tests deterministic.
+    - Inspect visible responses, active item IDs, agent prompts and records.
+    - Print detailed diagnostics for every scenario.
+
+Important:
+    These are deterministic application-flow tests. They do not validate
+    the classification quality of the real Gemma3 model or clinical validity.
+
+Run:
+    python -m pytest -v -s tests/test_live_RT05_Contextual_Followup.py
+"""
+
+import os
+import sys
+from unittest.mock import patch
+
+# Make backend and test modules importable.
+BACKEND_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "backend")
+)
+TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+if BACKEND_DIR not in sys.path:
+    sys.path.insert(0, BACKEND_DIR)
+
+if TESTS_DIR not in sys.path:
+    sys.path.insert(0, TESTS_DIR)
+
+from test_interview_flow import (
+    FlowTestBase,
+    SCRIPT,
+    QUESTION_AGENT_REPLIES,
+    Q1,
+    Q2,
+    Q3,
+)
+
+
+FOLLOWUP = QUESTION_AGENT_REPLIES["missing detail"]
+
+# These strings indicate that the bot has started transitioning to another item.
+NEXT_QUESTION_MARKERS = (
+    "wir gehen zur nächsten frage weiter",
+    "gab es zeiten, in denen sie sich über nichts mehr freuen konnten",
+    "wie war ihr schlaf in den letzten zwei wochen",
+    "wie erfolgreich sind sie ihrer meinung nach darin",
+)
+
+
+def normalize(text):
+    """Normalize whitespace and case for robust visible-response checks."""
+    return " ".join((text or "").casefold().split())
+
+
+def print_report(
+    test_name,
+    participant_input,
+    response,
+    current_before,
+    current_after,
+    records,
+    question_prompt_count,
+    judgment_prompt_count,
+):
+    """Print a detailed diagnostic report for manual review."""
+    print("\n" + "=" * 90)
+    print(f"RT05 | TEST: {test_name}")
+    print(f"RT05 | PARTICIPANT INPUT: {participant_input!r}")
+    print(f"RT05 | BOT RESPONSE: {response!r}")
+    print(f"RT05 | CURRENT ITEM BEFORE: {current_before}")
+    print(f"RT05 | CURRENT ITEM AFTER:  {current_after}")
+    print(f"RT05 | QUESTION AGENT CALLS: {question_prompt_count}")
+    print(f"RT05 | JUDGMENT AGENT CALLS: {judgment_prompt_count}")
+    print(f"RT05 | INTERVIEW RECORDS: {records!r}")
+    print("=" * 90)
+
+
+def assert_followup_only(test_case, response, next_question):
+    """Assert that a follow-up response does not also advance the interview."""
+    visible = normalize(response)
+
+    test_case.assertTrue(
+        visible,
+        "RT05 FAIL: the bot returned an empty response.",
+    )
+
+    test_case.assertNotIn(
+        normalize(next_question),
+        visible,
+        "RT05 FAIL: the response contains the next interview question "
+        "even though a follow-up was expected.\n"
+        f"Actual response: {response!r}",
+    )
+
+    for marker in NEXT_QUESTION_MARKERS:
+        test_case.assertNotIn(
+            marker,
+            visible,
+            "RT05 FAIL: the follow-up response also contains a transition "
+            "or another interview question.\n"
+            f"Matched marker: {marker!r}\n"
+            f"Actual response: {response!r}",
+        )
+
+
+class TestLiveRT05FollowupNextQuestionExclusivity(FlowTestBase):
+    """RT05 regression tests through the browser-facing Flask endpoint."""
+
+    def test_01_ambiguous_answer_returns_followup_only(self):
+        """
+        Ambiguous answer:
+        - ask a focused follow-up;
+        - remain on dep_01;
+        - do not display Q2;
+        - do not finalize the item yet.
+        """
+        answer = "Manchmal komisch."
+        current_before = self.current()
+
+        response_json = self.say(answer)
+        response = response_json.get("response", "")
+        current_after = self.current()
+
+        print_report(
+            "RT05-01 | Ambiguous answer -> follow-up only",
+            answer,
+            response,
+            current_before,
+            current_after,
+            self.records(),
+            len(self.model.question_prompts),
+            len(self.model.judgment_prompts),
+        )
+
+        assert current_before == "dep_01"
+        assert current_after == "dep_01", (
+            "RT05 FAIL: the active item changed after the bot asked "
+            "a follow-up question."
+        )
+
+        assert response == FOLLOWUP, (
+            "RT05 FAIL: the response should contain only the expected "
+            "follow-up question.\n"
+            f"Expected: {FOLLOWUP!r}\n"
+            f"Actual:   {response!r}"
+        )
+
+        assert_followup_only(self, response, Q2)
+
+        assert len(self.model.question_prompts) == 1, (
+            "RT05 FAIL: the Question Agent should be called exactly once "
+            "for this ambiguous answer."
+        )
+
+        assert len(self.records()) == 0, (
+            "RT05 FAIL: the current item was finalized before the "
+            "participant answered the follow-up."
+        )
+
+    def test_02_followup_answer_advances_only_on_the_next_turn(self):
+        """
+        First turn: ambiguous answer -> follow-up only.
+        Second turn: sufficient clarification answer -> advance to Q2.
+        Both participant answers must be preserved in the same item record.
+        """
+        first_answer = "Manchmal komisch."
+        second_answer = "Ich meine eher müde und gereizt."
+
+        first_response = self.say(first_answer)["response"]
+        current_after_first = self.current()
+
+        print_report(
+            "RT05-02A | Initial ambiguous answer",
+            first_answer,
+            first_response,
+            "dep_01",
+            current_after_first,
+            self.records(),
+            len(self.model.question_prompts),
+            len(self.model.judgment_prompts),
+        )
+
+        assert first_response == FOLLOWUP
+        assert current_after_first == "dep_01"
+        assert_followup_only(self, first_response, Q2)
+
+        second_response = self.say(second_answer)["response"]
+        current_after_second = self.current()
+
+        print_report(
+            "RT05-02B | Follow-up answered",
+            second_answer,
+            second_response,
+            "dep_01",
+            current_after_second,
+            self.records(),
+            len(self.model.question_prompts),
+            len(self.model.judgment_prompts),
+        )
+
+        assert Q2 in second_response, (
+            "RT05 FAIL: after the clarification answer, the next question "
+            "was not displayed."
+        )
+
+        assert current_after_second == "dep_02"
+
+        record = self.records()[0]
+        assert record["status"] == "answered"
+        assert record["clarifications_used"] == 1
+        assert len(record["turns"]) == 2
+
+        recorded_answers = [turn["answer"] for turn in record["turns"]]
+        assert recorded_answers == [first_answer, second_answer], (
+            "RT05 FAIL: the original answer and clarification answer "
+            "were not preserved in the same item record."
+        )
+
+    def test_03_sufficient_first_answer_advances_without_followup(self):
+        """
+        Sufficient answer:
+        - advance to Q2;
+        - do not call the Question Agent;
+        - do not return the clarification prompt.
+        """
+        answer = "Sehr schlecht, ich bin fast jeden Tag niedergeschlagen."
+        current_before = self.current()
+
+        response = self.say(answer)["response"]
+        current_after = self.current()
+
+        print_report(
+            "RT05-03 | Sufficient answer -> next question",
+            answer,
+            response,
+            current_before,
+            current_after,
+            self.records(),
+            len(self.model.question_prompts),
+            len(self.model.judgment_prompts),
+        )
+
+        assert Q2 in response
+        assert current_after == "dep_02"
+
+        assert len(self.model.question_prompts) == 0, (
+            "RT05 FAIL: the Question Agent was called even though the "
+            "answer was classified as sufficient."
+        )
+
+        assert normalize(FOLLOWUP) not in normalize(response), (
+            "RT05 FAIL: an unnecessary follow-up was included in the "
+            "response to a sufficient answer."
+        )
+
+        assert len(self.records()) == 1
+        assert self.records()[0]["status"] == "answered"
+
+    def test_04_unresolved_answer_after_budget_does_not_loop(self):
+        """
+        First ambiguous answer -> one follow-up.
+        Second unresolved answer -> skip the item and move on.
+        The chatbot must not generate a second follow-up after the budget
+        has been exhausted.
+        """
+        answer = "Manchmal komisch."
+
+        first_response = self.say(answer)["response"]
+        current_after_first = self.current()
+
+        assert first_response == FOLLOWUP
+        assert current_after_first == "dep_01"
+
+        second_response = self.say(answer)["response"]
+        current_after_second = self.current()
+
+        print_report(
+            "RT05-04 | Clarification budget exhausted",
+            f"First answer: {answer!r}; second answer: {answer!r}",
+            f"First response: {first_response!r}; "
+            f"second response: {second_response!r}",
+            "dep_01",
+            current_after_second,
+            self.records(),
+            len(self.model.question_prompts),
+            len(self.model.judgment_prompts),
+        )
+
+        assert current_after_second == "dep_02", (
+            "RT05 FAIL: the interview did not move on after the "
+            "clarification budget was exhausted."
+        )
+
+        assert Q2 in second_response
+        assert second_response != FOLLOWUP, (
+            "RT05 FAIL: the bot repeated the follow-up after its "
+            "clarification budget had been exhausted."
+        )
+
+        record = self.records()[0]
+        assert record["status"] == "skipped"
+        assert record["skip_reason"] == "unresolved"
+        assert record["clarifications_used"] == 1
+        assert len(record["turns"]) == 2
+
+    def test_05_core_response_contract_is_mutually_exclusive(self):
+        """
+        Verify both sides of the response contract:
+        - ambiguous -> follow-up only, stay on current item;
+        - sufficient -> next question, with no follow-up.
+        """
+        cases = [
+            {
+                "name": "ambiguous",
+                "answer": "Manchmal komisch.",
+                "expected_response": FOLLOWUP,
+                "expected_item": "dep_01",
+            },
+            {
+                "name": "sufficient",
+                "answer": "Nein.",
+                "expected_response": Q2,
+                "expected_item": "dep_02",
+            },
+        ]
+
+        for case in cases:
+            with self.subTest(case=case["name"]):
+                # Keep each scenario independent by resetting the test setup.
+                # setUp() creates a fresh Flask client, model and interview.
+                self.tearDown()
+                self.setUp()
+
+                current_before = self.current()
+                response = self.say(case["answer"])["response"]
+                current_after = self.current()
+
+                print_report(
+                    f"RT05-05 | Contract table: {case['name']}",
+                    case["answer"],
+                    response,
+                    current_before,
+                    current_after,
+                    self.records(),
+                    len(self.model.question_prompts),
+                    len(self.model.judgment_prompts),
+                )
+
+                assert current_after == case["expected_item"]
+
+                if case["name"] == "ambiguous":
+                    assert response == case["expected_response"]
+                    assert_followup_only(self, response, Q2)
+                else:
+                    assert Q2 in response
+                    assert normalize(FOLLOWUP) not in normalize(response)
+
+
+    def test_06_contextual_followup_does_not_include_next_scid_question(self):
+        """
+        A contextual follow-up about family conflicts must not be combined
+        with the next SCID question in the same response.
+        """
+        answer = (
+            "Ich habe oft Konflikte mit meiner Familie, "
+            "und das belastet mich."
+        )
+        contextual_followup = (
+            "Was passiert normalerweise bei diesen Konflikten?"
+        )
+
+        current_before = self.current()
+
+        # Make the scripted Question Agent ask a topic-specific question.
+        with patch.dict(
+            QUESTION_AGENT_REPLIES,
+            {"missing detail": contextual_followup},
+        ):
+            response = self.say(answer)["response"]
+
+        current_after = self.current()
+
+        print_report(
+            "RT05-06 | Contextual follow-up without next SCID question",
+            answer,
+            response,
+            current_before,
+            current_after,
+            self.records(),
+            len(self.model.question_prompts),
+            len(self.model.judgment_prompts),
+        )
+
+        assert current_before == "dep_01"
+        assert response == contextual_followup, (
+            "RT05 FAIL: the chatbot should return only the contextual "
+            "follow-up question.\n"
+            f"Expected: {contextual_followup!r}\n"
+            f"Actual: {response!r}"
+        )
+
+        assert_followup_only(self, response, Q2)
+
+        assert current_after == "dep_01", (
+            "RT05 FAIL: the interview advanced before the participant "
+            "answered the contextual follow-up."
+        )
+
+        assert len(self.model.question_prompts) == 1
+        assert len(self.records()) == 0, (
+            "RT05 FAIL: the item was finalized before the follow-up "
+            "was answered."
+        )
+
+
+if __name__ == "__main__":
+    import pytest
+
+    raise SystemExit(
+        pytest.main(
+            [
+                "-v",
+                "-s",
+                os.path.abspath(__file__),
+            ]
+        )
+    )
+
+==========================================================================================
+FILE: tests\test_live_RT06_RT07_Refusal_Skip.py
+==========================================================================================
+
+"""RT06–RT07: Interview termination, refusal, and explicit skip."""
+
+import os
+import sys
+
+BACKEND_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "backend")
+)
+TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+if BACKEND_DIR not in sys.path:
+    sys.path.insert(0, BACKEND_DIR)
+
+if TESTS_DIR not in sys.path:
+    sys.path.insert(0, TESTS_DIR)
+
+from test_interview_flow import FlowTestBase, SCRIPT, Q2
+
+
+STOP_REQUEST = "Ich möchte das Gespräch beenden."
+ITEM_REFUSAL = "Diese Frage möchte ich nicht beantworten."
+EXPLICIT_SKIP = "Bitte überspringe diese Frage."
+
+
+def print_report(name, answer, response, before, after, finished, records):
+    print("\n" + "=" * 85)
+    print(f"TEST: {name}")
+    print(f"INPUT: {answer!r}")
+    print(f"RESPONSE: {response!r}")
+    print(f"CURRENT BEFORE: {before!r}")
+    print(f"CURRENT AFTER: {after!r}")
+    print(f"FINISHED: {finished!r}")
+    print(f"RECORDS: {records!r}")
+    print("=" * 85)
+
+
+class TestRT06RT07RefusalSkipAndTermination(FlowTestBase):
+    """Tests for the intended termination, refusal, and skip behavior."""
+
+    def setUp(self):
+        super().setUp()
+        self.original_script = SCRIPT.copy()
+
+        # The end_interview intent is an intended future capability.
+        # Production support will be implemented after the tests are fixed.
+        SCRIPT[STOP_REQUEST] = (
+            "end_interview", "insufficient", [], "", None
+        )
+        SCRIPT[ITEM_REFUSAL] = (
+            "refusal", "insufficient", [], "", None
+        )
+
+    def tearDown(self):
+        try:
+            SCRIPT.clear()
+            SCRIPT.update(self.original_script)
+        finally:
+            super().tearDown()
+
+    def test_rt06a_stop_request_ends_the_entire_interview(self):
+        """RT06-A: A stop request terminates the whole interview."""
+
+        before = self.current()
+        result = self.say(STOP_REQUEST)
+
+        response = result.get("response", "")
+        after = self.current()
+        finished = result.get("finished", False)
+        records = self.records()
+
+        print_report(
+            "RT06-A | Stop entire interview",
+            STOP_REQUEST,
+            response,
+            before,
+            after,
+            finished,
+            records,
+        )
+
+        assert before == "dep_01"
+        assert finished is True, (
+            "RT06-A FAIL: A stop request must set finished=True."
+        )
+        assert after is None, (
+            "RT06-A FAIL: No active interview item should remain."
+        )
+        assert Q2 not in response, (
+            "RT06-A FAIL: The next question must not be asked after termination."
+        )
+
+    def test_rt06b_item_refusal_skips_only_the_current_item(self):
+        """RT06-B: Refusing one question must not terminate the interview."""
+
+        before = self.current()
+        result = self.say(ITEM_REFUSAL)
+
+        response = result.get("response", "")
+        after = self.current()
+        finished = result.get("finished", False)
+        records = self.records()
+
+        print_report(
+            "RT06-B | Refuse current item only",
+            ITEM_REFUSAL,
+            response,
+            before,
+            after,
+            finished,
+            records,
+        )
+
+        assert before == "dep_01"
+        assert finished is False, (
+            "RT06-B FAIL: Refusing one item must not end the interview."
+        )
+        assert after == "dep_02", (
+            "RT06-B FAIL: The interview should advance to the next item."
+        )
+        assert Q2 in response, (
+            "RT06-B FAIL: The next question should be presented."
+        )
+        assert len(records) == 1
+        assert records[0]["status"] == "skipped"
+        assert records[0]["skip_reason"] == "refused"
+
+    def test_rt07_explicit_skip_skips_current_item_without_judgment_agent(self):
+        """RT07: An explicit skip command bypasses the Judgment Agent."""
+
+        before = self.current()
+        result = self.say(EXPLICIT_SKIP)
+
+        response = result.get("response", "")
+        after = self.current()
+        finished = result.get("finished", False)
+        records = self.records()
+
+        print_report(
+            "RT07 | Explicit skip command",
+            EXPLICIT_SKIP,
+            response,
+            before,
+            after,
+            finished,
+            records,
+        )
+
+        assert before == "dep_01"
+        assert after == "dep_02", (
+            "RT07 FAIL: The explicit skip command must skip the current item."
+        )
+        assert finished is False, (
+            "RT07 FAIL: Skipping one item must not terminate the interview."
+        )
+        assert Q2 in response, (
+            "RT07 FAIL: The next interview question should be displayed."
+        )
+        assert len(self.model.judgment_prompts) == 0, (
+            "RT07 FAIL: Explicit skip must be handled without the Judgment Agent."
+        )
+        assert len(records) == 1
+        assert records[0]["status"] == "skipped"
+        assert records[0]["skip_reason"] == "refused"
+
+
+if __name__ == "__main__":
+    import pytest
+
+    raise SystemExit(
+        pytest.main(["-v", "-s", os.path.abspath(__file__)])
+    )
+
