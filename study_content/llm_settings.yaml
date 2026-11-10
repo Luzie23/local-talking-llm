@@ -1,0 +1,120 @@
+# LLM SETTINGS — PER-AGENT MODEL PROVIDER CONFIGURATION
+# ======================================================
+# RECONSTRUCTION_PLAN.md, Phase 3, step 3.1. This file configures which
+# language model each pipeline agent talks to. Edit the values on the
+# right of each ":" — leave the setting names (on the left) as they are.
+#
+# HOW THE RESOLUTION WORKS (later wins):
+#   1. provider built-ins (backend/llm_clients.py, PROVIDER_DEFAULTS):
+#      the endpoint, the key env var, the customary default model and a
+#      provider-appropriate default timeout
+#   2. the `defaults` block below (shared by all agents)
+#   3. the agent's own block — an empty block (agent: {}) inherits
+#      everything from `defaults`
+#
+# PER-AGENT INDEPENDENCE:
+#   Each agent gets its OWN client: the agents may use different
+#   models or the same model. Information never moves between agents
+#   directly — only through the pipeline's logged and documented
+#   contracts (that is an architectural guarantee, not a setting).
+#
+# PROVIDERS:
+#   ollama      - a model running fully locally via Ollama
+#                 (http://localhost:11434). THE LOCAL-FIRST CHOICE:
+#                 real study data stays on this machine. No key needed.
+#   minimax     - the cloud API (test-only — NOT for real study data).
+#                 Key env var: MINIMAX_API_KEY
+#   litellm     - the institution's LiteLLM proxy (OpenAI-compatible;
+#                 https://llm-api.ai-lab.uni-luebeck.de, the models are
+#                 queryable via its /v1/models endpoint). Key env var:
+#                 LITELLM_API_KEY
+#   huggingface - HuggingFace Inference Providers (OpenAI-compatible;
+#                 https://api-inference.huggingface.co/v1). Key env
+#                 var: HF_TOKEN
+#
+# AVAILABLE MODELS on the institution's LiteLLM proxy
+# (copy the exact name into a `model:` field below):
+#   deepseek-v4-flash      chat/logic/code, ultra-fast, 1M context (MIT)
+#   glm-5.3                agent/reasoning MoE, 500K context (Z.ai)
+#   glm-5.3-flash          fast multimodal (text+image), 256K (MIT)
+#   gemma-4-26b-a4b-it     efficient open model, vision, 256K (Apache 2.0)
+#   qwen3.8-27b            dense 27B multimodal, agentic, 256K (Apache 2.0)
+#   gpt-oss-120b           open weights, deep reasoning, 100K (OpenAI)
+#   qwen3-vl-8b-instruct   vision/OCR, 50K (Apache 2.0)
+#   bge-m3                 EMBEDDING model for RAG — NOT a chat model
+#
+# DATA PRIVACY:
+#   * Real study data must never leave this machine (plan, local-first
+#     principle): keep REAL runs on `provider: ollama`.
+#   * minimax is test-only (external cloud). The LiteLLM proxy is
+#     institutional infrastructure — whether real study data may go
+#     there is a privacy decision that is still open.
+#
+# SECRETS:
+#   * API keys are NEVER stored in this file (gitleaks flags them, and
+#     the local-first data principle applies to keys too). Each
+#     provider reads its key from the environment variable named in
+#     `api_key_env`. Ollama needs no key.
+
+defaults:
+  provider: ollama
+  # YOUR LOCAL MODEL — change this to the model you have installed on
+  # YOUR machine; `ollama list` shows the exact model names.
+  # (This copy's reference setup uses llama3.2:3b.)
+  model: llama3.2:3b
+  temperature: 0.0       # 0.0 = deterministic (structured agent outputs)
+  # the rest stays at the built-in defaults (per-provider timeout,
+  # 3 total attempts, 1024 max output tokens) unless you set it here:
+  # timeout_s: 120
+  # max_attempts: 3
+  # max_output_tokens: 1024
+  # json_mode: false     # ask the provider for JSON output if it supports it
+
+# The Diagnostiker (Phase 3.2): evaluates the answer as far as the
+# steering decision requires (clarity, navigation values, next question
+# within the candidate set). Called on EVERY turn → low latency matters.
+# SUGGESTED CANDIDATES (final choice pending your decision):
+#   local:           the default below (real study data stays local)
+#   institution:     deepseek-v4-flash (ultra-fast reasoning, 1M context)
+# diagnostiker:
+#   provider: litellm
+#   model: deepseek-v4-flash
+diagnostiker: {}
+
+# The Sprecher (Phase 3.3): reformulates the released content without
+# changing diagnostically relevant meaning (or returns it verbatim as
+# the explicit non-default mode).
+# SUGGESTED CANDIDATES (final choice pending your decision):
+#   local:           the default (llama3.2:3b)
+#   institution:     glm-5.3-flash (fast, everyday instruction work)
+# sprecher:
+#   provider: litellm
+#   model: glm-5.3-flash
+sprecher: {}
+
+# The Validator (Phase 3.4): binding exit control, fail-closed.
+# Risk 4 of the plan: use a LARGER model here than for the other agents.
+# SUGGESTED CANDIDATES (final choice pending your decision):
+#   local:           the largest model you can run locally
+#   institution:     qwen3.8-27b (dense 27B, multi-step reasoning)
+#                    or glm-5.3 (500K context MoE, configurable
+#                    reasoning effort)
+# validator:
+#   provider: litellm
+#   model: qwen3.8-27b
+validator: {}
+
+# The Interventionsmonitor (Phase 4): the keyword/regex detection comes
+# first; an optional LLM layer for abort/injection classification may
+# be enabled here (the plan's open question 2 decides whether that is
+# allowed at all). Small specialized classifiers on HuggingFace are
+# under consideration — the choice is still open, so keep the model
+# name flexible until it is decided:
+#   https://huggingface.co/sumitranjan/PromptShield
+#   https://huggingface.co/weijianzhg/prompt-injection-classifier
+#   https://huggingface.co/Kebinnuil/suicidal_detection_model
+#   https://huggingface.co/sentinet/suicidality
+# monitor:
+#   provider: huggingface
+#   model: sumitranjan/PromptShield
+monitor: {}
