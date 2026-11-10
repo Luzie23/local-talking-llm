@@ -1,0 +1,164 @@
+@startuml
+' =====================================================================
+' Local Talking LLM — Interview Session Behavior (target architecture)
+' Sequence diagram with combined fragments (alt / loop / opt).
+' PlantUML has no native Interaction Overview / Communication diagram,
+' so this sequence diagram carries the interaction+control-flow role.
+' Basis: RECONSTRUCTION_PLAN.md + docs/interview_navi_design.md
+' Generated: 2026-11-05, branch Z.-Version
+' =====================================================================
+
+skinparam shadowing false
+skinparam defaultFontSize 11
+skinparam sequence {
+    ParticipantBackgroundColor #FFFFFF
+    ParticipantBorderColor #3D5A80
+    ParticipantFontSize 11
+    ParticipantStereoFontSize 9
+    ArrowColor #333333
+    ArrowFontColor #444444
+    ArrowFontSize 10
+    LifeLineBorderColor #9AA5B1
+    GroupBackgroundColor #F0F4F8
+    GroupBorderColor #8A94A6
+    GroupFontSize 10
+    BoxBackgroundColor #F7F8FA
+    BoxBorderColor #8A94A6
+    BoxFontSize 11
+    BoxFontStyle bold
+    DividerBackgroundColor #E3EAF3
+    DividerFontSize 11
+}
+
+title <b>Local Talking LLM — Interview Session Behavior (Target Architecture)</b>\n\n<font:small>Sequence diagram · target behavior (today the pipeline runs with stub agents) · planned parts amber · 2026-11-05</font>
+
+legend bottom right
+  | Color | Meaning |
+  |<#FFF4D6> | **Planned** (Ph. 3–5 / 8): amber lifelines / marked messages |
+  |<#FFFFFF> | Solid flow = target behavior per RECONSTRUCTION_PLAN.md (Phases 2–5) |
+endlegend
+
+actor "Participant" as P
+participant "Frontend (Web UI)\nindex.html / conversation.js" as FE
+participant "Flask API\n(backend/app.py)" as API
+participant "STT\nfaster-whisper" as STT
+participant "InterviewSupervisor\nsole state writer" as S
+participant "InterventionsMonitor" as M <<planned · Ph. 4>> #FFF4D6
+participant "Diagnostiker (LLM)" as D <<planned · Ph. 3.2>> #FFF4D6
+participant "InterviewNavigator" as N
+participant "CriteriaEngine\n(4-valued logic)" as C
+participant "Sprecher (LLM)" as SP <<planned · Ph. 3.3>> #FFF4D6
+participant "Validator (LLM)" as V <<planned · Ph. 3.4>> #FFF4D6
+participant "OutputPort" as O
+participant "TTS — Piper" as T
+participant "InterviewRun\n(state machine)" as R
+participant "EventStore\n(JSONL audit)" as E
+
+== Run start (once per session) ==
+P -> FE : start interview (voice / text)
+FE -> API : start run\n<font:small>v1: GET /api/interview/start[/audio] · v2: reserve → run_id (planned)</font>
+API -> S : start_run(run_id)
+S -> R : create RunState · seed episode registry (now + predeclared)
+S -> E : RUN_STARTED
+API --> FE : first question (released + delivered)
+
+== Answer turn (repeats until COMPLETED or ABORTED) ==
+loop until run COMPLETED or ABORTED
+    P -> FE : answer (voice recording / text)
+    FE -> API : submit answer\n<font:small>v1: POST /api/chat[/audio] (SSE) · v2: answer-turn + run_version (planned)</font>
+    alt voice condition
+        API -> STT : transcribe(audio)
+        STT --> API : transcript
+        API -> S : transcript
+    else text condition
+        API -> S : answer text
+    end
+    S -> E : INPUT_RECEIVED · INPUT_TRANSCRIBED
+
+    S -> M : check input <i>before</i> regular processing
+    alt signal: ABORT_REQUEST (wins over everything)
+        M --> S : ABORT_REQUEST
+        S -> R : state → CLOSED (abort cause)
+        S -> E : RUN_ABORTED
+        S --> FE : structured closing message (delivered, audit persisted)
+        note right of S #F5DEDE : **session terminates gracefully** — no further processing this turn
+    else signal: SUICIDAL_LANGUAGE
+        M --> S : SUICIDAL_LANGUAGE
+        S -> E : INTERVENTION_SIGNAL
+        S --> FE : calm, non-blocking safety hint
+        note right of S : processing continues
+    else signal: PROMPT_INJECTION
+        M --> S : PROMPT_INJECTION
+        S -> E : INTERVENTION_SIGNAL
+        note right of M : additional layer only —\narchitecture stays safe even if not detected
+    else no signal
+        M --> S : clear
+    end
+
+    S -> D : assess(answer, candidate set)
+    D --> S : NavigationAssessment\n(clarity · navigation values · next question)
+    opt clarification needed (question still open)
+        S -> R : question → REVISED
+        S --> FE : clarification request (released + delivered)
+        note right of S : clarification cycle — turn ends here
+    end
+
+    S -> N : request next step
+    N -> C : evaluate criteria (online, postorder)
+    C --> N : CriterionUpdate* (SATISFIED / NOT_SATISFIED / OPEN / UNCLEAR)
+    N --> S : next question (from candidate set)
+    S -> R : question state transitions · record (question, episode)
+    opt group completed → deferred jump resolution
+        N -> N : complete_group()
+        alt plain jump to locked group
+            N -> E : jump ignored + loop_note
+        else jump with episode aspect
+            N -> R : reopen group for that episode
+            N --> S : pending_episode
+            S -> D : EpisodeDecision (episode identity)
+            D --> S : same real episode? (merge / new)
+        end
+    end
+
+    S -> SP : reformulate(ApprovedContentPackage)\n+ StudyCondition + behavior profile
+    SP --> S : SpeakerOutput
+    S -> V : validate (deterministic pre-checks + semantic)
+    alt ALLOW
+        V --> S : released
+    else REVISE — bounded revision loop
+        V --> S : ValidationDecision (reasons)
+        note right of V : reformulate via Sprecher, re-validate (bounded)
+    else BLOCK / parse error / timeout — fail-closed
+        V --> S : BLOCK
+        S -> E : VALIDATION_DECISION (bypass logged)
+        note right of S : canonical bypass → pre-approved fallback formulation
+    end
+
+    S -> O : release content
+    S -> R : delivery reserved (delivery_id)\n<font:color=#B08A2E>«planned · Ph. 5»</font>
+    S -> E : DELIVERY_RESERVED
+    alt voice condition
+        O -> T : synthesize
+        T --> FE : SSE audio chunks (kept)
+    else text condition
+        O --> FE : question text
+    else avatar condition
+        O --> FE : avatar rendering
+        note right of O #FFF4D6 : planned (output layer)
+    end
+    FE -> S : delivery ACK\n<font:color=#B08A2E>«planned · Ph. 5 — retransmit on missing ACK»</font>
+    S -> E : DELIVERY_ACKNOWLEDGED
+end
+
+opt interview finished (all required questions answered)
+    S -> R : state → COMPLETED
+    S -> E : RUN_COMPLETED
+    S --> FE : closing message
+end
+
+note over P, E #FFFFF0
+    Constraint (kept, documented Ph. 8.4): **one participant at a time** · single-process Flask · 127.0.0.1 only ·
+    real study data never leaves the machine (MiniMax = test only)
+end note
+
+@enduml

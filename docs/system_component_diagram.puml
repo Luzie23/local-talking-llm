@@ -1,0 +1,204 @@
+@startuml
+' =====================================================================
+' Local Talking LLM — Multi-Agent Interview System
+' Component diagram: implemented (white) vs. planned (amber, kept
+' blank) vs. legacy-to-retire (red).
+' Basis: RECONSTRUCTION_PLAN.md (Phases 0-8) + docs/interview_navi_design.md
+' Generated: 2026-11-05, branch Z.-Version
+' =====================================================================
+
+skinparam componentStyle uml2
+skinparam shadowing false
+skinparam defaultFontSize 12
+skinparam ranksep 45
+skinparam nodesep 28
+
+skinparam package {
+    BackgroundColor #F7F8FA
+    BorderColor #8A94A6
+    FontSize 13
+    FontStyle bold
+}
+skinparam component {
+    BackgroundColor #FFFFFF
+    BorderColor #3D5A80
+    FontSize 11
+    StereotypeFontSize 10
+}
+skinparam cloud {
+    BackgroundColor #E8F1FB
+    BorderColor #3D5A80
+    FontSize 11
+    StereotypeFontSize 10
+}
+skinparam database {
+    BackgroundColor #E8F1FB
+    BorderColor #3D5A80
+    FontSize 11
+    StereotypeFontSize 10
+}
+
+' planned / legacy color schemes (stereotype-based)
+skinparam component {
+    BackgroundColor<<planned>> #FFF4D6
+    BorderColor<<planned>> #B08A2E
+    StereotypeFontColor<<planned>> #7A5E14
+}
+skinparam component {
+    BackgroundColor<<legacy>> #F5DEDE
+    BorderColor<<legacy>> #9C4A4A
+    StereotypeFontColor<<legacy>> #6E2F2F
+}
+skinparam cloud {
+    BackgroundColor<<test-only>> #FFF4D6
+    BorderColor<<test-only>> #B08A2E
+    StereotypeFontColor<<test-only>> #7A5E14
+}
+
+title <b>Local Talking LLM — Multi-Agent Interview System</b>\n\n<font:small>Component diagram · implemented vs. planned vs. legacy · branch Z.-Version · 2026-11-05</font>
+
+legend right
+  | Color | Meaning |
+  |<#FFFFFF> | Implemented today |
+  |<#FFF4D6> | **Planned** — contents not yet clarified/built, kept blank |
+  |<#F5DEDE> | Legacy — retired at cutover |
+  |<#E8F1FB> | External system / data store |
+endlegend
+
+actor "Participant\n(microphone / browser)" as P
+
+package "FRONTEND — static, served on 127.0.0.1" as FE {
+    component "Web UI\nindex.html · conversation.js · style.css\nsingle global state · voice + text conditions\nSSE audio consumption · calm safety hint · embodiment assets" as WebUI
+    component "frontend delivery protocol\nACK / retransmission · intervention-signal display\nabort flow · canonical-fallback display · run_version re-sync" as FEProto <<planned · Ph. 5.2–5.5>>
+}
+
+package "FLASK APPLICATION (backend/app.py)" as APP {
+    component "REST + SSE API v1 (legacy)\nGET /api/interview/start[/audio]\nPOST /api/chat · POST /api/chat/audio (SSE)" as ApiV1
+    component "API v2\nrun reservation (run_id) · answer-turn · delivery (delivery_id)\nstate endpoint · idempotent answer submission · optimistic run_version" as ApiV2 <<planned · Ph. 5.1 / 5.5>>
+    component "Terminal mode (secondary UI)\nmic loop, shares the pipeline with the web UI" as Terminal
+}
+
+package "LEGACY PATH — retired at cutover" as LEGACY {
+    component "legacy pipeline process_answer()\ninterview_guide.py (linear list, index-based)\nllm_provider.py (LangChain chain, FEEDBACK:/FOLLOWUP: regex)\nsafety_check.py (keyword list → single boolean)" as LegacyPipe <<legacy>>
+}
+
+package "INTERVIEW PIPELINE — new deterministic core" as CORE {
+    component "InterviewSupervisor\norchestrator · **sole state writer** · all events logged\npipeline shape: Monitor → abort-check → Diagnostiker →\nNavigator → Sprecher → Validator → Output" as Supervisor
+    component "InterventionsMonitor" as Monitor <<planned · Ph. 4.1–4.4>>
+    component "Diagnostiker (LLM agent)" as Diagnostiker <<planned · Ph. 3.2>>
+    component "InterviewNavigator\ndeterministic tool · authoritative interview structure\ncandidate set · postorder default navigation\ncriteria jumps · episodes model · deferred group completion" as Navigator
+    component "CriteriaEngine\n4-valued logic (SATISFIED / NOT_SATISFIED / OPEN / UNCLEAR)\nonline evaluation, postorder over the hierarchy" as Criteria
+    component "Sprecher (LLM agent)" as Sprecher <<planned · Ph. 3.3>>
+    component "Semantischer Validator (LLM agent)" as Validator <<planned · Ph. 3.4>>
+    component "OutputPort\nreleased content + delivery_id;\ndelivered only after output-layer ACK" as OutputPort
+    component "InterviewRun\nstate machine · question states · episode registry\n(question, episode) once-only invariant · logged transitions" as Run
+    component "InterviewDefinition (v2 hierarchy)\nSection Group → Question Group → Single Question\nper-question answer types · import validation\n+ legacy linear-guide adapter" as Definition
+
+    note bottom of CORE
+        Agent **protocols + stubs** are implemented
+        (interview_agents.py: PassthroughMonitor,
+        StubDiagnostiker, VerbatimSprecher,
+        AllowAllValidator, InMemoryOutputPort).
+        Real LLM-backed agents: Ph. 3.2–3.4 / Ph. 4.
+    end note
+}
+
+package "LLM LAYER" as LLM {
+    component "Structured LLM client (llm_clients.py)\nper-agent provider config (LLMSettings / ProviderConfig)\nstrict structured JSON + schema validation\nFakeLLM deterministic test double · golden-output tests opt-in" as LlmClient
+    cloud "Ollama (local LLM\n— real study data stays local)" as Ollama
+    cloud "MiniMax (cloud provider)" as MiniMax <<test-only>>
+}
+
+package "MODALITY ADAPTERS (kept unchanged)" as MOD {
+    component "STT — faster-whisper\ntranscribe() · de" as Stt
+    component "TTS — Piper\nTextToSpeechService · de_DE voices (tts_models/)" as Tts
+    component "speech glue (speech.py)\nrecord / play · WAV encode/decode" as Speech
+    component "avatar output" as Avatar <<planned · output layer>>
+}
+
+package "PERSISTENCE / AUDIT TRAIL" as PERS {
+    component "EventStore (JSONL)\ntyped RunEvent log (contracts.py)" as EventStore
+    component "RunStateRepository\nRunState snapshot · atomic writes" as RunRepo
+    database "data/ — run & event stores\n(location/access: open question §5.3;\nmodel + voice version pinning: Ph. 8.3)" as DataStore <<planned · Ph. 8>>
+}
+
+package "STUDY CONTENT (researcher-editable YAML/MD, no code)" as CONTENT {
+    component "study_settings.yaml + loader\nlanguage · active guide · TTS voice" as Settings
+    component "StudyCondition in study_settings.yaml" as StudyCond <<planned · Ph. 6.1>>
+    component "Interview guides (YAML)\ndepression_scid (legacy format, no criteria)\nmanic_scid_v2 (v2 example)" as Guides
+    component "depression_scid v2 migration (real criteria, meaning units)" as GuideV2 <<planned · Ph. 6.2>>
+    component "safety_keywords.yaml (+ sources)\n→ SUICIDAL_LANGUAGE channel (Ph. 4.1)" as SafetyKw
+    component "prompts / behavior profiles\nstrict_clinical / flexible_conversational\n→ Sprecher config + Validator constraint" as Profiles
+    component "llm_settings.yaml\nper-agent provider / model / temperature" as LlmSettings
+    component "patient profile" as PatientProfile <<planned · Ph. 3 context>>
+    component "authoring frontend (researcher)\nresearcher → frontend → saved navigable object;\nYAML remains the input path until then" as Authoring <<planned · later input path>>
+}
+
+' ========================== PARTICIPANT FLOW =======================
+P --> WebUI : voice / text
+P --> Terminal : voice (mic)
+WebUI --> ApiV1 : <font:small>POST /api/chat[/audio] · SSE</font>
+WebUI ..> ApiV2 : <font:small>API v2 + delivery ACK</font>
+Terminal ..> ApiV2
+ApiV1 --> LegacyPipe
+
+' ============================ LEGACY FLOW ==========================
+LegacyPipe --> Ollama : <font:small color=#9C4A4A>legacy chain</font>
+LegacyPipe --> MiniMax : <font:small color=#9C4A4A>legacy chain</font>
+
+' =========================== TARGET FLOW ===========================
+ApiV2 ..> Supervisor : <font:small>start run · submit answer</font>
+Supervisor --> Monitor
+Monitor --> Diagnostiker
+Diagnostiker --> Navigator : <font:small>candidate set</font>
+Navigator --> Sprecher : <font:small>next question content</font>
+Sprecher --> Validator : <font:small>SpeakerOutput</font>
+Validator --> OutputPort : <font:small>released version (or canonical bypass)</font>
+
+Navigator ..> Definition : structure
+Navigator ..> Criteria : evaluate criteria
+Criteria ..> Definition
+Supervisor -right-> Run : **sole state writer**
+Supervisor --> EventStore : all events
+Run --> RunRepo
+EventStore --> DataStore
+RunRepo --> DataStore
+
+' ============================ MODALITY =============================
+ApiV2 ..> Stt : <font:small>answer audio</font>
+LegacyPipe --> Stt
+Stt --> Supervisor : <font:small>transcript</font>
+OutputPort --> Tts
+Tts --> WebUI : <font:small>SSE audio chunks (kept)</font>
+OutputPort --> WebUI : <font:small>text</font>
+OutputPort ..> Avatar
+Stt -[hidden]-> Speech
+Tts -[hidden]-> Speech
+
+' ============================ LLM LAYER ============================
+Monitor ..> LlmClient : <font:small>optional (decision §5.2)</font>
+Diagnostiker ..> LlmClient
+Sprecher ..> LlmClient
+Validator ..> LlmClient
+LlmClient --> Ollama
+LlmClient --> MiniMax
+LlmSettings --> LlmClient
+
+' =========================== STUDY CONTENT =========================
+Settings --> Supervisor : <font:small>study config</font>
+Settings ..> StudyCond
+StudyCond ..> Sprecher : <font:small>constraint</font>
+StudyCond ..> Validator : <font:small>check aspect</font>
+SafetyKw ..> Monitor
+Profiles ..> Sprecher : <font:small>config input</font>
+PatientProfile ..> Diagnostiker : <font:small>context</font>
+GuideV2 ..> Guides
+Authoring ..> Guides
+
+note bottom of APP
+    Operating constraint (kept, documented Ph. 8.4):
+    **one participant at a time** · single-process Flask
+    · 127.0.0.1 only · real study data never leaves the machine
+end note
+
+@enduml
