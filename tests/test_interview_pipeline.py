@@ -64,6 +64,7 @@ from contracts import (
     InputReceivedEvent,
     InputTranscribedEvent,
     Modality,
+    MonitorResult,
     NavigationAssessment,
     PromptInjectionSignal,
     QuestionCandidateSet,
@@ -227,29 +228,37 @@ class SignalMonitor:
     """
     Fires ONE fixed signal class on every checked input (the run/turn
     ids are filled in at check time, so one instance works for the
-    whole run).
+    whole run). Returns the MonitorResult (the signals + the intent —
+    here always ANSWER, so the steering table degrades to the
+    classic clarity-only path).
     """
 
     def __init__(self, signal: str, **fields) -> None:
         self._signal = signal
         self._fields = fields
 
-    def check(self, run_id: str, turn_id: str, transcript: str) -> list:
+    def check(self, run_id: str, turn_id: str, transcript: str) -> MonitorResult:
         if self._signal == "SUICIDALITY":
-            return [
-                SuicidalitySignal(run_id=run_id, turn_id=turn_id, **self._fields)
-            ]
-        if self._signal == "ABORT_REQUEST":
-            return [
-                AbortRequestSignal(
-                    run_id=run_id, turn_id=turn_id, **self._fields
+            return MonitorResult(
+                signals=(
+                    SuicidalitySignal(run_id=run_id, turn_id=turn_id, **self._fields),
                 )
-            ]
-        return [
-            PromptInjectionSignal(
-                run_id=run_id, turn_id=turn_id, **self._fields
             )
-        ]
+        if self._signal == "ABORT_REQUEST":
+            return MonitorResult(
+                signals=(
+                    AbortRequestSignal(
+                        run_id=run_id, turn_id=turn_id, **self._fields
+                    ),
+                )
+            )
+        return MonitorResult(
+            signals=(
+                PromptInjectionSignal(
+                    run_id=run_id, turn_id=turn_id, **self._fields
+                ),
+            )
+        )
 
 
 class ScriptedValidator:

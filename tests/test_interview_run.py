@@ -341,6 +341,137 @@ class TestSkipSemantics(unittest.TestCase):
         run.complete_run("nothing more to ask")
         self.assertIs(run.status, RunStatus.COMPLETED)
 
+    def test_participant_initiated_skip_from_delivered(self):
+        """
+        (WInf-inspired) the PARTICIPANT-INITIATED skip: the question was
+        already DELIVERED and the participant explicitly asks to skip it
+        (or refuses to answer it) — once the skip-probe threshold is
+        reached (the Supervisor probed the question first: ask why +
+        alternatives), DELIVERED -> SKIPPED is legal. The question is
+        locked exactly like a navigator skip; the skip is
+        never a negative answer (no answer is recorded — record_answer
+        is no longer possible, the question never reaches
+        ANSWER_RECORDED).
+        """
+        run = make_run()
+        run.require_question("sq_1.1.1", "nav")
+        run.reserve_question("sq_1.1.1", "nav")
+        run.deliver_question("sq_1.1.1", "output layer")
+        record = run.skip_question(
+            "sq_1.1.1",
+            "steering: skipped (explicit) — the participant "
+            "explicitly asked to skip the question",
+        )
+        self.assertIs(run.question_state("sq_1.1.1"), QuestionState.SKIPPED)
+        self.assertEqual(record.from_state, "DELIVERED")
+        self.assertEqual(record.to_state, "SKIPPED")
+        # locked: no answer can be recorded anymore, no delivery, and
+        # the question is never re-asked in this run
+        with self.assertRaises(IllegalTransitionError):
+            run.record_answer("sq_1.1.1", "too late")
+        with self.assertRaises(IllegalTransitionError):
+            run.deliver_question("sq_1.1.1", "too late")
+        # the interview continues with the remaining questions
+        run.require_question("sq_1.1.2", "nav")
+        run.reserve_question("sq_1.1.2", "nav")
+        run.deliver_question("sq_1.1.2", "output layer")
+        self.assertIs(run.status, RunStatus.ACTIVE)
+
+
+class TestReaskFromDelivered(unittest.TestCase):
+    """
+    (WInf-inspired skip probe) a question can be REVISED while it is
+    still DELIVERED — the participant asked to skip / refused BEFORE
+    answering anything, so the question is re-offered with the probe
+    (ask why + alternatives) while no answer is recorded yet:
+    DELIVERED -> REVISED -> DELIVERED (the re-ask).
+    """
+
+    def test_revised_is_legal_from_delivered(self):
+        run = make_run()
+        run.require_question("sq_1.1.1", "nav")
+        run.reserve_question("sq_1.1.1", "nav")
+        run.deliver_question("sq_1.1.1", "output layer")
+        # the skip-probe re-ask: the question is re-offered while NO
+        # answer is recorded yet (DELIVERED -> REVISED):
+        record = run.revise_question(
+            "sq_1.1.1", "steering: skip probe — ask why + alternatives"
+        )
+        self.assertEqual(record.from_state, "DELIVERED")
+        self.assertEqual(record.to_state, "REVISED")
+        self.assertTrue(run.has_revised_question())
+        # and the re-ask re-delivers (REVISED -> DELIVERED):
+        run.deliver_question("sq_1.1.1", "output layer")
+        self.assertIs(run.question_state("sq_1.1.1"), QuestionState.DELIVERED)
+        # both outcomes stay possible afterwards: the participant can
+        # still answer (and the question closes) ...
+        run.record_answer("sq_1.1.1", "participant answered after the probe")
+        run.close_question("sq_1.1.1", "no information missing")
+        self.assertIs(run.question_state("sq_1.1.1"), QuestionState.CLOSED)
+        # ... or still skip (DELIVERED -> SKIPPED, at the threshold):
+        run.require_question("sq_1.1.2", "nav")
+        run.reserve_question("sq_1.1.2", "nav")
+        run.deliver_question("sq_1.1.2", "output layer")
+        run.skip_question("sq_1.1.2", "steering: skipped (explicit)")
+        self.assertIs(run.question_state("sq_1.1.2"), QuestionState.SKIPPED)
+
+
+class TestPausedRunState(unittest.TestCase):
+    """
+    (WInf-inspired) the PAUSED run state: the participant's technical-
+    failure pause — ACTIVE -> PAUSED (pause_run), PAUSED -> ACTIVE
+    (resume_run). A paused run is frozen (no question/criterion
+    changes) but NOT terminal: only COMPLETED/ABORTED end the run.
+    """
+
+    def test_pause_and_resume(self):
+        run = make_run()
+        record = run.pause_run("failure choice: the participant pauses")
+        self.assertIs(run.status, RunStatus.PAUSED)
+        self.assertEqual(record.from_state, "ACTIVE")
+        self.assertEqual(record.to_state, "PAUSED")
+        record = run.resume_run("the participant resumes")
+        self.assertIs(run.status, RunStatus.ACTIVE)
+        self.assertEqual(record.from_state, "PAUSED")
+        self.assertEqual(record.to_state, "ACTIVE")
+        # the interview can continue after the resume
+        run.require_question("sq_1.1.1", "nav")
+        run.complete_run("nothing more to ask")
+        self.assertIs(run.status, RunStatus.COMPLETED)
+
+    def test_paused_run_is_frozen(self):
+        run = make_run()
+        run.pause_run("failure choice: the participant pauses")
+        # no question / criterion changes while PAUSED
+        with self.assertRaises(IllegalTransitionError):
+            run.require_question("sq_1.1.1", "too late")
+        with self.assertRaises(IllegalTransitionError):
+            run.set_criterion("c_one", CriterionStatus.UNCLEAR, "too late")
+        with self.assertRaises(IllegalTransitionError):
+            run.complete_run("too late")
+        with self.assertRaises(IllegalTransitionError):
+            run.abort_run("too late")
+        # but the RESUME is possible (PAUSED is not terminal)
+        run.resume_run("the participant resumes")
+        self.assertIs(run.status, RunStatus.ACTIVE)
+
+    def test_pause_is_only_from_active(self):
+        run = make_run()
+        run.complete_run("nothing more to ask")
+        # PAUSED is not reachable from a terminal state
+        with self.assertRaises(IllegalTransitionError):
+            run.pause_run("too late")
+        run2 = make_run()
+        # and resume is PAUSED -> ACTIVE only: never legal from ACTIVE
+        with self.assertRaises(IllegalTransitionError):
+            run2.resume_run("never paused")
+
+    def test_snapshot_carries_the_paused_status(self):
+        run = make_run()
+        run.pause_run("failure choice: the participant pauses")
+        snapshot = run.snapshot(1)
+        self.assertIs(snapshot.status, RunStatus.PAUSED)
+
 
 class TestTransitionLogAndSnapshot(unittest.TestCase):
     """The transition log, the RunState snapshot and the audit events."""

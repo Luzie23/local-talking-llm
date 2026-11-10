@@ -92,8 +92,12 @@ class TestStateVocabularies(unittest.TestCase):
         )
 
     def test_run_and_delivery_states(self):
+        # PAUSED (WInf-inspired): the participant's technical-failure
+        # pause — frozen but resumable (PAUSED -> ACTIVE); only
+        # COMPLETED/ABORTED are terminal.
         self.assertEqual(
-            {s.value for s in RunStatus}, {"ACTIVE", "COMPLETED", "ABORTED"}
+            {s.value for s in RunStatus},
+            {"ACTIVE", "PAUSED", "COMPLETED", "ABORTED"},
         )
         self.assertEqual(
             {s.value for s in DeliveryState},
@@ -118,10 +122,12 @@ class TestStateVocabularies(unittest.TestCase):
         )
 
     def test_event_types_include_the_input_events(self):
-        # 14 lifecycle events + input_received + input_transcribed.
-        self.assertEqual(len(EventType), 16)
+        # 14 lifecycle events + input_received + input_transcribed
+        # + model_failure (WInf-inspired technical-failure policy).
+        self.assertEqual(len(EventType), 17)
         self.assertIn("input_received", {e.value for e in EventType})
         self.assertIn("input_transcribed", {e.value for e in EventType})
+        self.assertIn("model_failure", {e.value for e in EventType})
 
 
 class TestIds(unittest.TestCase):
