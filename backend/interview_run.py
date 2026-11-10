@@ -18,10 +18,16 @@ is the sole writer of that snapshot (run the snapshot() helper).
 Transition tables (from -> legal to):
 
   RUN (RunStatus):
-      ACTIVE -> COMPLETED | ABORTED
+      ACTIVE  -> PAUSED | COMPLETED | ABORTED
+      PAUSED  -> ACTIVE            (resume — WInf-inspired: the
+                                    technical-failure pause is the
+                                    PARTICIPANT's choice, never the
+                                    system's; a paused run is frozen
+                                    but resumable, the pending question
+                                    is re-asked on resume)
       COMPLETED, ABORTED are terminal
-      (the ONLY way a run ends — no question-level transition,
-       including a skip, ends the interview)
+      (the ONLY way a run ENDS — no question-level transition,
+       including a skip, ends the interview; a pause is not an end)
   QUESTION (QuestionState):
       UNSEEN           -> REQUIRED        (the Navigator marks it required)
       REQUIRED         -> RESERVED        (reserved as the next question)
@@ -32,6 +38,26 @@ Transition tables (from -> legal to):
                                            see contracts.QuestionState)
       RESERVED         -> DELIVERED       (sent via the output layer)
       DELIVERED        -> ANSWER_RECORDED (the participant's answer is recorded)
+                         SKIPPED          (WInf-inspired participant-
+                                            initiated skip: the participant
+                                            explicitly asks to skip the
+                                            CURRENT question or refuses to
+                                            answer it — the skip happens
+                                            only once the skip-probe
+                                            threshold is reached (the
+                                            question is probed first: ask
+                                            why + alternatives); the
+                                            question is locked, and a skip
+                                            is NEVER a negative answer: no
+                                            readings are recorded, the
+                                            criteria depending on it stay
+                                            OPEN / UNCLEAR as they were)
+                         REVISED          (WInf-inspired skip-probe re-ask:
+                                            the participant asked to skip /
+                                            refused BEFORE answering anything
+                                            — the question is re-offered with
+                                            the probe (ask why + alternatives)
+                                            while no answer is recorded yet)
       ANSWER_RECORDED  -> CLOSED          (interpreted; no information missing)
                           REVISED         (interpreted; information missing -> re-ask)
       REVISED          -> DELIVERED       (re-entry for the re-ask; the
@@ -128,7 +154,21 @@ _QUESTION_TRANSITIONS: Final[dict[QuestionState, frozenset[QuestionState]]] = {
     QuestionState.UNSEEN: frozenset({QuestionState.REQUIRED}),
     QuestionState.REQUIRED: frozenset({QuestionState.RESERVED, QuestionState.SKIPPED}),
     QuestionState.RESERVED: frozenset({QuestionState.DELIVERED}),
-    QuestionState.DELIVERED: frozenset({QuestionState.ANSWER_RECORDED}),
+    # DELIVERED -> SKIPPED: the WInf-inspired participant-initiated skip
+    # (the explicit skip command / the refusal intent — once the
+    # skip-probe threshold is reached) — see the docstring table; a
+    # skip is never a negative answer.
+    # DELIVERED -> REVISED: the WInf-inspired skip-probe re-ask — the
+    # participant asked to skip BEFORE answering anything, so the
+    # question is re-offered (with the probe: ask why + alternatives)
+    # while no answer is recorded yet (REVISED -> DELIVERED again).
+    QuestionState.DELIVERED: frozenset(
+        {
+            QuestionState.ANSWER_RECORDED,
+            QuestionState.SKIPPED,
+            QuestionState.REVISED,
+        }
+    ),
     QuestionState.ANSWER_RECORDED: frozenset({QuestionState.CLOSED, QuestionState.REVISED}),
     QuestionState.REVISED: frozenset({QuestionState.DELIVERED}),
     # the episode re-open (CLOSED/SKIPPED -> REQUIRED) is the only move
@@ -149,8 +189,14 @@ _CRITERION_TRANSITIONS: Final[dict[CriterionStatus, frozenset[CriterionStatus]]]
     CriterionStatus.NOT_SATISFIED: frozenset({CriterionStatus.UNCLEAR}),
 }
 
+# The PAUSED state (WInf-inspired technical-failure policy): the
+# PARTICIPANT's choice after the configured number of consecutive model
+# failures — frozen but RESUMABLE; only COMPLETED/ABORTED are terminal.
 _RUN_TRANSITIONS: Final[dict[RunStatus, frozenset[RunStatus]]] = {
-    RunStatus.ACTIVE: frozenset({RunStatus.COMPLETED, RunStatus.ABORTED}),
+    RunStatus.ACTIVE: frozenset(
+        {RunStatus.PAUSED, RunStatus.COMPLETED, RunStatus.ABORTED}
+    ),
+    RunStatus.PAUSED: frozenset({RunStatus.ACTIVE}),
     RunStatus.COMPLETED: frozenset(),
     RunStatus.ABORTED: frozenset(),
 }
@@ -657,7 +703,14 @@ class InterviewRun:
         return self._apply_question(question_id, QuestionState.CLOSED, cause)
 
     def revise_question(self, question_id: str, cause: str) -> TransitionRecord:
-        """ANSWER_RECORDED -> REVISED: the answer lacks information, the question is re-asked."""
+        """
+        ANSWER_RECORDED -> REVISED: the answer lacks information, the
+        question is re-asked. Also DELIVERED -> REVISED (WInf-inspired
+        skip-probe re-ask): the participant asked to skip / refused
+        BEFORE answering anything, so the question is re-offered with
+        the probe (ask why + alternatives) while no answer is recorded
+        yet (REVISED -> DELIVERED again).
+        """
         _require_cause(cause)
         return self._apply_question(question_id, QuestionState.REVISED, cause)
 
@@ -669,6 +722,17 @@ class InterviewRun:
         still be evaluated, because the information is known, not
         missing. The question is locked for this run (it is never asked);
         the interview continues — skipping does not end the run.
+
+        Also DELIVERED -> SKIPPED (WInf-inspired participant-initiated
+        skip): the participant explicitly asked to skip the CURRENT
+        question or refused to answer it — the skip happens only once
+        the skip-probe threshold is reached (the question is probed
+        first: ask why + alternatives, a vague/short answer is fine).
+        Same locking semantics, one deliberate difference: the
+        information is NOT known, so a skip is NEVER a negative answer
+        — no readings are recorded and the criteria depending on it
+        stay OPEN/UNCLEAR as they were (the cause carries the skip
+        reason: explicit / refused / unresolved).
         """
         _require_cause(cause)
         return self._apply_question(question_id, QuestionState.SKIPPED, cause)
@@ -871,6 +935,28 @@ class InterviewRun:
         """ACTIVE -> ABORTED: the run ended before completion."""
         _require_cause(cause)
         return self._apply_run(RunStatus.ABORTED, cause)
+
+    def pause_run(self, cause: str) -> TransitionRecord:
+        """
+        ACTIVE -> PAUSED (WInf-inspired technical-failure policy):
+        the PARTICIPANT's explicit choice after the configured number
+        of consecutive technical (model) failures. The run is frozen
+        (no question/criterion changes while PAUSED) but NOT ended —
+        it can be resumed (resume_run). The Supervisor delivers the
+        pre-approved pause confirmation and persists the snapshot.
+        """
+        _require_cause(cause)
+        return self._apply_run(RunStatus.PAUSED, cause)
+
+    def resume_run(self, cause: str) -> TransitionRecord:
+        """
+        PAUSED -> ACTIVE: the participant resumes the paused interview.
+        The pending question (still DELIVERED — its answer was never
+        recorded) is re-asked by the Supervisor (a pure output-layer
+        retransmission, no question-state transition).
+        """
+        _require_cause(cause)
+        return self._apply_run(RunStatus.ACTIVE, cause)
 
     def abort_out_of_scope(
         self, target_ref: str, note: str = "", cause: str | None = None

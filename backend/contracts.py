@@ -95,6 +95,17 @@ class QuestionState(str, Enum):
     never asked in this run). Skipping a question does NOT end the
     interview — the run ends only via the explicit run-level transitions
     (complete_run / abort_run).
+
+    SKIPPED also covers the PARTICIPANT-INITIATED skip (WInf-inspired,
+    phase 2.5 steering): the participant explicitly asks to skip the
+    CURRENT (already delivered) question ("überspringen") or refuses to
+    answer it. The question then transitions DELIVERED -> SKIPPED and is
+    locked just like a navigator skip — with one deliberate difference:
+    the information is NOT known (nothing was recorded), so a skipped
+    question NEVER counts as a negative answer: no value readings are
+    taken, the criteria that depend on it stay OPEN/UNCLEAR as they were,
+    and the audit cause records the skip reason (explicit / refused /
+    unresolved — the per-kind re-ask budget was exhausted).
     """
 
     UNSEEN = "UNSEEN"                     # part of interview, not yet needed for patient
@@ -108,9 +119,20 @@ class QuestionState(str, Enum):
 
 
 class RunStatus(str, Enum):
-    """Lifecycle of one interview run."""
+    """
+    Lifecycle of one interview run.
+
+    PAUSED (WInf-inspired technical-failure policy, see SteeringConfig):
+    after the configured number of CONSECUTIVE technical (model) failures
+    the PARTICIPANT — not the system — may pause the run. A paused run is
+    frozen (no question/criterion changes) but RESUMABLE: PAUSED -> ACTIVE
+    re-opens it (the pending question is re-asked, its answer was never
+    recorded). A pause is never a termination: COMPLETED/ABORTED remain
+    the only terminal states.
+    """
 
     ACTIVE = "ACTIVE"
+    PAUSED = "PAUSED"
     COMPLETED = "COMPLETED"
     ABORTED = "ABORTED"
 
@@ -317,7 +339,10 @@ class SubjectKind(str, Enum):
     What a state-transition event is about — i.e. WHICH state machine
     changed. The four subjects have DIFFERENT state vocabularies, which
     is why from_state/to_state on the event are plain strings:
-      RUN       -> RunStatus      (ACTIVE -> COMPLETED / ABORTED)
+      RUN       -> RunStatus      (ACTIVE -> PAUSED / COMPLETED / ABORTED;
+                                    PAUSED -> ACTIVE — the WInf-inspired
+                                    technical-failure pause; only COMPLETED
+                                    / ABORTED are terminal)
       QUESTION  -> QuestionState  (UNSEEN -> REQUIRED -> ... -> CLOSED;
                                    CLOSED/SKIPPED -> REQUIRED only via
                                    the episode re-open, step 2.2)
@@ -356,6 +381,12 @@ class EventType(str, Enum):
     DELIVERY_DELIVERED = "delivery_delivered"
     DELIVERY_ACKNOWLEDGED = "delivery_acknowledged"
     DELIVERY_RETRANSMITTED = "delivery_retransmitted"
+    # (WInf-inspired) a technical (model/provider) failure of one agent
+    # call — NEVER a participant action: nothing advances, nothing is
+    # recorded as an answer; the participant is asked to resend, and
+    # after the configured number of consecutive failures the run can
+    # be PAUSED by the participant's choice.
+    MODEL_FAILURE = "model_failure"
 
 
 # ---------------------------------------------------------------------------
@@ -532,6 +563,53 @@ InterventionSignal = Annotated[
     Union[SuicidalitySignal, AbortRequestSignal, PromptInjectionSignal],
     Field(discriminator="signal_type"),
 ]
+
+
+class InputIntent(str, Enum):
+    """
+    WHAT the participant is doing with one input — measured by the
+    Interventionsmonitor (its second job, WInf-inspired: the monitor is
+    the component that sees EVERY input before the regular processing,
+    which is where intent measurement belongs — NOT the Diagnostiker,
+    which only evaluates an answer against the delivered question).
+
+    Lowercase values on purpose: wire vocabulary. The intent drives the
+    deterministic steering reaction table (interview_navigator.
+    steering_decision): clarification_request -> rephrase re-ask (no
+    budget), cannot_answer -> one gentle follow-up then skip, refusal ->
+    the skip-REQUEST reaction (the question is PROBED first — the
+    participant is asked why they want to skip and offered alternatives,
+    a vague/short answer is fine — and only skipped once the
+    skip-probe threshold is reached), off_topic/unclear -> one redirect
+    then skip; an ANSWER goes to the Diagnostiker for the regular
+    clarity evaluation. The default (and the pass-through stub's) value
+    is ANSWER, so the steering table degrades to the classic
+    clarity-only path.
+    """
+
+    ANSWER = "answer"
+    CLARIFICATION_REQUEST = "clarification_request"
+    CANNOT_ANSWER = "cannot_answer"
+    REFUSAL = "refusal"
+    OFF_TOPIC = "off_topic"
+    UNCLEAR = "unclear"
+
+
+class MonitorResult(BaseModel):
+    """
+    The Interventionsmonitor's result for ONE participant input
+    (contracts: the monitor `check()` returns this, not a bare signal
+    list): the fired intervention signals (the three SEPARATE typed
+    signals, possibly empty) AND the input's intent. The signals keep
+    their strict separation (never merged into one score); the intent
+    is a single classification, independent of the signals (an input can
+    carry a signal and any intent).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    signals: tuple[InterventionSignal, ...] = ()
+    intent: InputIntent = InputIntent.ANSWER
 
 
 # ---------------------------------------------------------------------------
@@ -753,6 +831,117 @@ class StudyCondition(BaseModel):
     speaker_enabled: bool = True
     interview_language: str = "de"
     behavior_profile: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# 6b. Steering policy (load this from steering_settings.yaml)
+# ---------------------------------------------------------------------------
+
+
+class SteeringConfig(BaseModel):
+    """
+    The researcher-editable STEERING policy (WInf-inspired): how the
+    deterministic reaction table (interview_navigator.steering_decision)
+    treats the per-kind re-asks of a REVISED question, which input
+    phrases are treated as explicit skip/continue/pause commands, how
+    many consecutive technical (model) failures trigger the
+    participant's pause choice, and the participant-facing fixed texts
+    of that protocol.
+
+    Loaded from study_content/steering_settings.yaml (backend/
+    steering_settings.py); every field has a default here, so a missing
+    file yields the defaults and a malformed value fails loudly at load
+    time (extra="forbid" — no silent typos).
+
+    The budgets are PER QUESTION and PER KIND: each re-ask kind has its
+    own counter, so one redirect and one gentle follow-up can happen on
+    the same question without consuming each other's budget (WInf RT-
+    policy). `None` means UNLIMITED (the rephrase re-ask, WInf RT01).
+    A question skipped because its budget was exhausted is recorded as
+    UNRESOLVED — and never as a negative answer (see QuestionState.
+    SKIPPED): no readings, the criteria stay OPEN/UNCLEAR as they were.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    # -- the per-kind re-ask thresholds (per question) --------------------
+    # the ambiguous/incomplete answer (Diagnostiker: UNCLEAR clarity)
+    max_clarifications: int = Field(default=1, ge=0)
+    # the off-topic / unclear answer (intents off_topic / unclear)
+    max_redirects: int = Field(default=1, ge=0)
+    # the "cannot answer" (intent cannot_answer)
+    max_gentle_followups: int = Field(default=1, ge=0)
+    # the "I didn't understand / ask again" (intent clarification_request)
+    # — WInf: unlimited; None = no budget at all
+    max_rephrasings: int | None = None
+    # the SKIP PROBE (the explicit skip command / the refusal intent):
+    # the question is NOT skipped immediately — the participant is
+    # asked WHY they want to skip (and offered alternatives — a
+    # vague/short answer is fine), this many times, before the question
+    # is actually skipped. 0 = immediate skip (no probe).
+    max_skip_probes: int = Field(default=1, ge=0)
+
+    # -- the deterministic command phrases (exact match after
+    #    normalization: lowercase, punctuation stripped, politeness
+    #    fillers "bitte" / "please" ignored — WInf-inspired) ---------------
+    # an input matching one of these (after normalization) skips the
+    # CURRENT question — checked BEFORE the Diagnostiker (no LLM).
+    skip_phrases: tuple[str, ...] = ("überspringen", "skip")
+    # the failure-choice commands (after N consecutive model failures):
+    continue_phrases: tuple[str, ...] = (
+        "weiter",
+        "weitermachen",
+        "continue",
+        "try again",
+    )
+    pause_phrases: tuple[str, ...] = (
+        "pause",
+        "pausieren",
+        "anhalten",
+        "stoppen",
+    )
+
+    # -- the technical-failure policy (WInf-inspired) ----------------------
+    # a technical (model/parse) failure is NEVER a participant action:
+    # nothing advances, nothing is recorded, no re-ask budget is
+    # consumed; the participant is asked to resend the answer. After
+    # this many CONSECUTIVE failures the participant CHOOSES: continue
+    # (the counter resets) or pause the run (RunStatus.PAUSED).
+    pause_after_model_failures: int = Field(default=3, ge=1)
+
+    # -- the participant-facing fixed texts (PRE-APPROVED: they bypass
+    #    the Sprecher/Validator like the terminal texts) ------------------
+    # the skip probe (the participant wants to skip — explicit command /
+    # refusal — and the probe budget still allows a probe): ask WHY +
+    # offer the alternative (a vague/short answer is fine); it is
+    # delivered with the re-asked question (FOLLOWUP):
+    skip_probe_text: str = (
+        "Bevor ich die Frage überspringe: Möchten Sie mir kurz sagen, "
+        "warum Sie sie nicht beantworten möchten? Falls Ihnen zu viele "
+        "Details schwerfallen: Sie dürfen Ihre Antwort auch vage oder "
+        "kurz halten – es muss nicht ins Detail gehen."
+    )
+    # after one technical failure (below the threshold):
+    technical_failure_text: str = (
+        "Es gab ein technisches Problem: Ihre Antwort konnte nicht "
+        "verarbeitet werden. Bitte senden Sie Ihre Antwort erneut."
+    )
+    # at the threshold: the continue / pause choice:
+    failure_choice_text: str = (
+        "Der technische Fehler ist mehrfach aufgetreten. Möchten Sie "
+        "weitermachen (die Antwort wird erneut verarbeitet) oder die "
+        "Befragung pausieren? Bitte antworten Sie mit \"weiter\" oder "
+        "\"pause\"."
+    )
+    # the participant chose continue:
+    continue_confirmation_text: str = (
+        "Alles klar — bitte senden Sie Ihre Antwort erneut."
+    )
+    # the participant chose pause (the run is PAUSED, resumable):
+    pause_confirmation_text: str = (
+        "Die Befragung ist pausiert. Sie können jederzeit "
+        "fortfahren — die offene Frage wird dann erneut gestellt."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1088,6 +1277,23 @@ class DeliveryRetransmittedEvent(RunEvent):
     attempts: int = Field(ge=1)
 
 
+class ModelFailureEvent(RunEvent):
+    """
+    One TECHNICAL (model/provider) failure of one agent call
+    (WInf-inspired failure policy): the agent's call or the parsing of
+    its structured output failed. This is a system fact, NOT a
+    participant behavior failure — the Supervisor applies the failure
+    policy (no state change, no re-ask budget consumed, the participant
+    is asked to resend the answer; after the configured number of
+    consecutive failures the participant chooses continue/pause).
+    `detail` carries the failure message for debugging/operations.
+    """
+
+    event_type: Literal["model_failure"] = "model_failure"
+    agent: AgentName
+    detail: str = ""
+
+
 # Every event the audit log can contain, as one typed union (discriminated
 # on event_type). Consumers type-hint `AnyRunEvent`; parse_event() is the
 # entry point for reading events back off disk.
@@ -1109,6 +1315,7 @@ AnyRunEvent = Annotated[
         DeliveryDeliveredEvent,
         DeliveryAcknowledgedEvent,
         DeliveryRetransmittedEvent,
+        ModelFailureEvent,
     ],
     Field(discriminator="event_type"),
 ]

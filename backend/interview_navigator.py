@@ -37,7 +37,17 @@ Responsibilities (design note, "Bezug zum Interviewer-Agenten"):
     to a decided status, the rest stay OPEN/UNCLEAR — and applies the
     DECIDED GUARD: a criterion already SATISFIED/NOT_SATISFIED is not
     re-evaluated (reopening only through UNCLEAR, step 2.2's
-    criterion transition table).
+    criterion transition table),
+   * (WInf-inspired) the DETERMINISTIC STEERING REACTIONS: the
+     explicit-skip pre-check (is_explicit_skip — normalized exact
+     match, no LLM) and the steering reaction table
+     (steering_decision — intent + answer clarity + the per-kind
+     re-ask counters + the SteeringConfig thresholds -> PROCEED /
+     REASK (clarify / redirect / gentle / rephrase) / SKIP (explicit
+     / refused / unresolved)); a skipped question never counts as a
+     negative answer (no readings, the criteria stay OPEN/UNCLEAR),
+     and a technical (model) failure is never a participant action
+     (the Supervisor's failure policy with the PAUSED run state).
 
 LOOP-BACK to an already-answered (LOCKED) target (RECONSTRUCTION_PLAN.md
 §5, open question 6 — resolved by the episode model, design addendum
@@ -75,14 +85,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import ClassVar
+from typing import ClassVar, Mapping, Sequence
+
+import re
 
 from contracts import (
+    AnswerClarity,
     CriterionStatus,
+    InputIntent,
     QuestionCandidate,
     QuestionCandidateSet,
     QuestionState,
     RunStatus,
+    SteeringConfig,
     ValueReading,
 )
 from criteria_engine import evaluate_criterion, readings_for_criterion
@@ -204,6 +219,350 @@ class GroupCompletion:
     group_id: str
     resolution: JumpResolution
     optional_skip_proposals: tuple[str, ...]
+
+
+# ---------------------------------------------------------------------------
+# STEERING — THE DETERMINISTIC STEERING REACTIONS (WInf-inspired)
+# ---------------------------------------------------------------------------
+# (WInf-inspired) the steering policy of the reference implementation:
+# one input is classified by the Interventionsmonitor (contracts.
+# InputIntent), and the reaction is DETERMINISTIC — a function of
+# (intent, answer clarity, the per-kind re-ask counters of the current
+# question, the SteeringConfig thresholds). No LLM is involved in the
+# reaction itself; the LLM (Diagnostiker, Phase 3) only supplies the
+# clarity of a plain answer, and the monitor (Phase 4) the intent.
+#
+# WInf-inspired invariants:
+#   * a technical (model) failure is NEVER a participant action —
+#     handled by the Supervisor (the pause policy with RunStatus.PAUSED);
+#   * a skipped question NEVER counts as a negative answer: no readings
+#     are recorded, the criteria depending on it stay OPEN/UNCLEAR;
+#   * a SKIP REQUEST (the explicit skip command / the refusal intent)
+#     is NOT acted on immediately: the question is PROBED first (the
+#     participant is asked WHY they want to skip and offered
+#     alternatives — a vague/short answer is fine), and only skipped
+#     once the skip-probe threshold (max_skip_probes) is reached;
+#   * the per-kind budgets are PER QUESTION and PER KIND (one redirect
+#     does not consume the gentle-follow-up budget);
+#   * clarification requests (the participant asks for the question to
+#     be rephrased) do NOT consume the clarification budget (the
+#     rephrase re-ask is unlimited by default — WInf RT01).
+
+
+class ReaskKind(Enum):
+    """
+    (WInf-inspired) the KIND of a steering re-ask of a REVISED
+    question — the kind owns its own counter (the per-kind attempt
+    counter) and its own threshold (SteeringConfig). Lowercase values:
+    wire vocabulary (the kind appears in audit causes and, in Phase 3,
+    in the Diagnostiker/Sprecher prompts).
+    """
+
+    # the answer was ambiguous/incomplete (Diagnostiker: UNCLEAR)
+    CLARIFICATION = "clarify"
+    # the answer was off-topic or unclear (intents off_topic/unclear)
+    REDIRECT = "redirect"
+    # the participant cannot answer (intent cannot_answer)
+    GENTLE = "gentle"
+    # the participant did not understand / asks again (intent
+    # clarification_request) — unlimited by default (WInf RT01)
+    REPRISE = "rephrase"
+    # the SKIP PROBE (the explicit skip command / the refusal intent):
+    # the participant wants the question skipped — the system ASKS WHY
+    # and offers alternatives (a vague/short answer is fine) before it
+    # skips (the question is probed, not skipped immediately)
+    SKIP_PROBE = "skip_probe"
+
+
+class SteeringAction(Enum):
+    """
+    (WInf-inspired) the deterministic steering action for one input:
+      PROCEED — the answer is sufficient: record + close (the classic
+                advance);
+      REASK   — the question is REVISED and re-asked (FOLLOWUP), with
+                the decision's reask_kind (the kind's counter is
+                incremented, the budget is consumed);
+      SKIP    — the question is skipped (SKIPPED, locked): the
+                participant's skip request (explicit skip command /
+                refusal) reached the skip-probe threshold, or the
+                kind's budget is exhausted (unresolved).
+    """
+
+    PROCEED = "proceed"
+    REASK = "reask"
+    SKIP = "skip"
+
+
+class SkipReason(Enum):
+    """
+    (WInf-inspired) WHY a question is skipped — the audit cause must be
+    able to say which of the three WInf skip reasons applied.
+    """
+
+    # the participant explicitly asked to skip (the deterministic
+    # skip-phrase pre-check — no LLM involved); the skip happens only
+    # once the skip-probe threshold is reached (the question is probed
+    # first: ask why + alternatives)
+    EXPLICIT = "explicit"
+    # the participant refused to answer (intent refusal); like EXPLICIT,
+    # the refusal is probed first (ask why + alternatives) and the skip
+    # happens only once the skip-probe threshold is reached
+    REFUSED = "refused"
+    # the per-kind re-ask budget was exhausted (the item stays
+    # unresolved) — recorded as unresolved, never as a negative answer
+    UNRESOLVED = "unresolved"
+
+
+@dataclass(frozen=True)
+class SteeringDecision:
+    """
+    (WInf-inspired) the outcome of the deterministic steering reaction
+    table for one input — a PROPOSAL the Supervisor applies:
+      * PROCEED — the classic record + close + advance;
+      * REASK   — apply_answer(closed=False) + revise_question (the
+                  re-ask re-enters via REVISED -> DELIVERED) + deliver
+                  the FOLLOWUP; reask_kind names the budget consumed;
+      * SKIP    — skip_question (DELIVERED -> SKIPPED) + advance;
+                  skip_reason names the WInf skip reason.
+    `reason` is a human-readable (auditable) justification.
+    """
+
+    action: SteeringAction
+    reask_kind: ReaskKind | None = None
+    skip_reason: SkipReason | None = None
+    reason: str = ""
+
+
+# (WInf-inspired) the politeness fillers the command normalization
+# ignores, so "bitte überspringen" == "überspringen" and
+# "please skip" == "skip":
+_FILLER_RE = re.compile(r"\b(bitte|please|gerne|einfach)\b")
+_MULTI_WORD_FILLER_RE = re.compile(r"\b(ich möchte|i want to)\b")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def normalize_command(text: str) -> str:
+    """
+    (WInf-inspired) normalize ONE participant input for the
+    deterministic command checks (the explicit skip command, the
+    failure-choice continue/pause commands): lowercase, everything
+    non-alphanumeric collapsed to whitespace, the politeness fillers
+    dropped, whitespace squeezed. The checks themselves are EXACT
+    matches on this normalized form — deliberately strict, so a normal
+    answer that merely contains a command word is never treated as the
+    command.
+    """
+    cleaned = re.sub(r"[^\w\s]", " ", (text or "").lower())
+    cleaned = _MULTI_WORD_FILLER_RE.sub(" ", cleaned)
+    cleaned = _FILLER_RE.sub(" ", cleaned)
+    return _WHITESPACE_RE.sub(" ", cleaned).strip()
+
+
+def is_explicit_skip(text: str, skip_phrases: Sequence[str]) -> bool:
+    """
+    (WInf-inspired) the DETERMINISTIC explicit-skip pre-check: is this
+    input an explicit skip command for the CURRENT question?
+    Normalized exact match against the configured skip phrases (no LLM,
+    no fuzzy matching — the WInf skip check is intentionally strict, so
+    a normal answer is never treated as a skip). Runs BEFORE the
+    Diagnostiker in the pipeline — the skip decision needs no LLM.
+    """
+    if not (text or "").strip():
+        return False
+    normalized = normalize_command(text)
+    if not normalized:
+        return False
+    return any(
+        normalized == normalize_command(phrase)
+        for phrase in skip_phrases
+        if (phrase or "").strip()
+    )
+
+
+def _reask_budget_left(
+    kind: ReaskKind, count: int, steering: SteeringConfig
+) -> bool:
+    """Whether the per-kind budget of ONE question still allows a re-ask."""
+    if kind is ReaskKind.CLARIFICATION:
+        limit = steering.max_clarifications
+    elif kind is ReaskKind.REDIRECT:
+        limit = steering.max_redirects
+    elif kind is ReaskKind.GENTLE:
+        limit = steering.max_gentle_followups
+    elif kind is ReaskKind.SKIP_PROBE:
+        limit = steering.max_skip_probes
+    else:  # REPRISE
+        limit = steering.max_rephrasings
+    # None = unlimited (the rephrase re-ask, WInf RT01)
+    return limit is None or count < limit
+
+
+def skip_request_decision(
+    reask_counts: Mapping[str, int],
+    steering: SteeringConfig,
+    skip_reason: SkipReason,
+) -> SteeringDecision:
+    """
+    (WInf-inspired) the reaction to a SKIP REQUEST — the explicit skip
+    command (the deterministic command check, skip_reason=EXPLICIT) or
+    the refusal intent (the monitor, skip_reason=REFUSED). The
+    question is NOT skipped immediately: while the skip-probe budget
+    (SteeringConfig.max_skip_probes, per question) still allows, the
+    system ASKS the participant WHY they want to skip and offers
+    alternatives (a vague/short answer is fine — the pre-approved
+    probe text) — the question is re-asked as a FOLLOWUP with that
+    probe (the kind skip_probe owns its counter and threshold). Only
+    once the probe threshold is reached the question is actually
+    SKIPPED (with `skip_reason`; a skip is never a negative answer).
+    """
+    kind = ReaskKind.SKIP_PROBE
+    if _reask_budget_left(kind, reask_counts.get(kind.value, 0), steering):
+        return SteeringDecision(
+            action=SteeringAction.REASK,
+            reask_kind=kind,
+            reason=(
+                "the participant wants the question skipped — it is "
+                "probed first (asked why + alternatives offered: a "
+                "vague/short answer is fine) before a skip"
+            ),
+        )
+    return SteeringDecision(
+        action=SteeringAction.SKIP,
+        skip_reason=skip_reason,
+        reason=(
+            f"the skip-probe threshold (max_skip_probes="
+            f"{steering.max_skip_probes}) is reached — the question is "
+            f"skipped ({skip_reason.value})"
+        ),
+    )
+
+
+def steering_decision(
+    intent: InputIntent,
+    clarity: AnswerClarity,
+    reask_counts: Mapping[str, int],
+    steering: SteeringConfig,
+) -> SteeringDecision:
+    """
+    (WInf-inspired) the DETERMINISTIC steering reaction table — a pure
+    function of (intent, clarity, the current question's per-kind
+    re-ask counters, the SteeringConfig):
+
+      intent REFUSAL               -> the SKIP-REQUEST reaction
+                                        (skip_request_decision — the
+                                        question is probed first: ask
+                                        why + alternatives; the skip
+                                        happens only once the
+                                        skip-probe threshold is reached)
+      intent CLARIFICATION_REQUEST -> REASK (rephrase)
+                                        [WInf RT01: unlimited by DEFAULT
+                                         (max_rephrasings=None) — does
+                                         NOT consume the clarification
+                                         budget; a finite configured
+                                         threshold still gates it]
+      intent OFF_TOPIC / UNCLEAR   -> REASK (redirect) while the budget
+                                      allows, else SKIP (unresolved)
+      intent CANNOT_ANSWER         -> REASK (gentle) while the budget
+                                      allows, else SKIP (unresolved)
+      intent ANSWER:
+        clarity CLEAR              -> PROCEED
+        clarity UNCLEAR            -> REASK (clarify) while the budget
+                                      allows, else SKIP (unresolved)
+
+    The explicit skip command is NOT part of this table either: the
+    Supervisor checks it BEFORE the Diagnostiker (is_explicit_skip —
+    no LLM involved, so it does not even need the clarity) and applies
+    the SAME skip_request_decision with SkipReason.EXPLICIT.
+    `reask_counts` maps the kind's wire value (ReaskKind.value) to the
+    number of re-asks of that kind already given for this question.
+    """
+    if intent is InputIntent.REFUSAL:
+        return skip_request_decision(reask_counts, steering, SkipReason.REFUSED)
+    if intent is InputIntent.CLARIFICATION_REQUEST:
+        kind = ReaskKind.REPRISE
+        if _reask_budget_left(kind, reask_counts.get(kind.value, 0), steering):
+            return SteeringDecision(
+                action=SteeringAction.REASK,
+                reask_kind=kind,
+                reason=(
+                    "the participant asked to have the question "
+                    "rephrased (intent: clarification_request — "
+                    "unlimited by default, WInf RT01)"
+                ),
+            )
+        return SteeringDecision(
+            action=SteeringAction.SKIP,
+            skip_reason=SkipReason.UNRESOLVED,
+            reason=(
+                "the rephrase budget is exhausted (intent: "
+                "clarification_request) — the question is skipped as "
+                "unresolved (never a negative answer)"
+            ),
+        )
+    if intent in (InputIntent.OFF_TOPIC, InputIntent.UNCLEAR):
+        kind = ReaskKind.REDIRECT
+        if _reask_budget_left(kind, reask_counts.get(kind.value, 0), steering):
+            return SteeringDecision(
+                action=SteeringAction.REASK,
+                reask_kind=kind,
+                reason=(
+                    "the answer was off-topic/unclear (intent: "
+                    f"{intent.value}) — a redirect before skip"
+                ),
+            )
+        return SteeringDecision(
+            action=SteeringAction.SKIP,
+            skip_reason=SkipReason.UNRESOLVED,
+            reason=(
+                "the redirect budget is exhausted (intent: "
+                f"{intent.value}) — the question is skipped as "
+                "unresolved (never a negative answer)"
+            ),
+        )
+    if intent is InputIntent.CANNOT_ANSWER:
+        kind = ReaskKind.GENTLE
+        if _reask_budget_left(kind, reask_counts.get(kind.value, 0), steering):
+            return SteeringDecision(
+                action=SteeringAction.REASK,
+                reask_kind=kind,
+                reason=(
+                    "the participant cannot answer (intent: "
+                    "cannot_answer) — a gentle follow-up before skip"
+                ),
+            )
+        return SteeringDecision(
+            action=SteeringAction.SKIP,
+            skip_reason=SkipReason.UNRESOLVED,
+            reason=(
+                "the gentle-follow-up budget is exhausted (intent: "
+                "cannot_answer) — the question is skipped as "
+                "unresolved (never a negative answer)"
+            ),
+        )
+    # intent ANSWER: the classic clarity-only path
+    if clarity is AnswerClarity.CLEAR:
+        return SteeringDecision(
+            action=SteeringAction.PROCEED,
+            reason="the answer is clear — the question is closed",
+        )
+    kind = ReaskKind.CLARIFICATION
+    if _reask_budget_left(kind, reask_counts.get(kind.value, 0), steering):
+        return SteeringDecision(
+            action=SteeringAction.REASK,
+            reask_kind=kind,
+            reason=(
+                "the answer lacks information — a clarification "
+                "before skip"
+            ),
+        )
+    return SteeringDecision(
+        action=SteeringAction.SKIP,
+        skip_reason=SkipReason.UNRESOLVED,
+        reason=(
+            "the clarification budget is exhausted — the question is "
+            "skipped as unresolved (never a negative answer)"
+        ),
+    )
 
 
 # The question states of the state machine (step 2.2) this tool reads:

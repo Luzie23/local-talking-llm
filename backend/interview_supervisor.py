@@ -42,6 +42,36 @@ The pipeline shape (step 2.5, fixed before any real LLM is wired in):
     Interventionsmonitor -> abort check -> Diagnostiker -> Navigator
     -> Sprecher -> Validator -> Output
 
+(WInf-inspired) the deterministic STEERING and the technical-failure
+policy (phase 2.5; the policy is researcher-editable via the
+SteeringConfig, study_content/steering_settings.yaml):
+  * the Interventionsmonitor measures the input's INTENT (contracts.
+    InputIntent) in addition to the three signal classes;
+  * BEFORE the Diagnostiker, two LLM-free pre-checks handle the SKIP
+    REQUESTS — the explicit skip command (normalized exact match) and
+    the refusal intent: the CURRENT question is NOT skipped
+    immediately, the system ASKS the participant why they want to
+    skip (and offers alternatives: a vague/short answer is fine — the
+    pre-approved skip_probe_text, re-asked as a FOLLOWUP with its own
+    skip-probe counter); only once the skip-probe threshold
+    (max_skip_probes) is reached the question is skipped
+    (DELIVERED -> SKIPPED);
+  * AFTER the Diagnostiker, the deterministic reaction table
+    (interview_navigator.steering_decision — intent + clarity + the
+    per-kind re-ask counters + the configured thresholds) decides
+    PROCEED (close) / REASK (the question is REVISED and re-asked as
+    clarify / redirect / gentle / rephrase / skip-probe, each kind
+    with its own counter) / SKIP (budget exhausted — unresolved);
+  * a skipped question is NEVER a negative answer: no readings, the
+    criteria depending on it stay OPEN/UNCLEAR as they were;
+  * a technical (model) failure of an agent call is NEVER a
+    participant action: no state change, no budget consumed, the
+    model_failure audit event is logged and the participant is asked
+    to resend; after the configured number of consecutive failures
+    the participant CHOOSES continue (counter resets) or pause the
+    run (RunStatus.PAUSED — frozen, resumable via resume_run(), the
+    pending question is re-asked).
+
 The four agent components are pluggable behind the protocols of
 backend/interview_agents.py; the DEFAULT wiring is the deterministic
 stubs (the pass-through Monitor; the "answer recorded, no criterion
@@ -59,7 +89,6 @@ from contracts import (
     AbortRequestSignal,
     AgentName,
     AgentOutputEvent,
-    AnswerClarity,
     ApprovedContentPackage,
     ContentKind,
     ContentPiece,
@@ -69,11 +98,13 @@ from contracts import (
     DeliveryReservedEvent,
     DeliveryValidatedEvent,
     InvariantAspect,
+    InputIntent,
     InputReceivedEvent,
     InputTranscribedEvent,
     InterventionSignal,
     InterventionSignalEvent,
     Modality,
+    ModelFailureEvent,
     OutOfScopeExit,
     QuestionState,
     RunAbortedEvent,
@@ -83,6 +114,7 @@ from contracts import (
     RunStartedEvent,
     RunStatus,
     SpeakerOutput,
+    SteeringConfig,
     StudyCondition,
     SuicidalityAction,
     SuicidalitySignal,
@@ -123,8 +155,15 @@ from interview_navigator import (
     LoopPolicy,
     NavigatorError,
     QuestionCandidateSet,
+    ReaskKind,
+    SkipReason,
+    SteeringAction,
+    is_explicit_skip,
+    normalize_command,
+    skip_request_decision,
+    steering_decision,
 )
-from interview_run import InterviewRun
+from interview_run import IllegalTransitionError, InterviewRun
 from store import EventStore, RunStateRepository
 
 
@@ -184,7 +223,15 @@ class TurnOutcome:
     the participant decides via the UI); `out_of_scope` is set when
     the turn ended the run via the out-of-scope exit (OFQ-6);
     `pending_episode` is set when a dynamic episode jump awaits the
-    Diagnostiker's EpisodeDecision (complete_pending_episode).
+    Diagnostiker's EpisodeDecision (complete_pending_episode);
+    (WInf-inspired technical-failure policy) `model_failure` is set
+    when the turn was the REACTION to a technical (model) failure
+    (nothing advanced — the participant is asked to resend the
+    answer), `consecutive_model_failures` carries the current count
+    (it restarts at a successful turn) and `failure_choice_pending`
+    is set when the threshold was reached and the participant must
+    now choose: continue (the pending answer is retried) or pause the
+    run (run_status becomes PAUSED, resumable via resume_run()).
     """
 
     turn_id: str | None
@@ -196,6 +243,10 @@ class TurnOutcome:
     abort_available: bool = False
     out_of_scope: OutOfScopeExit | None = None
     pending_episode: bool = False
+    # (WInf-inspired) the technical-failure policy:
+    model_failure: bool = False
+    consecutive_model_failures: int = 0
+    failure_choice_pending: bool = False
     reason: str = ""
 
 
@@ -267,12 +318,21 @@ class InterviewSupervisor:
         safety_hint_text: str = DEFAULT_SAFETY_HINT_TEXT,
         out_of_scope_template: str = DEFAULT_OUT_OF_SCOPE_TEMPLATE,
         max_validation_rounds: int = 2,
+        steering: SteeringConfig | None = None,
     ) -> None:
         self._definition = definition
         self._run = InterviewRun(definition, run_id or new_run_id())
         self._navigator = InterviewNavigator(definition, loop_policy)
         self._auto_episode_decisions = auto_episode_decisions
         self._max_past_episodes = max(1, max_past_episodes)
+        # (WInf-inspired) the steering policy: the per-kind re-ask
+        # thresholds, the explicit skip / continue / pause command
+        # phrases, the technical-failure pause threshold and the
+        # fixed texts of the failure/pause protocol. Default: the
+        # built-in SteeringConfig (pure, no I/O — the deployment wiring
+        # passes load_steering_settings() from backend/
+        # steering_settings.py).
+        self._steering = steering if steering is not None else SteeringConfig()
         # (group_id, episode context) pairs whose consequences were
         # already applied (idempotent group completion across
         # re-entries: a group re-worked for another episode is
@@ -323,6 +383,22 @@ class InterviewSupervisor:
         # LLM-driven mode; set when a PENDING_EPISODE outcome is
         # returned, consumed by complete_pending_episode).
         self._pending_source: str | None = None
+        # (WInf-inspired) the steering / failure-policy bookkeeping —
+        # operational state of the PIPELINE (not of the run's state
+        # machine): the consecutive technical (model) failure count
+        # (restarts at a successful turn / a 'continue' choice / a
+        # resume), the pending continue/pause choice after the failure
+        # threshold, and the per-kind re-ask counters of the in-flight
+        # question (question_id -> {kind wire value: count} — the
+        # per-kind attempt counters; reset when the question leaves
+        # the in-flight state or is re-asked for another episode).
+        # The AUDIT TRAIL of both policies lives in the event stream
+        # (the model_failure events, the skip/revise causes, the
+        # state transitions) — see RECONSTRUCTION_PLAN.md §5 (open
+        # question 7) on persisting the counters in the run state.
+        self._consecutive_model_failures = 0
+        self._failure_choice_pending = False
+        self._reask_counts: dict[str, dict[str, int]] = {}
         if repository is not None:
             repository.create_run(self._run.snapshot(1))
             self._events_store = repository.event_store(self.run_id)
@@ -444,6 +520,25 @@ class InterviewSupervisor:
         EpisodeDecision (complete_pending_episode); None otherwise.
         """
         return self._pending_source
+
+    @property
+    def steering(self) -> SteeringConfig:
+        """The steering policy applied by the pipeline (WInf-inspired)."""
+        return self._steering
+
+    @property
+    def consecutive_model_failures(self) -> int:
+        """(WInf-inspired) the current consecutive technical-failure count."""
+        return self._consecutive_model_failures
+
+    @property
+    def failure_choice_pending(self) -> bool:
+        """
+        (WInf-inspired) True while the participant must still answer the
+        continue/pause choice offered after the technical-failure
+        threshold (the next input is the deterministic choice check).
+        """
+        return self._failure_choice_pending
 
 
     # ------------------------------------------------------------------
@@ -761,6 +856,10 @@ class InterviewSupervisor:
                 f"no re-askable (terminal) questions for episode "
                 f"{episode_id!r}"
             )
+        # (WInf-inspired) a new episode is a NEW round: the per-kind
+        # re-ask counters of the re-opened questions start fresh.
+        for qid in reopened:
+            self._reask_counts.pop(qid, None)
         first = reopened[0]
         self._run.reserve_question(
             first, f"{cause} (first re-opened question {first})"
@@ -917,13 +1016,22 @@ class InterviewSupervisor:
         the transcript of a voice input — the STT runs UPSTREAM, in
         app.py) runs through the full pipeline shape:
 
-            Monitor -> abort check -> Diagnostiker -> Navigator
-            -> Sprecher -> Validator -> Output
+            Monitor (signals + intent) -> failure-choice check
+            -> abort check -> the deterministic skip-REQUEST pre-checks
+            (explicit skip / refusal: the question is probed first —
+            ask why + alternatives — and skipped only once the
+            skip-probe threshold is reached) -> Diagnostiker (the
+            failure policy on a technical error) -> the deterministic
+            steering decision -> Navigator -> Sprecher -> Validator
+            -> Output
 
         and the outcome carries the released content (the next
         question, the follow-up re-ask, the closing or the
-        out-of-scope hand-over) plus the fired intervention signals
-        (the three SEPARATE typed signals — never merged).
+        out-of-scope hand-over — or the pre-approved failure/pause
+        texts of the technical-failure policy) plus the fired
+        intervention signals (the three SEPARATE typed signals — never
+        merged). See the module docstring for the WInf-inspired
+        steering / skip / failure behavior.
         """
         self._require_active_run()
         awaiting = self._run.awaiting_answer()
@@ -939,8 +1047,13 @@ class InterviewSupervisor:
         self._emit_input(turn, content, session_modality, audio_ref)
         # 1. the Interventionsmonitor — checked BEFORE regular
         #    interview processing (plan §1.1); the three signal
-        #    classes stay separate.
-        signals = tuple(self._monitor.check(self.run_id, turn, content))
+        #    classes stay separate. (WInf-inspired: the monitor also
+        #    measures the input's INTENT — the steering reactions
+        #    below are driven by it, the Diagnostiker only evaluates
+        #    the answer against the delivered question.)
+        monitor_result = self._monitor.check(self.run_id, turn, content)
+        signals = tuple(monitor_result.signals)
+        intent = monitor_result.intent
         for signal in signals:
             self._emit_intervention(turn, signal)
         # the safety protocol: an EARLY_STOP suicidality signal ends
@@ -951,6 +1064,12 @@ class InterviewSupervisor:
                 and signal.action is SuicidalityAction.EARLY_STOP
             ):
                 return self._finish_safety_stop(turn, signals, False)
+        # (WInf-inspired) the failure-choice protocol: the previous
+        # turn ended at/over the technical-failure threshold, so THIS
+        # input is the participant's continue/pause decision —
+        # determined deterministically (no LLM).
+        if self._failure_choice_pending:
+            return self._handle_failure_choice(turn, content, signals)
         # 2. the abort check: an AbortRequestSignal does NOT stop the
         #    interview — it only informs the participant that they may
         #    abort at any time (the UI highlights the abort button;
@@ -960,31 +1079,104 @@ class InterviewSupervisor:
         abort_available = any(
             isinstance(s, AbortRequestSignal) for s in signals
         )
+        # (WInf-inspired) the DETERMINISTIC steering pre-checks — they
+        # run BEFORE the Diagnostiker (they need no LLM at all): the
+        # explicit skip command and the refusal intent are SKIP
+        # REQUESTS — the question is NOT skipped immediately, the
+        # system ASKS the participant why they want to skip (and
+        # offers alternatives: a vague/short answer is fine) and skips
+        # the CURRENT question (DELIVERED -> SKIPPED — and a skipped
+        # question is never a negative answer) only once the
+        # skip-probe threshold (max_skip_probes) is reached.
+        if is_explicit_skip(content, self._steering.skip_phrases):
+            return self._handle_skip_request(
+                turn,
+                question_id,
+                SkipReason.EXPLICIT,
+                trigger="the participant explicitly asked to skip the question",
+                signals=signals,
+                abort_available=abort_available,
+            )
+        if intent is InputIntent.REFUSAL:
+            return self._handle_skip_request(
+                turn,
+                question_id,
+                SkipReason.REFUSED,
+                trigger="the participant refused to answer (intent: refusal)",
+                signals=signals,
+                abort_available=abort_available,
+            )
         # 3. the Diagnostiker (the answer evaluation, as far as the
-        #    steering decision requires).
+        #    steering decision requires). A TECHNICAL failure of the
+        #    agent call (model error, invalid/missing structured
+        #    output — the Phase 3 typed StructuredOutputError) is
+        #    NEVER a participant action: the failure policy applies
+        #    (WInf-inspired — no state change, no budget consumed,
+        #    the participant is asked to resend; after the threshold
+        #    the participant chooses continue/pause).
         candidates = self.candidate_set(turn)
-        assessment = self._diagnostiker.assess(
-            self.run_id, turn, question_id, content, candidates
-        )
+        try:
+            assessment = self._diagnostiker.assess(
+                self.run_id, turn, question_id, content, candidates
+            )
+        except (NavigatorError, IllegalTransitionError):
+            # internal pipeline errors fail loudly — they are not
+            # technical (model) failures the participant can fix.
+            raise
+        except Exception as exc:  # noqa: BLE001 — the failure policy
+            # deliberately broad: any agent-side failure (provider,
+            # timeout, parse) is a technical failure.
+            return self._handle_model_failure(
+                turn, question_id, signals, abort_available, exc
+            )
         self._emit_agent_output(turn, AgentName.DIAGNOSTIKER, assessment)
+        # a successful agent call restarts the failure count.
+        self._consecutive_model_failures = 0
         readings = [
             ValueReading(name=name, value=value, reliable=True)
             for name, value in assessment.navigation_values.items()
         ]
 
-        if assessment.answer_clarity is AnswerClarity.UNCLEAR:
-            # the answer lacks information: the question is REVISED
-            # and re-asked (FOLLOWUP) — the Navigator must not move on
-            # to a new question while one is REVISED.
+        # (WInf-inspired) the DETERMINISTIC steering decision: the
+        # reaction is a function of (intent, clarity, the per-kind
+        # re-ask counters, the SteeringConfig thresholds) — no LLM.
+        steering = steering_decision(
+            intent,
+            assessment.answer_clarity,
+            self._reask_counts.get(question_id, {}),
+            self._steering,
+        )
+        if steering.action is SteeringAction.SKIP:
+            # the budget was exhausted: the question is skipped as
+            # unresolved — never a negative answer (see
+            # _skip_current_question).
+            return self._skip_current_question(
+                turn,
+                question_id,
+                steering.skip_reason or SkipReason.UNRESOLVED,
+                reason=steering.reason,
+                signals=signals,
+                abort_available=abort_available,
+            )
+        if steering.action is SteeringAction.REASK:
+            # the answer lacks information for this kind: the
+            # question is REVISED and re-asked (FOLLOWUP) — the
+            # Navigator must not move on to a new question while one
+            # is REVISED. The kind owns its counter (the per-kind
+            # attempt counter; the budget is consumed here).
+            kind = steering.reask_kind or ReaskKind.CLARIFICATION
+            counts = self._reask_counts.setdefault(question_id, {})
+            counts[kind.value] = counts.get(kind.value, 0) + 1
             self.apply_answer(
                 question_id,
                 readings,
                 closed=False,
-                cause="diagnostiker: answer recorded (information missing)",
+                cause=f"steering: re-ask ({kind.value}) — {steering.reason}",
             )
             self._run.revise_question(
                 question_id,
-                "diagnostiker: answer unclear — the question is re-asked",
+                f"steering: re-ask kind={kind.value} "
+                f"(attempt {counts[kind.value]}) — {steering.reason}",
             )
             out = self.require_and_reserve_next()
             self._drain_transitions()
@@ -1004,8 +1196,11 @@ class InterviewSupervisor:
                 signals=tuple(signals),
                 abort_available=abort_available,
             )
-        # 4. apply the answer (record + close + the online criteria +
-        #    the group consequences — the single writer).
+        # 4. PROCEED — apply the answer (record + close + the online
+        #    criteria + the group consequences — the single writer).
+        #    (WInf-inspired) the question leaves the in-flight state:
+        #    its per-kind re-ask counters are reset.
+        self._reask_counts.pop(question_id, None)
         out = self.apply_answer(
             question_id,
             readings,
@@ -1051,16 +1246,327 @@ class InterviewSupervisor:
                     "next question; the agent choice is wired in "
                     "Phase 3"
                 )
+        return self._advance_after_answer(
+            turn, out, signals, abort_available
+        )
+
+    def _handle_skip_request(
+        self,
+        turn_id: str,
+        question_id: str,
+        skip_reason: SkipReason,
+        trigger: str,
+        signals: tuple[InterventionSignal, ...],
+        abort_available: bool,
+    ) -> TurnOutcome:
+        """
+        (WInf-inspired) the SKIP-REQUEST reaction — the explicit skip
+        command (the deterministic command check) or the refusal
+        intent (the monitor). The question is NOT skipped
+        immediately: while the skip-probe budget (SteeringConfig.
+        max_skip_probes, per question) still allows, the system ASKS
+        the participant WHY they want to skip and offers alternatives
+        (a vague/short answer is fine — the pre-approved probe text):
+          * NO readings are recorded (the skip request is not an
+            answer — a skip is never a negative answer);
+          * the question is REVISED and re-asked (FOLLOWUP) with the
+            probe text appended to the question text (DELIVERED ->
+            REVISED -> DELIVERED — the participant can still answer
+            the question after the probe, e.g. vaguely/shortly);
+          * only once the probe threshold is reached the question is
+            SKIPPED (DELIVERED -> SKIPPED, the skip_reason + the
+            trigger audited) and the interview advances.
+        """
+        decision = skip_request_decision(
+            self._reask_counts.get(question_id, {}),
+            self._steering,
+            skip_reason,
+        )
+        if decision.action is SteeringAction.SKIP:
+            return self._skip_current_question(
+                turn_id,
+                question_id,
+                skip_reason,
+                reason=f"{trigger} — {decision.reason}",
+                signals=signals,
+                abort_available=abort_available,
+            )
+        kind = ReaskKind.SKIP_PROBE
+        counts = self._reask_counts.setdefault(question_id, {})
+        counts[kind.value] = counts.get(kind.value, 0) + 1
+        # the question is re-offered WITH THE PROBE while no answer is
+        # recorded yet (DELIVERED -> REVISED — the WInf-inspired
+        # skip-probe re-ask; the audit cause names the kind + attempt):
+        self._run.revise_question(
+            question_id,
+            f"steering: re-ask kind={kind.value} (attempt "
+            f"{counts[kind.value]}) — {trigger}",
+        )
+        out = self.require_and_reserve_next()
+        self._drain_transitions()
+        if out.kind is not SupervisorOutcome.CONTINUE or out.next_question is None:
+            raise NavigatorError(
+                "unexpected supervisor outcome after a skip-probe re-ask: "
+                + str(out.kind)
+            )
+        result = self._deliver_reserved_question(
+            turn_id,
+            out.next_question,
+            ContentKind.FOLLOWUP,
+            supplementary=self._steering.skip_probe_text,
+        )
+        return replace(
+            result, signals=tuple(signals), abort_available=abort_available
+        )
+
+    def _skip_current_question(
+        self,
+        turn_id: str,
+        question_id: str,
+        skip_reason: SkipReason,
+        reason: str,
+        signals: tuple[InterventionSignal, ...],
+        abort_available: bool,
+    ) -> TurnOutcome:
+        """
+        (WInf-inspired) the DETERMINISTIC skip reaction: the CURRENT
+        (DELIVERED) question is locked as SKIPPED (DELIVERED ->
+        SKIPPED) and the interview advances to the next question —
+        the skip never ends the run.
+
+        A SKIPPED QUESTION IS NEVER A NEGATIVE ANSWER: no value
+        readings are recorded, no criteria are evaluated against the
+        skip — the criteria that depend on the question stay
+        OPEN/UNCLEAR exactly as they were (the participant's raw input
+        of course remains in the audit log via the input events). The
+        audit cause carries the WInf skip reason (explicit / refused /
+        unresolved).
+        """
+        self._run.skip_question(
+            question_id,
+            f"steering: skipped ({skip_reason.value}) — {reason}",
+        )
+        # the question leaves the in-flight state:
+        self._reask_counts.pop(question_id, None)
+        self._consecutive_model_failures = 0
+        self._drain_transitions()
+        # a skip can COMPLETE the question's group (SKIPPED is a
+        # terminal question state for the completion check) — then the
+        # group's DEFERRED consequences (jumps, out-of-scope exit,
+        # episode re-entry) must be resolved exactly as after a close.
+        group = self._group_of[question_id]
+        context = self._run.active_episode
+        if (
+            self._navigator.group_is_complete(self._run, group.id)
+            and (group.id, context) not in self._completed_groups
+        ):
+            self._completed_groups.add((group.id, context))
+            out = self._apply_group_completion(
+                question_id,
+                group,
+                f"steering: skip ({skip_reason.value})",
+            )
+        else:
+            out = self.require_and_reserve_next()
+        return self._advance_after_answer(
+            turn_id, out, signals, abort_available
+        )
+
+    def _handle_model_failure(
+        self,
+        turn_id: str,
+        question_id: str,
+        signals: tuple[InterventionSignal, ...],
+        abort_available: bool,
+        exc: Exception,
+    ) -> TurnOutcome:
+        """
+        (WInf-inspired) the TECHNICAL-FAILURE policy: the agent call
+        (the Diagnostiker for now — Phase 3 extends the same policy to
+        the Sprecher/Validator calls) failed technically. This is
+        NEVER a participant action:
+          * NO state change — the question stays DELIVERED (still
+            awaiting its answer), nothing is recorded, the
+            interview does not advance;
+          * NO budget consumed — the per-kind re-ask counters are
+            untouched;
+          * the failure is logged (the model_failure audit event with
+            the agent and the failure message) and the participant is
+            asked to RESEND the answer (the pre-approved fixed text,
+            delivered like the terminal texts);
+          * after the configured number of CONSECUTIVE failures the
+            PARTICIPANT CHOOSES: continue (the counter resets) or
+            pause the run (RunStatus.PAUSED — frozen, resumable via
+            resume_run()). The choice is determined on the NEXT input
+            (the deterministic continue/pause command check).
+        """
+        self._consecutive_model_failures += 1
+        self._emit(
+            ModelFailureEvent(
+                run_id=self.run_id,
+                turn_id=turn_id,
+                definition_version=self._definition.definition_version,
+                agent=AgentName.DIAGNOSTIKER,
+                detail=str(exc),
+            )
+        )
+        threshold = self._steering.pause_after_model_failures
+        if self._consecutive_model_failures >= threshold:
+            # the threshold is reached: the participant now decides.
+            self._failure_choice_pending = True
+            text = self._steering.failure_choice_text
+            reason = (
+                f"technical failure {self._consecutive_model_failures} "
+                f"of {threshold} — the participant chooses (continue / "
+                "pause the run)"
+            )
+        else:
+            text = self._steering.technical_failure_text
+            reason = (
+                f"technical failure {self._consecutive_model_failures} "
+                f"of {threshold} — the participant is asked to resend "
+                "the answer (no state change, no budget consumed)"
+            )
+        return self._deliver_terminal(
+            turn_id,
+            ContentKind.FEEDBACK,
+            text,
+            signals=signals,
+            abort_available=abort_available,
+            reason=reason,
+            model_failure=True,
+            consecutive_model_failures=self._consecutive_model_failures,
+            failure_choice_pending=self._failure_choice_pending,
+        )
+
+    def _handle_failure_choice(
+        self,
+        turn_id: str,
+        content: str,
+        signals: tuple[InterventionSignal, ...],
+    ) -> TurnOutcome:
+        """
+        (WInf-inspired) the CONTINUE / PAUSE decision after the
+        technical-failure threshold: a deterministic, LLM-free command
+        check (normalized exact match against the configured
+        continue/pause phrases):
+          * continue — the failure counter restarts and the pending
+            answer is retried (the question stays DELIVERED; the
+            participant simply resends it);
+          * pause    — the run is PAUSED (ACTIVE -> PAUSED, the state
+            transition is logged and the snapshot saved); the pending
+            question stays DELIVERED — resume_run() re-asks it;
+          * neither  — the choice is re-delivered (still pending, no
+            state change).
+        """
+        normalized = normalize_command(content)
+        continue_set = {
+            normalize_command(phrase)
+            for phrase in self._steering.continue_phrases
+            if (phrase or "").strip()
+        }
+        pause_set = {
+            normalize_command(phrase)
+            for phrase in self._steering.pause_phrases
+            if (phrase or "").strip()
+        }
+        if normalized and normalized in continue_set:
+            self._failure_choice_pending = False
+            self._consecutive_model_failures = 0
+            return self._deliver_terminal(
+                turn_id,
+                ContentKind.FEEDBACK,
+                self._steering.continue_confirmation_text,
+                signals=signals,
+                reason=(
+                    "failure choice: continue — the pending answer is "
+                    "retried (the failure counter restarts)"
+                ),
+            )
+        if normalized and normalized in pause_set:
+            self._failure_choice_pending = False
+            self._run.pause_run(
+                "failure choice: the participant pauses the interview"
+            )
+            self._drain_transitions()
+            return self._deliver_terminal(
+                turn_id,
+                ContentKind.FEEDBACK,
+                self._steering.pause_confirmation_text,
+                signals=signals,
+                reason="failure choice: the run is PAUSED (resumable)",
+            )
+        # neither command: the choice is still pending.
+        return self._deliver_terminal(
+            turn_id,
+            ContentKind.FEEDBACK,
+            self._steering.failure_choice_text,
+            signals=signals,
+            reason=(
+                "failure choice still pending — the choice is "
+                "re-delivered"
+            ),
+            failure_choice_pending=True,
+        )
+
+    def resume_run(self) -> TurnOutcome:
+        """
+        (WInf-inspired) resume a PAUSED run (the participant's
+        explicit decision — e.g. in a later session): PAUSED ->
+        ACTIVE (the state transition is logged), and the pending
+        question (still DELIVERED — its answer was never recorded) is
+        re-delivered through the Sprecher -> Validator -> Output chain
+        as a pure output-layer retransmission (NO question-state
+        transition — the question stays DELIVERED). The consecutive
+        failure counter restarts. Only possible on a PAUSED run.
+        """
+        if self._run.status is not RunStatus.PAUSED:
+            raise NavigatorError(
+                f"resume_run() is only possible on a PAUSED run (the "
+                f"run is {self._run.status.value})"
+            )
+        self._run.resume_run(
+            "supervisor: the participant resumes the paused interview"
+        )
+        self._drain_transitions()
+        self._consecutive_model_failures = 0
+        self._failure_choice_pending = False
+        question_id = self._run.awaiting_answer()
+        if question_id is None:
+            raise NavigatorError(
+                "no question is awaiting an answer on the paused run "
+                "(internal error — a pause only happens while a "
+                "question is DELIVERED)"
+            )
+        turn = self._new_turn()
+        self._emit_turn_started(turn)
+        return self._deliver_reserved_question(
+            turn, question_id, ContentKind.QUESTION, advance_state=False
+        )
+
+    def _advance_after_answer(
+        self,
+        turn_id: str,
+        out: SupervisorOutcome,
+        signals: tuple[InterventionSignal, ...],
+        abort_available: bool,
+    ) -> TurnOutcome:
+        """
+        Finish one answer turn after the answer (or the skip) was
+        applied: handle the run-level outcomes (out-of-scope exit,
+        completion, the pending episode decision), otherwise reserve
+        and deliver the deterministic next question.
+        """
         if out.kind is SupervisorOutcome.OUT_OF_SCOPE:
             return self._finish_out_of_scope_turn(
-                turn, signals, abort_available
+                turn_id, signals, abort_available
             )
         if out.kind is SupervisorOutcome.COMPLETE:
-            return self._finish_complete(turn, signals, abort_available)
+            return self._finish_complete(turn_id, signals, abort_available)
         if out.kind is SupervisorOutcome.PENDING_EPISODE:
             self._pending_source = out.pending_source
             return TurnOutcome(
-                turn_id=turn,
+                turn_id=turn_id,
                 run_status=self.status,
                 signals=tuple(signals),
                 abort_available=abort_available,
@@ -1074,14 +1580,14 @@ class InterviewSupervisor:
         out = self.require_and_reserve_next()
         self._drain_transitions()
         if out.kind is SupervisorOutcome.COMPLETE:
-            return self._finish_complete(turn, signals, abort_available)
+            return self._finish_complete(turn_id, signals, abort_available)
         if out.kind is not SupervisorOutcome.CONTINUE or out.next_question is None:
             raise NavigatorError(
                 "unexpected supervisor outcome after the answer: "
                 + str(out.kind)
             )
         result = self._deliver_reserved_question(
-            turn, out.next_question, ContentKind.QUESTION
+            turn_id, out.next_question, ContentKind.QUESTION
         )
         return replace(
             result,
@@ -1390,21 +1896,46 @@ class InterviewSupervisor:
 
     def _require_active_run(self) -> None:
         if self._run.status is not RunStatus.ACTIVE:
+            if self._run.status is RunStatus.PAUSED:
+                raise NavigatorError(
+                    "the run is paused — resume_run() first (the "
+                    "participant's explicit decision)"
+                )
             raise NavigatorError(
                 f"the run is {self._run.status.value} — no further "
                 f"pipeline steps are possible"
             )
 
     def _deliver_reserved_question(
-        self, turn_id: str, question_id: str, kind: ContentKind
+        self,
+        turn_id: str,
+        question_id: str,
+        kind: ContentKind,
+        advance_state: bool = True,
+        supplementary: str | None = None,
     ) -> TurnOutcome:
         """
         Release the reserved question through Sprecher -> Validator
         -> Output (the deterministic question text with the {text
         tokens} rendered — OFQ-4/OFQ-5) and hand it to the output
         layer (the delivery lifecycle events are logged).
+
+        `supplementary` (WInf-inspired skip probe): pre-approved
+        text appended to the question text of a re-asked (REVISED)
+        question — the probe asks the participant WHY they want to
+        skip and offers alternatives (a vague/short answer is fine).
+        With the Phase-3 LLM speaker the probe becomes part of the
+        re-ask context instead (the same intent, generated wording).
+
+        `advance_state=False` (WInf-inspired resume retransmission):
+        the question is ALREADY DELIVERED (its answer is pending, e.g.
+        after a pause) — it is re-delivered as a pure output-layer
+        event with NO question-state transition (the question stays
+        DELIVERED; DELIVERED -> DELIVERED is not a legal move).
         """
         text = self._navigator.rendered_text(question_id, self._run)
+        if supplementary:
+            text = f"{text}\n{supplementary}"
         package = ApprovedContentPackage(
             run_id=self.run_id,
             turn_id=turn_id,
@@ -1444,13 +1975,15 @@ class InterviewSupervisor:
             )
         )
         # the single writer: the reserved (or REVISED re-asked)
-        # question becomes DELIVERED.
-        self.deliver(
-            f"output layer: {question_id} sent"
-            if kind is ContentKind.QUESTION
-            else f"output layer: {question_id} re-asked (follow-up)"
-        )
-        self._drain_transitions()
+        # question becomes DELIVERED — skipped for the resume
+        # retransmission (the question is already DELIVERED).
+        if advance_state:
+            self.deliver(
+                f"output layer: {question_id} sent"
+                if kind is ContentKind.QUESTION
+                else f"output layer: {question_id} re-asked (follow-up)"
+            )
+            self._drain_transitions()
         delivery = Delivery(
             run_id=self.run_id,
             delivery_id=release_id,
@@ -1555,6 +2088,10 @@ class InterviewSupervisor:
         abort_available: bool = False,
         out_of_scope: OutOfScopeExit | None = None,
         reason: str = "",
+        # (WInf-inspired) the technical-failure policy fields:
+        model_failure: bool = False,
+        consecutive_model_failures: int = 0,
+        failure_choice_pending: bool = False,
     ) -> TurnOutcome:
         """
         Hand a PRE-APPROVED (PRE_APPROVED_FALLBACK) terminal piece
@@ -1618,6 +2155,9 @@ class InterviewSupervisor:
             signals=signals,
             abort_available=abort_available,
             out_of_scope=out_of_scope,
+            model_failure=model_failure,
+            consecutive_model_failures=consecutive_model_failures,
+            failure_choice_pending=failure_choice_pending,
             reason=reason,
         )
 

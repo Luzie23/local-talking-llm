@@ -50,7 +50,8 @@ from contracts import (
     AnswerClarity,
     ApprovedContentPackage,
     ContentPiece,
-    InterventionSignal,
+    InputIntent,
+    MonitorResult,
     Modality,
     NavigationAssessment,
     QuestionCandidateSet,
@@ -97,15 +98,22 @@ class Delivery:
 class InterventionsMonitor(Protocol):
     """
     The Interventionsmonitor: checks EVERY participant input BEFORE
-    regular interview processing. Returns the fired signals as the
-    three SEPARATE typed signals (SuicidalitySignal /
-    AbortRequestSignal / PromptInjectionSignal — never merged into one
-    safety score). An empty list means nothing fired.
+    regular interview processing. Returns a MonitorResult with the
+    fired signals as the three SEPARATE typed signals (SuicidalitySignal
+    / AbortRequestSignal / PromptInjectionSignal — never merged into one
+    safety score; an empty signal tuple means nothing fired) AND the
+    input's INTENT (contracts.InputIntent — WInf-inspired: the intent
+    measurement lives HERE, because the monitor is the component that
+    sees every input before the regular processing; the Diagnostiker
+    only evaluates an answer against the delivered question). The
+    intent drives the Supervisor's deterministic steering reactions
+    (interview_navigator.steering_decision) — clarification_request /
+    cannot_answer / refusal / off_topic / unclear, the default ANSWER.
     """
 
     def check(
         self, run_id: str, turn_id: str, transcript: str
-    ) -> list[InterventionSignal]:
+    ) -> MonitorResult:
         """Check one participant input (the typed text or the transcript)."""
         ...
 
@@ -191,15 +199,21 @@ class OutputPort(Protocol):
 class PassthroughMonitor:
     """
     The pass-through Monitor stub: it performs the check but NEVER
-    fires a signal — the pipeline's intervention shape (the typed
-    signals, the abort check, the safety reactions) stays exercisable
-    by injection, while the default flow is unobstructed.
+    fires a signal and classifies EVERY input as ANSWER — the
+    pipeline's intervention shape (the typed signals, the abort check,
+    the safety reactions) and the steering shape (the intent-driven
+    reactions) both stay exercisable by injection, while the default
+    flow is unobstructed (the steering table degrades to the classic
+    clarity-only path). Phase 4 wires the real detection: the keyword /
+    LLM signal layers AND the intent classification (WInf-inspired).
     """
 
     def check(
         self, run_id: str, turn_id: str, transcript: str
-    ) -> list[InterventionSignal]:
-        return []
+    ) -> MonitorResult:
+        return MonitorResult(
+            signals=(), intent=InputIntent.ANSWER
+        )
 
 
 class StubDiagnostiker:

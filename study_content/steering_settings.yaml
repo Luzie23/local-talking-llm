@@ -1,0 +1,108 @@
+# ============================================================================
+# STEERING SETTINGS (WInf-inspired) — RESEARCHER-EDITABLE
+# ============================================================================
+# The deterministic steering policy of the interview pipeline
+# (RECONSTRUCTION_PLAN.md, phase 2.5): how the pipeline reacts to the
+# participant's input intents (measured by the Interventionsmonitor) and
+# to technical (model) failures.
+#
+# Every key below has a built-in default (contracts.SteeringConfig) —
+# this file only needs the values you want to CHANGE; missing keys fall
+# back to the defaults. Unknown keys / malformed values fail loudly at
+# load time (the policy is a study protocol, not a guess).
+#
+# Loaded by: backend/steering_settings.py (the deployment wiring passes
+# it to the Supervisor; the Supervisor's default is the built-in policy).
+
+# ---------------------------------------------------------------------------
+# The per-kind re-ask thresholds — PER QUESTION and PER KIND (each kind
+# owns its own counter; one redirect does not consume the gentle
+# follow-up budget). A question whose budget is exhausted is SKIPPED as
+# UNRESOLVED — and a skip is NEVER a negative answer (no readings, the
+# criteria depending on the question stay OPEN/UNCLEAR).
+# ---------------------------------------------------------------------------
+# the ambiguous/incomplete answer (the Diagnostiker's UNCLEAR clarity)
+max_clarifications: 1
+# the off-topic / unclear answer (intents off_topic / unclear)
+max_redirects: 1
+# the "cannot answer" (intent cannot_answer)
+max_gentle_followups: 1
+# the "I didn't understand / ask again" (intent clarification_request)
+# — WInf RT01: unlimited; `null` means NO budget at all
+max_rephrasings: null
+# the SKIP PROBE (the explicit skip command / the refusal intent): the
+# question is NOT skipped immediately — the participant is asked WHY
+# they want to skip (and offered alternatives: a vague/short answer is
+# fine), this many times, before the question is actually skipped.
+# 0 = immediate skip (no probe).
+max_skip_probes: 1
+
+# ---------------------------------------------------------------------------
+# The deterministic command phrases — EXACT match after normalization
+# (lowercase, punctuation stripped, the politeness fillers "bitte" /
+# "please" dropped), so "Bitte überspringen" and "please skip" match.
+# Deliberately strict: a normal answer that contains a command word is
+# never treated as the command. The skip check runs BEFORE the
+# Diagnostiker (no LLM involved) — and a skip REQUEST is probed first
+# (ask why + alternatives), skipped only at the threshold (see
+# max_skip_probes).
+# ---------------------------------------------------------------------------
+skip_phrases:
+  - überspringen
+  - überspringen sie
+  - skip
+# the failure-choice commands, offered after the technical-failure
+# threshold is reached (continue / pause the run):
+continue_phrases:
+  - weiter
+  - weitermachen
+  - continue
+  - try again
+pause_phrases:
+  - pause
+  - pausieren
+  - anhalten
+  - stoppen
+
+# ---------------------------------------------------------------------------
+# The technical-failure policy (WInf-inspired): a technical (model/parse)
+# failure is NEVER a participant action — nothing advances, nothing is
+# recorded, no re-ask budget is consumed; the participant is asked to
+# resend the answer. After this many CONSECUTIVE failures the participant
+# CHOOSES: continue (the counter resets) or pause the run (PAUSED —
+# frozen but resumable, the pending question is re-asked on resume).
+# ---------------------------------------------------------------------------
+pause_after_model_failures: 3
+
+# ---------------------------------------------------------------------------
+# The participant-facing text of the skip probe: the participant wants
+# the question skipped (explicit command / refusal) and the probe budget
+# still allows a probe — the question is re-asked WITH this text
+# (FOLLOWUP): ask WHY + offer the alternative (a vague/short answer is
+# fine). It is delivered through the Sprecher/Validator with the
+# re-asked question (in Phase 3 the LLM speaker weaves the probe into
+# its own wording). Change it to your study's wording.
+# ---------------------------------------------------------------------------
+skip_probe_text: >
+  Bevor ich die Frage überspringe: Möchten Sie mir kurz sagen, warum
+  Sie sie nicht beantworten möchten? Falls Ihnen zu viele Details
+  schwerfallen: Sie dürfen Ihre Antwort auch vage oder kurz halten –
+  es muss nicht ins Detail gehen.
+
+# ---------------------------------------------------------------------------
+# The participant-facing fixed texts of the failure/pause protocol
+# (PRE-APPROVED: they bypass the Sprecher/Validator like the terminal
+# texts). Change them to your study's wording.
+# ---------------------------------------------------------------------------
+technical_failure_text: >
+  Es gab ein technisches Problem: Ihre Antwort konnte nicht
+  verarbeitet werden. Bitte senden Sie Ihre Antwort erneut.
+failure_choice_text: >
+  Der technische Fehler ist mehrfach aufgetreten. Möchten Sie
+  weitermachen (die Antwort wird erneut verarbeitet) oder die
+  Befragung pausieren? Bitte antworten Sie mit "weiter" oder "pause".
+continue_confirmation_text: >
+  Alles klar — bitte senden Sie Ihre Antwort erneut.
+pause_confirmation_text: >
+  Die Befragung ist pausiert. Sie können jederzeit fortfahren —
+  die offene Frage wird dann erneut gestellt.
